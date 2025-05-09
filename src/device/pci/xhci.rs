@@ -6,7 +6,7 @@
 use std::sync::Mutex;
 
 use crate::device::{
-    bus::{Request, SingleThreadedBusDevice},
+    bus::{BusDeviceRef, Request, SingleThreadedBusDevice},
     pci::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
         traits::{PciDevice, RequestKind},
@@ -16,22 +16,25 @@ use crate::device::{
 /// The emulation of a XHCI controller.
 #[derive(Debug, Clone)]
 pub struct XhciController {
-    config_space: ConfigSpace,
-}
+    /// A reference to the VM memory to perform DMA on.
+    #[allow(unused)]
+    dma_bus: BusDeviceRef,
 
-impl Default for XhciController {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// The PCI Configuration Space of the controller.
+    config_space: ConfigSpace,
 }
 
 impl XhciController {
     /// Create a new XHCI controller with default settings.
+    ///
+    /// `dma_bus` is the device on which we will perform DMA
+    /// operations. This is typically VM guest memory.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(dma_bus: BusDeviceRef) -> Self {
         use crate::device::pci::constants::config_space::*;
 
         Self {
+            dma_bus,
             config_space: ConfigSpaceBuilder::new(vendor::REDHAT, device::REDHAT_XHCI)
                 .class(class::SERIAL, subclass::SERIAL_USB, progif::USB_XHCI)
                 // TODO Should be a 64-bit BAR.

@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = { version = "1.0.97", default-features = false, features = ["std"] }
+arc-swap = "1.7.1"
 clap = { version = "4.5.35", features = [
   "cargo",
   "color",
@@ -19,6 +20,7 @@ clap = { version = "4.5.35", features = [
   "std",
   "usage",
 ], default-features = false }
+memmap2 = "0.9.5"
 tracing = { version = "0.1.41", default-features = false, features = [
   "log",
   "std",
@@ -41,3 +43,4 @@ vfio_user = { git = "https://github.com/rust-vmm/vfio-user.git", rev = "208dbb0d
 
 [dev-dependencies]
 proptest = "1.6.0"
+libc = "0.2.172"

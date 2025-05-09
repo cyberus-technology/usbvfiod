@@ -1,7 +1,9 @@
 mod cli;
+mod dynamic_bus;
+mod memory_segment;
 mod xhci_backend;
 
-pub(crate) use anyhow::{Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 use cli::Cli;
 use tracing::{info, Level};

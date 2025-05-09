@@ -1,4 +1,7 @@
-use std::{fs::File, sync::Mutex};
+use std::{
+    fs::File,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::Result;
 use tracing::{info, trace};
@@ -14,14 +17,22 @@ use usbvfiod::device::{
     pci::{traits::PciDevice, xhci::XhciController},
 };
 
-#[derive(Debug, Default)]
+use crate::{dynamic_bus::DynamicBus, memory_segment::MemorySegment};
+
+#[derive(Debug)]
 pub struct XhciBackend {
+    dma_bus: Arc<DynamicBus>,
     device: Mutex<XhciController>,
 }
 
 impl XhciBackend {
     pub fn new() -> Self {
-        Default::default()
+        let dma_bus: Arc<DynamicBus> = Default::default();
+
+        Self {
+            device: Mutex::new(XhciController::new(dma_bus.clone())),
+            dma_bus: Arc::new(DynamicBus::new()),
+        }
     }
 }
 
@@ -129,8 +140,13 @@ impl ServerBackend for XhciBackend {
     ) -> Result<(), std::io::Error> {
         info!("dma_map flags = {flags:?} offset = {offset} address = {address} size = {size} fd = {fd:?}");
 
-        // TODO We need to collect these guest memory fragments and
-        // populate the `Bus` we pass to `XhciController`.
+        if let Some(fd) = fd {
+            let mseg = MemorySegment::new_from_fd(&fd, offset, size, flags.try_into().unwrap())?;
+
+            self.dma_bus.add(address, Arc::new(mseg)).unwrap();
+        } else {
+            todo!("Memory region without file descriptor");
+        }
 
         Ok(())
     }

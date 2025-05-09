@@ -11,7 +11,6 @@ use std::{
     num::NonZeroU64,
     ops::Range,
     sync::Arc,
-    vec,
     vec::Vec,
 };
 use tracing::{debug, warn};
@@ -155,37 +154,6 @@ impl TryInto<Range<u64>> for Request {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-/// Collection of necessary information to map a chunk of memory into a VM
-pub struct MappingInfo {
-    /// Pointer to the first byte of the memory. Needs to be page aligned.
-    pub pointer: *mut u8,
-
-    /// Amount of bytes to map
-    pub length: usize,
-
-    /// At which offset from the base address of device the memory should appear in the VM.
-    ///
-    /// E.g., if the base address of this device is 0x1000, and `guest_offset` is 0x200, this will
-    /// translate to the underlying memory being mapped at 0x1200.
-    pub guest_offset: u64,
-
-    /// Protection bits of the memory. Only the lowest 3 bits may be non-zero. This directly maps to
-    /// libc's PROT_READ, PROT_WRITE and PROT_EXEC.
-    pub prot: u32,
-}
-
-impl From<&MappingInfo> for Range<u64> {
-    fn from(map_info: &MappingInfo) -> Range<u64> {
-        // We consider usize to be the same width as u64 for now, so the following conversion will
-        // always work.
-        let length: u64 = map_info.length.try_into().unwrap();
-        // FIXME: This addition might overflow, we should probably implement this function as
-        // `TryFrom` instead.
-        map_info.guest_offset..(map_info.guest_offset + length)
-    }
-}
-
 /// A device in a memory bus. This receives read/write requests from
 /// the memory bus.
 ///
@@ -196,18 +164,6 @@ impl From<&MappingInfo> for Range<u64> {
 /// The atomicity requirement is not necessary for bulk memory
 /// operations.
 pub trait BusDevice: Debug {
-    /// Return the mapping information of this device, which consists
-    /// of address regions that should be directly accessed by the guest.
-    ///
-    /// For any [`BusDevice`] `d` which produces a [`MappingInfo`] `m` must hold: `d.size() >=
-    /// m.guest_offset + m.length`.
-    ///
-    /// For devices that don't need to directly map memory into the VM, the default implementation
-    /// produces an empty list of [`MappingInfo`]s.
-    fn get_map_infos(&self) -> Vec<MappingInfo> {
-        vec![]
-    }
-
     /// Return the size of this device. The device has to respond to
     /// requests between `0` and `size - 1`.
     ///
@@ -678,46 +634,6 @@ impl<'a> Bus {
 }
 
 impl BusDevice for Bus {
-    fn get_map_infos(&self) -> Vec<MappingInfo> {
-        // Collect mapping infos from all downstream devices and shift each offset by the start
-        // address of the respective device.
-        self.devices
-            .iter()
-            .map(|DeviceEntry { range, device }| {
-                device
-                    .get_map_infos()
-                    .into_iter()
-                    .map(|mut mapping_info| {
-                        mapping_info.guest_offset = mapping_info
-                            .guest_offset
-                            .checked_add(range.start)
-                            .expect("Offset overflow during assembly of mapping information");
-                        assert!(
-                            {
-                                let map_info_range = Range::<u64>::from(&mapping_info);
-                                range.contains_interval(&map_info_range)
-                            },
-                            "Invalid mapping information: mapped area overflows device bounds"
-                        );
-                        let default_map_infos = self.default.get_map_infos();
-                        for default_map_info in default_map_infos {
-                            assert!(
-                                {
-                                    let default_range = Range::<u64>::from(&default_map_info);
-                                    !default_range.overlaps(range)
-                                },
-                                "Invalid memory bus: Default device mappings overlap range of another device"
-                            );
-                        }
-                        mapping_info
-                    })
-                    .collect::<Vec<MappingInfo>>()
-            })
-            .chain(std::iter::once(self.default.get_map_infos()))
-            .flatten()
-            .collect()
-    }
-
     fn size(&self) -> u64 {
         self.default.size()
     }
@@ -1113,69 +1029,6 @@ mod tests {
                 // This malformed empty range is intentional.
                 added_range: u64::MAX..9,
             })
-        );
-
-        Ok(())
-    }
-
-    /// Helper function for testing the get_map_infos implementation of Bus. Generates a
-    /// MappingInfo object with sane default values and a customizable guest_offset.
-    fn map_info_with_offset(guest_offset: u64) -> MappingInfo {
-        MappingInfo {
-            pointer: std::ptr::null_mut::<u8>(),
-            length: 10,
-            guest_offset,
-            prot: 0b111,
-        }
-    }
-
-    #[derive(Debug)]
-    struct MapInfoDevice {}
-
-    impl BusDevice for MapInfoDevice {
-        fn get_map_infos(&self) -> Vec<MappingInfo> {
-            vec![map_info_with_offset(0)]
-        }
-
-        fn size(&self) -> u64 {
-            10
-        }
-
-        fn write(&self, _: Request, _: u64) {}
-
-        fn read(&self, _: Request) -> u64 {
-            0
-        }
-    }
-
-    #[test]
-    fn empty_default_bus_has_no_map_info() {
-        let device_bus = Bus::default();
-
-        assert_eq!(device_bus.get_map_infos(), vec![]);
-    }
-
-    #[test]
-    fn empty_bus_with_default_map_info_has_correct_map_info() {
-        let device_bus = Bus::new_with_default("test", Arc::new(MapInfoDevice {}));
-
-        assert_eq!(device_bus.get_map_infos(), vec![map_info_with_offset(0)]);
-    }
-
-    #[test]
-    fn default_bus_with_downstream_devices_has_correct_map_info() -> Result<(), AddBusDeviceError> {
-        let mut device_bus = Bus::default();
-        device_bus.add(0, Arc::new(MapInfoDevice {}))?;
-        device_bus.add(20, Arc::new(MapInfoDevice {}))?;
-        device_bus.add(40, Arc::new(MapInfoDevice {}))?;
-
-        assert_eq!(
-            device_bus.get_map_infos(),
-            vec![
-                map_info_with_offset(0),
-                map_info_with_offset(20),
-                map_info_with_offset(40)
-            ]
         );
 
         Ok(())
