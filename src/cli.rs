@@ -36,6 +36,10 @@ pub struct Cli {
     /// usbvfiod. This option is mutually exclusive with --fd.
     #[arg(long, required_unless_present = "fd")]
     socket_path: Option<PathBuf>,
+
+    /// Sysfs path of usb device to be exposed
+    #[arg(long)]
+    device: Vec<PathBuf>,
 }
 
 /// The location of the server socket for the vfio-user client connection.
@@ -58,5 +62,11 @@ impl Cli {
             // The clap configuration above prevents that we run into this case.
             unreachable!()
         }
+    }
+    pub fn devices(&self) -> Result<Vec<nusb::Device>, impl Into<anyhow::Error>> {
+        self.device
+            .iter()
+            .map(|dev| nusb::Device::from_fd(std::os::fd::OwnedFd::from(std::fs::File::open(dev)?)))
+            .collect()
     }
 }

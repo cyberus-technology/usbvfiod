@@ -36,6 +36,8 @@ fn main() -> Result<()> {
         unimplemented!("Using a file descriptor as vfio-user connection is not implemented")
     };
 
+    let _device = args.devices();
+
     info!("We're up!");
 
     server
