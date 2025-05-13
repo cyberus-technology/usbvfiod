@@ -36,24 +36,29 @@ The following section is meant for developers.
 An easy way to get a testing setup is to connect `usbvfiod` with Cloud
 Hypervisor. For this, start `usbvfiod` in one terminal:
 
-```console
-$ cargo run -- --socket-path /tmp/usbvfiod-socket -vv
+```sh
+$ cargo run -- --device /sys/bus/usb/devices/1-1 --socket-path /tmp/usbvfiod.sock -vv
 2025-04-25T09:41:40.891734Z  INFO usbvfiod: We're up!
 ```
 
 In another terminal, start Cloud Hypervisor. Any recent version will
 do:
 
-```console
-$ cloud-hypervisor --memory size=4G,shared=on --serial tty --user-device socket=/tmp/ubvfvfiod-socket --console off \
-    -kernel KERNEL -initramfs INITRAMFS -cmdline CMDLINE
+```sh
+$ nix run nixpkgs#cloud-hypervisor -- \
+   --memory size=4G,shared=on \
+   --serial tty \
+   --user-device socket=/tmp/usbvfiod.sock \
+   --console off \
+   --kernel result/bzImage \
+   --initramfs result/initrd \
+   --cmdline "$(grep "init=[^$]*" result/netboot.ipxe) console=ttyS0"
 ```
 
 To get a kernel and initramfs to play with, you can use the NixOS netboot binaries:
 
-```console
-# Enter a nixpkgs checkout.
-$ nix-build ./nixos/release.nix -A netboot.x86_64-linux
+```sh
+$ nix-build -A netboot.x86_64-linux '<nixpkgs/nixos/release.nix>'
 $ ls -l result/
 total 0
 lrwxrwxrwx  6 root root 64 Jan  1  1970 bzImage -> /nix/store/6ma0apc1gyk5bprqyjfzzpibqqdnwi9k-linux-6.6.68/bzImage
