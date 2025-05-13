@@ -72,6 +72,23 @@ Hypervisor. The required command line for booting is in
 `result/netboot.ipxe`. You want to add a `console=ttyS0` to get
 console output.
 
+To figure out the path of your usb device, use `lsusb`
+
+```sh
+$ lsusb -t
+/:  Bus 001.Port 001: Dev 001, Class=root_hub, Driver=xhci_hcd/5p, 480M
+    |__ Port 001: Dev 002, If 0, Class=Billboard, Driver=[none], 12M
+    |__ Port 001: Dev 002, If 1, Class=Human Interface Device, Driver=usbhid, 12M
+    |__ Port 004: Dev 003, If 0, Class=Vendor Specific Class, Driver=[none], 12M
+    |__ Port 005: Dev 004, If 0, Class=Wireless, Driver=btusb, 480M
+    |__ Port 005: Dev 004, If 1, Class=Wireless, Driver=btusb, 480M
+    |__ Port 005: Dev 004, If 2, Class=Wireless, Driver=btusb, 480M
+```
+
+say we'd like that usbhid device, it would have `/sys/bus/usb/devices/1-1`.
+
+we can confirm this by running `cat /sys/bus/usb/devices/1-1/manufacturer` and it returns `Framework`, so we have indeed found my laptop's keyboard!
+
 ### Format Checks
 
 `.toml` files in the repository are formatted using
