@@ -21,6 +21,7 @@ clap = { version = "4.5.35", features = [
   "usage",
 ], default-features = false }
 memmap2 = "0.9.5"
+nusb = "0.1.13"
 tracing = { version = "0.1.41", default-features = false, features = [
   "log",
   "std",
