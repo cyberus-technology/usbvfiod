@@ -231,6 +231,36 @@ impl XhciController {
             self.consumer_cycle_state = value & crcr::RCS != 0;
         }
     }
+
+    fn enqueue_event_trb(&mut self, trb: [u8; 16]) {
+        if self.check_event_ring_full() {
+            return;
+        }
+
+        assert!(
+            self.event_ring.cycle_state <= 1,
+            "event ring cycle state should only ever be 0 or 1"
+        );
+        let mut trb_with_cycle_bit = trb;
+        trb_with_cycle_bit[12] = (trb_with_cycle_bit[12] & !0x1) | self.event_ring.cycle_state;
+
+        self.dma_bus
+            .write_bulk(self.event_ring.enqueue_pointer, &trb_with_cycle_bit);
+
+        let enqueue_address = self.event_ring.enqueue_pointer;
+
+        self.event_ring.enqueue_pointer += 16;
+        self.event_ring.trb_count -= 1;
+
+        debug!(
+            "enqueued TRB in first segment of event ring at address {:#x}. Space for {} more TRBs left (TRB: {:?})",
+            enqueue_address, self.event_ring.trb_count, trb_with_cycle_bit
+        );
+    }
+
+    fn check_event_ring_full(&self) -> bool {
+        self.event_ring.trb_count == 0
+    }
 }
 
 impl PciDevice for Mutex<XhciController> {
