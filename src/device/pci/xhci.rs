@@ -192,10 +192,11 @@ impl XhciController {
         self.running = usbcmd & 0x1 == 0x1;
         if self.running {
             debug!("controller started with cmd {usbcmd:#x}");
-
             // XXX: This is just a test to see if we can generate interrupts.
             // This will be removed once we generate interrupts in the right
             // place, (e.g. generate a Port Connect Status Event) and test it.
+            let port_status_change_event = Self::create_port_status_change_event_trb(1);
+            self.enqueue_event_trb(port_status_change_event);
             self.interrupt_line.interrupt();
             debug!("signalled a bogus interrupt");
         } else {
@@ -228,6 +229,18 @@ impl XhciController {
             // Update internal consumer cycle state for next TRB fetch.
             self.consumer_cycle_state = value & crcr::RCS != 0;
         }
+    }
+
+    fn create_port_status_change_event_trb(port_id: u8) -> [u8; 16] {
+        let port_status_change_event_id = 34;
+        let completion_code_success = 1;
+        let mut trb = [0; 16];
+
+        trb[3] = port_id;
+        trb[11] = completion_code_success;
+        trb[13] = port_status_change_event_id << 2;
+
+        trb
     }
 
     fn enqueue_event_trb(&mut self, trb: [u8; 16]) {
