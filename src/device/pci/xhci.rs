@@ -25,8 +25,13 @@ use super::config_space::BarInfo;
 /// A Basic Event Ring.
 #[derive(Debug, Default, Clone)]
 pub struct EventRing {
+    // public XHCI registers
     base_address: u64,
     dequeue_pointer: u64,
+    // internal variables
+    enqueue_pointer: u64,
+    trb_count: u32,
+    cycle_state: u8,
 }
 
 /// The emulation of a XHCI controller.
