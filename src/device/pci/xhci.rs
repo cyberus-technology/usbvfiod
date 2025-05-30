@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, warn};
 
 use crate::device::{
-    bus::{BusDeviceRef, Request, SingleThreadedBusDevice},
+    bus::{BusDeviceRef, Request, RequestSize, SingleThreadedBusDevice},
     interrupt_line::{DummyInterruptLine, InterruptLine},
     pci::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
@@ -157,8 +157,28 @@ impl XhciController {
         assert_eq!(erstba & 0x3f, 0, "unaligned event ring base address");
 
         self.event_ring.base_address = erstba;
-
         debug!("event ring segment table at {:#x}", erstba);
+
+        self.event_ring.enqueue_pointer =
+            self.dma_bus.read(Request::new(erstba, RequestSize::Size8));
+        debug!(
+            "initializing event ring enqueue pointer with base address of the first (and only) segment {:#x}",
+            self.event_ring.enqueue_pointer
+        );
+
+        self.event_ring.trb_count =
+            self.dma_bus
+                .read(Request::new(erstba + 8, RequestSize::Size4)) as u32;
+        debug!(
+            "retrieving TRB count of the first (and only) event ring segment {}",
+            self.event_ring.trb_count
+        );
+
+        self.event_ring.cycle_state = 1;
+        debug!(
+            "initializing event ring producer cycle state with {}",
+            self.event_ring.cycle_state
+        );
     }
 
     /// Handle writes to the Event Ring Dequeue Pointer (ERDP).
