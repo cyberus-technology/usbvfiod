@@ -6,7 +6,7 @@
 
 use tracing::{debug, trace};
 
-use super::trb::{CommandTrb, CommandTrbParseError, EventTrb};
+use super::trb::{CommandTrb, CommandTrbParseError, EventTrb, TransferTrb, TransferTrbParseError};
 
 use crate::device::{
     bus::{BusDeviceRef, Request, RequestSize},
@@ -195,10 +195,15 @@ impl CommandRing {
     pub fn next_command_trb(
         &mut self,
         dma_bus: BusDeviceRef,
-    ) -> Option<Result<CommandTrb, CommandTrbParseError>> {
+    ) -> Option<(u64, Result<CommandTrb, CommandTrbParseError>)> {
         // retrieve TRB at current dequeue_pointer
         let mut trb_buffer = [0; 16];
         dma_bus.read_bulk(self.dequeue_pointer, &mut trb_buffer);
+
+        debug!(
+            "interpreting TRB at dequeue pointer; cycle state = {}, TRB = {:?}",
+            self.cycle_state as u8, trb_buffer
+        );
 
         // check if the TRB is fresh
         let cycle_bit = trb_buffer[12] & 0x1 != 0;
@@ -222,11 +227,70 @@ impl CommandRing {
             return self.next_command_trb(dma_bus);
         }
 
+        let trb_address = self.dequeue_pointer;
+
         // advance to next TRB
         self.dequeue_pointer += 16;
 
         // return parsed result
-        Some(trb_result)
+        Some((trb_address, trb_result))
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TransferRing {
+    dequeue_pointer: u64,
+    cycle_state: bool,
+}
+
+impl TransferRing {
+    pub fn configure(&mut self, dequeue_pointer: u64, cycle_state: bool) {
+        self.dequeue_pointer = dequeue_pointer;
+        self.cycle_state = cycle_state;
+    }
+
+    pub fn next_transfer_trb(
+        &mut self,
+        dma_bus: BusDeviceRef,
+    ) -> Option<(u64, Result<TransferTrb, TransferTrbParseError>)> {
+        // retrieve TRB at current dequeue_pointer
+        let mut trb_buffer = [0; 16];
+        dma_bus.read_bulk(self.dequeue_pointer, &mut trb_buffer);
+
+        debug!(
+            "interpreting TRB at dequeue pointer; cycle state = {}, TRB = {:?}",
+            self.cycle_state as u8, trb_buffer
+        );
+
+        // check if the TRB is fresh
+        let cycle_bit = trb_buffer[12] & 0x1 != 0;
+        if cycle_bit != self.cycle_state {
+            // cycle-bit mismatch: no new transfer TRB available
+            return None;
+        }
+
+        // TRB is fresh; try to parse
+        let trb_result = TransferTrb::try_from(&trb_buffer[..]);
+        if let Ok(TransferTrb::Link(link_data)) = trb_result {
+            // encountered Link TRB
+            // update transfer ring status
+            self.dequeue_pointer = link_data.ring_segment_pointer;
+            if link_data.toggle_cycle {
+                self.cycle_state = !self.cycle_state;
+            }
+            // we still need to deliver the newest actual (non-link) TRB.
+            // Recursion is the simplest way to achieve the additional fetch,
+            // but the guest could cause a stack overflow. Is that a problem?
+            return self.next_transfer_trb(dma_bus);
+        }
+
+        let trb_address = self.dequeue_pointer;
+
+        // advance to next TRB
+        self.dequeue_pointer += 16;
+
+        // return parsed result
+        Some((trb_address, trb_result))
     }
 }
 
@@ -305,7 +369,7 @@ mod tests {
 
         // ring abstraction should parse correctly
         let trb = command_ring.next_command_trb(ram.clone());
-        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        if let Some((_, Ok(CommandTrb::NoOpCommand))) = trb {
         } else {
             panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
         }
@@ -326,14 +390,14 @@ mod tests {
 
         // parse first noop
         let trb = command_ring.next_command_trb(ram.clone());
-        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        if let Some((_, Ok(CommandTrb::NoOpCommand))) = trb {
         } else {
             panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
         }
 
         // parse second noop
         let trb = command_ring.next_command_trb(ram.clone());
-        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        if let Some((_, Ok(CommandTrb::NoOpCommand))) = trb {
         } else {
             panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
         }
@@ -367,7 +431,7 @@ mod tests {
 
         // parse refreshed noop
         let trb = command_ring.next_command_trb(ram.clone());
-        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        if let Some((_, Ok(CommandTrb::NoOpCommand))) = trb {
         } else {
             panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
         }
