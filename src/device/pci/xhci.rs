@@ -74,6 +74,8 @@ pub struct XhciController {
 
     /// The interrupt line triggered to signal device events.
     interrupt_line: Arc<dyn InterruptLine>,
+
+    portsc: u64,
 }
 
 impl XhciController {
@@ -104,6 +106,7 @@ impl XhciController {
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
+            portsc: 0x00260203,
         }
     }
 
@@ -117,7 +120,8 @@ impl XhciController {
     /// Obtain the current host controller status as defined for the `USBSTS` register.
     #[must_use]
     pub fn status(&self) -> u64 {
-        !u64::from(self.running) & 0x1u64
+        debug!("usbsts read");
+        (!u64::from(self.running) & 0x1u64) | 0x8 | 0x10
     }
 
     /// Obtain the current command ring status as defined for reading the `CRCR` register.
@@ -194,13 +198,7 @@ impl XhciController {
         self.running = usbcmd & 0x1 == 0x1;
         if self.running {
             debug!("controller started with cmd {usbcmd:#x}");
-            // XXX: This is just a test to see if we can generate interrupts.
-            // This will be removed once we generate interrupts in the right
-            // place, (e.g. generate a Port Connect Status Event) and test it.
-            let port_status_change_event = Self::create_port_status_change_event_trb(1);
-            self.enqueue_event_trb(port_status_change_event);
-            self.interrupt_line.interrupt();
-            debug!("signalled a bogus interrupt");
+            self.check_if_commands_trb_available();
         } else {
             debug!("controller stopped with cmd {usbcmd:#x}");
         }
@@ -233,6 +231,14 @@ impl XhciController {
         }
     }
 
+    /// enqueue port status change event TRB on event ring and signal an interrupt
+    pub fn send_port_status_change(&mut self) {
+        let port_status_change_event = Self::create_port_status_change_event_trb(1);
+        self.enqueue_event_trb(port_status_change_event);
+        self.interrupt_line.interrupt();
+        debug!("signalled an interrupt");
+    }
+
     fn create_port_status_change_event_trb(port_id: u8) -> [u8; 16] {
         let port_status_change_event_id = 34;
         let completion_code_success = 1;
@@ -241,6 +247,23 @@ impl XhciController {
         trb[3] = port_id;
         trb[11] = completion_code_success;
         trb[13] = port_status_change_event_id << 2;
+
+        trb
+    }
+
+    fn create_command_completion_event_trb(command_trb_pointer: u64) -> [u8; 16] {
+        let completion_code_success = 1;
+        let _command_completion_parameter = 0;
+        let _slot_id = 0;
+        let _vf_id = 0;
+        let port_command_completion_event_id = 33;
+        let mut trb = [0; 16];
+        let slot_id = 1;
+
+        trb[0..8].copy_from_slice(&command_trb_pointer.to_le_bytes());
+        trb[11] = completion_code_success;
+        trb[13] = port_command_completion_event_id << 2;
+        trb[15] = slot_id;
 
         trb
     }
@@ -274,6 +297,27 @@ impl XhciController {
     fn check_event_ring_full(&self) -> bool {
         self.event_ring.trb_count == 0
     }
+    fn check_if_commands_trb_available(&self) {
+        self.check_if_command_trb_available(0);
+        self.check_if_command_trb_available(1);
+        self.check_if_command_trb_available(2);
+        self.check_if_command_trb_available(3);
+    }
+    fn check_if_command_trb_available(&self, offset: u64) {
+        let mut data = [0; 16];
+        self.dma_bus
+            .read_bulk(self.command_ring_dequeue_pointer + offset * 16, &mut data);
+        debug!("{}. command ring TRB: {:?}", offset, data);
+    }
+    fn doorbell(&mut self) {
+        debug!("Ding Dong!");
+        self.check_if_commands_trb_available();
+        let command_completion_trb =
+            Self::create_command_completion_event_trb(self.command_ring_dequeue_pointer);
+        self.enqueue_event_trb(command_completion_trb);
+        self.interrupt_line.interrupt();
+        debug!("wrote command completion event for commandring[0] and signaled interrupt");
+    }
 }
 
 impl PciDevice for Mutex<XhciController> {
@@ -299,16 +343,25 @@ impl PciDevice for Mutex<XhciController> {
             offset::DCBAAP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::CONFIG => self.lock().unwrap().enable_slots(value),
 
-            offset::PORTSC => assert_eq!(
-                value & !portsc::WAKE_ON_EVENTS,
-                portsc::DEFAULT,
-                "port reconfiguration not yet supported"
-            ),
-
+            offset::PORTSC => {
+                debug!("portsc write: {:#x}", value);
+                if (value & 0x00020000 != 0) {
+                    debug!("found 1-to-clear on bit 17, unsetting bit");
+                    self.lock().unwrap().portsc &= !0x00020000;
+                }
+                if (value & 0x00040000 != 0) {
+                    debug!("found 1-to-clear on bit 18, unsetting bit");
+                    self.lock().unwrap().portsc &= !0x00040000;
+                }
+                if (value & 0x00200000 != 0) {
+                    debug!("found 1-to-clear on bit 21, unsetting bit");
+                    self.lock().unwrap().portsc &= !0x00200000;
+                }
+            }
             // xHC Runtime Registers
             offset::IMAN => self.lock().unwrap().interrupt_management = value,
             offset::IMOD => self.lock().unwrap().interrupt_moderation_interval = value,
-            offset::ERSTSZ => assert_eq!(value, 1, "only a single segment supported"),
+            offset::ERSTSZ => assert!(value <= 1, "only a single segment supported"),
             offset::ERSTBA => self
                 .lock()
                 .unwrap()
@@ -316,7 +369,11 @@ impl PciDevice for Mutex<XhciController> {
             offset::ERSTBA_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::ERDP => self.lock().unwrap().update_event_ring(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
-            _ => todo!(),
+            0x2000 => self.lock().unwrap().doorbell(),
+            _ => {
+                debug! {"unknown write to {:#x} with value {:#x}", req.addr, value};
+                //todo!()
+            }
         }
     }
 
@@ -349,7 +406,12 @@ impl PciDevice for Mutex<XhciController> {
             offset::PAGESIZE => 0x1, /* 4k Pages */
             offset::CONFIG => self.lock().unwrap().config(),
 
-            offset::PORTSC => portsc::DEFAULT,
+            offset::PORTSC => {
+                let val = self.lock().unwrap().portsc;
+                debug!("read PORTSC detected, supplying {:#x}", val);
+                val
+                //portsc::DEFAULT
+            }
             offset::PORTLI => 0,
 
             // xHC Runtime Registers
@@ -360,9 +422,13 @@ impl PciDevice for Mutex<XhciController> {
             offset::ERSTBA_HI => 0,
             offset::ERDP => self.lock().unwrap().event_ring.dequeue_pointer,
             offset::ERDP_HI => 0,
+            0x2000 => 0, // kernel reads the doorbell after write
 
             // Everything else is Reserved Zero
-            _ => todo!(),
+            _ => {
+                debug! {"unknown read from {:#x}", req.addr};
+                todo!()
+            }
         }
     }
 
