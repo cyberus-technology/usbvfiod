@@ -7,4 +7,5 @@ pub mod config_space;
 pub mod constants;
 pub mod msix_table;
 pub mod traits;
+pub mod trb;
 pub mod xhci;
