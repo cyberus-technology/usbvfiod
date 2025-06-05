@@ -20,14 +20,7 @@ use crate::device::{
     },
 };
 
-use super::config_space::BarInfo;
-
-/// A Basic Event Ring.
-#[derive(Debug, Default, Clone)]
-pub struct EventRing {
-    base_address: u64,
-    dequeue_pointer: u64,
-}
+use super::{config_space::BarInfo, rings::EventRing};
 
 /// The emulation of a XHCI controller.
 #[derive(Debug, Clone)]
@@ -147,21 +140,6 @@ impl XhciController {
         self.device_contexts.push(device_context_base_array_ptr);
     }
 
-    /// Configure the Event Ring Segment Table from the base address.
-    pub fn configure_event_ring_segment_table(&mut self, erstba: u64) {
-        assert_eq!(erstba & 0x3f, 0, "unaligned event ring base address");
-
-        self.event_ring.base_address = erstba;
-
-        debug!("event ring segment table at {:#x}", erstba);
-    }
-
-    /// Handle writes to the Event Ring Dequeue Pointer (ERDP).
-    pub fn update_event_ring(&mut self, value: u64) {
-        debug!("event ring dequeue pointer advanced to {:#x}", value);
-        self.event_ring.dequeue_pointer = value;
-    }
-
     /// Start/Stop controller operation
     ///
     /// This is called for writes of the `USBCMD` register.
@@ -241,12 +219,18 @@ impl PciDevice for Mutex<XhciController> {
             offset::IMAN => self.lock().unwrap().interrupt_management = value,
             offset::IMOD => self.lock().unwrap().interrupt_moderation_interval = value,
             offset::ERSTSZ => assert_eq!(value, 1, "only a single segment supported"),
-            offset::ERSTBA => self
+            offset::ERSTBA => {
+                let mut xhci = self.lock().unwrap();
+                let dma_bus = xhci.dma_bus.clone();
+                xhci.event_ring
+                    .configure_event_ring_segment_table(value, dma_bus)
+            }
+            offset::ERSTBA_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
+            offset::ERDP => self
                 .lock()
                 .unwrap()
-                .configure_event_ring_segment_table(value),
-            offset::ERSTBA_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
-            offset::ERDP => self.lock().unwrap().update_event_ring(value),
+                .event_ring
+                .update_dequeue_pointer(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             _ => todo!(),
         }
@@ -288,9 +272,9 @@ impl PciDevice for Mutex<XhciController> {
             offset::IMAN => self.lock().unwrap().interrupt_management,
             offset::IMOD => self.lock().unwrap().interrupt_moderation_interval,
             offset::ERSTSZ => 1,
-            offset::ERSTBA => self.lock().unwrap().event_ring.base_address,
+            offset::ERSTBA => self.lock().unwrap().event_ring.read_base_address(),
             offset::ERSTBA_HI => 0,
-            offset::ERDP => self.lock().unwrap().event_ring.dequeue_pointer,
+            offset::ERDP => self.lock().unwrap().event_ring.read_dequeue_pointer(),
             offset::ERDP_HI => 0,
 
             // Everything else is Reserved Zero
