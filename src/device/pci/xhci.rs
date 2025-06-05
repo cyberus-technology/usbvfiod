@@ -17,6 +17,7 @@ use crate::device::{
             runtime, MAX_INTRS, MAX_SLOTS, OP_BASE, RUN_BASE,
         },
         traits::PciDevice,
+        trb::EventTrb,
     },
 };
 
@@ -148,6 +149,12 @@ impl XhciController {
         if self.running {
             debug!("controller started with cmd {usbcmd:#x}");
 
+            // XXX: This is just a test to see if we can enqueue events.
+            // This will be removed once we send events in the right place
+            // (e.g., command completion events on doorbell writes)
+            let trb = EventTrb::new_port_status_change_event_trb(0);
+            self.event_ring.enqueue(&trb, self.dma_bus.clone());
+
             // XXX: This is just a test to see if we can generate interrupts.
             // This will be removed once we generate interrupts in the right
             // place, (e.g. generate a Port Connect Status Event) and test it.
@@ -222,8 +229,7 @@ impl PciDevice for Mutex<XhciController> {
             offset::ERSTBA => {
                 let mut xhci = self.lock().unwrap();
                 let dma_bus = xhci.dma_bus.clone();
-                xhci.event_ring
-                    .configure_event_ring_segment_table(value, dma_bus)
+                xhci.event_ring.configure(value, dma_bus)
             }
             offset::ERSTBA_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::ERDP => self
