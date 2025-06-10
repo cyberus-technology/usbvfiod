@@ -6,12 +6,12 @@
 
 use tracing::{debug, trace};
 
+use super::trb::{CommandTrb, CommandTrbParseError, EventTrb};
+
 use crate::device::{
     bus::{BusDeviceRef, Request, RequestSize},
     pci::constants::xhci::rings::event_ring::segments_table_entry_offsets::*,
 };
-
-use super::trb::EventTrb;
 
 /// The Event Ring: A unidirectional means of communication, allowing the XHCI
 /// controller to send events to the driver.
@@ -149,5 +149,83 @@ impl EventRing {
     // is filled up.
     fn check_event_ring_full(&self) -> bool {
         self.trb_count == 0
+    }
+}
+
+/// The Command Ring: A unidirectional means of communication, allowing the
+/// driver to send commands to the XHCI controller.
+#[derive(Debug, Default)]
+struct CommandRing {
+    /// The Command Ring Dequeue Pointer.
+    ///
+    /// The driver initializes this pointer with a write to the CRCR register.
+    /// Subsequently, only the controller advances the pointer as it processes
+    /// incoming commands.
+    /// The controller reports advancement of the dequeue pointer as part of
+    /// the Command Completion Events.
+    dequeue_pointer: u64,
+    /// The controller's consumer cycle state.
+    ///
+    /// The controller checks whether the command TRB at the dequeue pointer is
+    /// fresh by comparing its cycle state and the cycle bit in the TRB.
+    cycle_state: bool,
+}
+
+impl CommandRing {
+    /// Configure the Command Ring.
+    ///
+    /// Call this function when the driver writes to the CRCR register (as
+    /// part of setting up the controller).
+    ///
+    /// # Parameters
+    ///
+    /// - `dequeue_pointer`: the initial dequeue pointer from the CRCR write
+    /// - `cycle_state`: the initial cycle_state from the CRCR write
+    pub fn configure(&mut self, dequeue_pointer: u64, cycle_state: bool) {
+        assert_eq!(
+            0,
+            dequeue_pointer & 0x3f,
+            "The Command Ring Dequeue Pointer has to be 64-byte-aligned."
+        );
+        self.dequeue_pointer = dequeue_pointer;
+        self.cycle_state = cycle_state;
+    }
+
+    /// Try to retrieve a new command from the command ring.
+    pub fn next_command_trb(
+        &mut self,
+        dma_bus: BusDeviceRef,
+    ) -> Option<Result<CommandTrb, CommandTrbParseError>> {
+        // retrieve TRB at current dequeue_pointer
+        let mut trb_buffer = [0; 16];
+        dma_bus.read_bulk(self.dequeue_pointer, &mut trb_buffer);
+
+        // check if the TRB is fresh
+        let cycle_bit = trb_buffer[12] & 0x1 != 0;
+        if cycle_bit != self.cycle_state {
+            // cycle-bit mismatch: no new command TRB available
+            return None;
+        }
+
+        // TRB is fresh; try to parse
+        let trb_result = CommandTrb::try_from(&trb_buffer[..]);
+        if let Ok(CommandTrb::Link(link_data)) = trb_result {
+            // encountered Link TRB
+            // update command ring status
+            self.dequeue_pointer = link_data.ring_segment_pointer;
+            if link_data.toggle_cycle {
+                self.cycle_state = !self.cycle_state;
+            }
+            // we still need to deliver the newest actual (non-link) TRB.
+            // Recursion is the simplest way to achieve the additional fetch,
+            // but the guest could cause a stack overflow. Is that a problem?
+            return self.next_command_trb(dma_bus);
+        }
+
+        // advance to next TRB
+        self.dequeue_pointer += 16;
+
+        // return parsed result
+        Some(trb_result)
     }
 }
