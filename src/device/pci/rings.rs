@@ -154,8 +154,8 @@ impl EventRing {
 
 /// The Command Ring: A unidirectional means of communication, allowing the
 /// driver to send commands to the XHCI controller.
-#[derive(Debug, Default)]
-struct CommandRing {
+#[derive(Debug, Default, Clone)]
+pub struct CommandRing {
     /// The Command Ring Dequeue Pointer.
     ///
     /// The driver initializes this pointer with a write to the CRCR register.

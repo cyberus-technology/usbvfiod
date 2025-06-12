@@ -21,7 +21,10 @@ use crate::device::{
     },
 };
 
-use super::{config_space::BarInfo, rings::EventRing};
+use super::{
+    config_space::BarInfo,
+    rings::{CommandRing, EventRing},
+};
 
 /// The emulation of a XHCI controller.
 #[derive(Debug, Clone)]
@@ -41,6 +44,9 @@ pub struct XhciController {
 
     /// Internal Command Ring position.
     command_ring_dequeue_pointer: u64,
+
+    /// The Command Ring.
+    command_ring: CommandRing,
 
     /// The Event Ring of the single Interrupt Register Set.
     event_ring: EventRing,
@@ -86,6 +92,7 @@ impl XhciController {
             running: false,
             command_ring_running: false,
             command_ring_dequeue_pointer: 0,
+            command_ring: CommandRing::default(),
             consumer_cycle_state: false,
             event_ring: EventRing::default(),
             slots: vec![],
