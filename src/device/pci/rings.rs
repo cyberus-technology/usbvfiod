@@ -229,3 +229,147 @@ impl CommandRing {
         Some(trb_result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use crate::device::bus::BusDevice;
+
+    use super::*;
+
+    /// A device that only accepts bulk reads and writes.
+    #[derive(Debug)]
+    struct BulkOnlyDevice {
+        data: Mutex<Vec<u8>>,
+    }
+
+    impl BulkOnlyDevice {
+        fn new(data: &[u8]) -> Self {
+            Self {
+                data: Mutex::new(data.to_vec()),
+            }
+        }
+    }
+
+    impl BusDevice for BulkOnlyDevice {
+        fn size(&self) -> u64 {
+            self.data.lock().unwrap().len().try_into().unwrap()
+        }
+
+        fn read(&self, _req: Request) -> u64 {
+            panic!("Must not call byte read on this device")
+        }
+
+        fn write(&self, _req: Request, _value: u64) {
+            panic!("Must not call byte write on this device")
+        }
+
+        fn read_bulk(&self, offset: u64, data: &mut [u8]) {
+            let offset: usize = offset.try_into().unwrap();
+            data.copy_from_slice(&self.data.lock().unwrap()[offset..(offset + data.len())])
+        }
+
+        fn write_bulk(&self, offset: u64, data: &[u8]) {
+            let offset: usize = offset.try_into().unwrap();
+            self.data.lock().unwrap()[offset..(offset + data.len())].copy_from_slice(data)
+        }
+    }
+
+    #[test]
+    fn command_ring_single_segment_traversal() {
+        let noop_command = [
+            0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x5c, 0x0, 0x0,
+        ];
+        let link = [
+            0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x2, 0x18, 0x0, 0x0,
+        ];
+
+        // construct memory segment for a ring that can contain 4 TRBs
+        let ram = Arc::new(BulkOnlyDevice::new(&[0; 16 * 4]));
+        let mut command_ring = CommandRing::default();
+        command_ring.configure(0, true);
+
+        // the ring is still empty
+        let trb = command_ring.next_command_trb(ram.clone());
+        assert!(
+            trb.is_none(),
+            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {:?}",
+            trb
+        );
+
+        // place a noop command in the first TRB slot
+        ram.write_bulk(0, &noop_command);
+        // set cycle bit
+        ram.write_bulk(0 + 12, &[0x1]);
+
+        // ring abstraction should parse correctly
+        let trb = command_ring.next_command_trb(ram.clone());
+        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        } else {
+            panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
+        }
+
+        // no new command placed, should return no new command
+        let trb = command_ring.next_command_trb(ram.clone());
+        assert!(
+            trb.is_none(),
+            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {:?}",
+            trb
+        );
+
+        // place two noop commands
+        ram.write_bulk(16, &noop_command);
+        ram.write_bulk(16 + 12, &[0x1]);
+        ram.write_bulk(32, &noop_command);
+        ram.write_bulk(32 + 12, &[0x1]);
+
+        // parse first noop
+        let trb = command_ring.next_command_trb(ram.clone());
+        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        } else {
+            panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
+        }
+
+        // parse second noop
+        let trb = command_ring.next_command_trb(ram.clone());
+        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        } else {
+            panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
+        }
+
+        // no new command placed, should return no new command
+        let trb = command_ring.next_command_trb(ram.clone());
+        assert!(
+            trb.is_none(),
+            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {:?}",
+            trb
+        );
+
+        // place link TRB back to the start of the memory segment
+        ram.write_bulk(48, &link);
+        // set cycle bit without affecting the toggle_cycle bit
+        ram.write_bulk(48 + 12, &[0x1 | link[12]]);
+
+        // we cannot observe it, but the dequeue_pointer should now point to 0 again and the cycle
+        // state should have toggled to false. The dequeue_pointer now points at the first written
+        // noop command. Cycle bits don't match, so the command ring should not report a new
+        // command.
+        let trb = command_ring.next_command_trb(ram.clone());
+        assert!(
+            trb.is_none(),
+            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {:?}",
+            trb
+        );
+
+        // make noop command fresh by toggling the cycle bit
+        ram.write_bulk(0 + 12, &[0x0]);
+
+        // parse refreshed noop
+        let trb = command_ring.next_command_trb(ram.clone());
+        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        } else {
+            panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
+        }
+    }
+}
