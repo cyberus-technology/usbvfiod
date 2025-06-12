@@ -37,7 +37,7 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
   "ansi",
   "tracing-log",
 ] }
-vfio-bindings = { version = "0.4.0", default-features = false }
+vfio-bindings = { version = "0.5.0", default-features = false }
 
 # We currently pin to this version to get matching dependencies with vfio-bindings above.
 vfio_user = { git = "https://github.com/rust-vmm/vfio-user.git", rev = "208dbb0d109e82173cab439505f26e428b8d3b17" }
