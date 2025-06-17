@@ -80,6 +80,10 @@ in
     name = "usbvfiod Smoke Test";
 
     nodes.machine = { pkgs, ... }: {
+      environment.systemPackages = [
+        pkgs.usbutils
+      ];
+
       boot.kernelModules = [ "kvm" ];
       systemd.services.usbvfiod = {
         wantedBy = [ "multi-user.target" ];
@@ -136,6 +140,83 @@ in
 
       # Check whether the virtual usb stick is available in the host.
       machine.succeed('grep -Fq "uninitialized drive" /dev/sda')
+
+      # Check whether lsusb can be used
+      machine.succeed("lsusb | grep -q 'ID'")
+
+      # find the USB Device
+      machine.succeed("""
+        for dev in /dev/sd*; do
+          if udevadm info --query=all --name=$dev | grep -q 'ID_BUS=usb'; then
+            echo "$dev" > /tmp/usb_device
+
+            # get Vendor/Model ID
+            vendor=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_VENDOR_ID=\\K\\w+')
+            model=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_MODEL_ID=\\K\\w+')
+
+            echo "$vendor" > /tmp/usb_vendor
+            echo "$model" > /tmp/usb_model
+            break
+          fi
+        done
+      """)
+
+      # show the information about path and permission
+      machine.succeed("""
+        {
+          echo "----- Current Identity -----"
+          whoami
+          id
+
+          echo "----- USB Block Device (/dev/sdX) -----"
+          if [ -f /tmp/usb_device ]; then
+            dev=$(cat /tmp/usb_device) 
+            echo "Device path: $dev"
+            echo "--- USB Block Device (/dev/sdX) Permissions ---"
+            ls -l $dev
+          else
+            echo "No USB device found!" >&2
+            echo "No USB device found!"
+            exit 1
+          fi
+
+          echo "----- USB Bus-Exposed Device Files -----"
+          if [ -f /tmp/usb_vendor ] && [ -f /tmp/usb_model ]; then
+            vendor=$(cat /tmp/usb_vendor)
+            model=$(cat /tmp/usb_model)
+            # Find the matching usb
+            usb_line=$(lsusb | grep "$vendor:$model")
+            if [ -n "$usb_line" ]; then
+              echo "$usb_line"
+              # Extract bus and device number
+              bus=$(echo "$usb_line" | awk '{print $2}')
+              device=$(echo "$usb_line" | awk '{print $4}' | tr -d ':')
+              char_dev="/dev/bus/usb/$bus/$device"
+
+              if [ -e "$char_dev" ]; then
+                echo "Character device path: $char_dev"
+                echo "--- USB Bus-Exposed Device Permissions ---"
+                ls -l "$char_dev"
+              else
+                echo "Device node $char_dev not found"
+              fi
+
+            else
+              echo "No matching lsusb entry found for vendor=$vendor model=$model"
+            fi
+          else
+            echo "Missing vendor or model info" >&2
+            echo "Missing vendor or model info"
+            exit 1
+          fi
+          
+        } > /tmp/test_report.txt
+      """)
+
+      print("-------- Report from Guest --------")
+      stdout = machine.execute("cat /tmp/test_report.txt")[1]
+      print(stdout)
+
     '';
   };
 }
