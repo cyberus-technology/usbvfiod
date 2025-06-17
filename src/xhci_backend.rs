@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::Write,
+    os::unix::fs::FileExt,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -33,22 +33,18 @@ pub struct XhciBackend {
 
 #[derive(Debug)]
 struct InterruptEventFd {
-    /// TODO: Get rid of the Mutex. Writes to the EventFd are safe.
-    ///  This just satisfies the Send + Sync requirements and provides
-    ///  interior mutability for the [`InterruptLine`] trait.
-    fd: Mutex<File>,
+    fd: File,
 }
 
 impl InterruptLine for InterruptEventFd {
     fn interrupt(&self) {
-        // Write any 8 byte value to the EventFd.
-        // TODO: we just expect this to always work currently.
-        let _amount = self
+        let data = 1u64.to_le_bytes();
+        let amount = self
             .fd
-            .lock()
-            .unwrap()
-            .write(&1u64.to_le_bytes())
+            .write_at(&data, 0)
             .expect("should always be able to write event fd");
+
+        assert_eq!(amount, data.len());
     }
 }
 
@@ -325,11 +321,7 @@ impl ServerBackend for XhciBackend {
 
         let irqs: Vec<Arc<InterruptEventFd>> = fds
             .into_iter()
-            .map(|file| {
-                Arc::new(InterruptEventFd {
-                    fd: Mutex::new(file),
-                })
-            })
+            .map(|file| Arc::new(InterruptEventFd { fd: file }))
             .collect();
 
         let irq: Arc<dyn InterruptLine> = match irqs.first() {
