@@ -154,7 +154,7 @@ in
       """)
 
       # Display device path and access permissions
-      machine.execute("""
+      machine.succeed("""
         {
           echo "----- USB Block Device (/dev/sdX) -----"
           if [ -f /tmp/usb_device ]; then
