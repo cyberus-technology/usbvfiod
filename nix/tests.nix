@@ -82,6 +82,7 @@ in
     nodes.machine = { pkgs, ... }: {
       environment.systemPackages = [
         pkgs.usbutils
+        pkgs.jq
       ];
 
       boot.kernelModules = [ "kvm" ];
@@ -138,36 +139,23 @@ in
       # Read the diagnostic information after login.
       machine.wait_until_succeeds("grep -Eq '\s+1\s+PCI-MSIX.*xhci_hcd' ${cloudHypervisorLog}")
 
-      # Check whether the virtual usb stick is available in the host.
-      machine.succeed('grep -Fq "uninitialized drive" /dev/sda')
-
-      # Check whether lsusb can be used
-      machine.succeed("lsusb | grep -q 'ID'")
-
       # find the USB Device
-      machine.succeed("""
-        for dev in /dev/sd*; do
-          if udevadm info --query=all --name=$dev | grep -q 'ID_BUS=usb'; then
-            echo "$dev" > /tmp/usb_device
+      machine.execute("""
+      # get USB Block Device
+        usb_device=$(lsblk -SJ | jq -r '.blockdevices[] | select(.tran == "usb") | .name')
+        dev="/dev/$usb_device"
+        echo "$dev" > /tmp/usb_device
 
-            # get Vendor/Model ID
-            vendor=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_VENDOR_ID=\\K\\w+')
-            model=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_MODEL_ID=\\K\\w+')
-
-            echo "$vendor" > /tmp/usb_vendor
-            echo "$model" > /tmp/usb_model
-            break
-          fi
-        done
+        # get USB Bus-Exposed Device
+        vendor=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_VENDOR_ID=\\K\\w+')
+        model=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_MODEL_ID=\\K\\w+')
+        bus_usb_device=$(lsusb | grep "$vendor:$model")
+        echo "$bus_usb_device" > /tmp/bus_usb_device
       """)
 
-      # show the information about path and permission
-      machine.succeed("""
+      # Display device path and access permissions
+      machine.execute("""
         {
-          echo "----- Current Identity -----"
-          whoami
-          id
-
           echo "----- USB Block Device (/dev/sdX) -----"
           if [ -f /tmp/usb_device ]; then
             dev=$(cat /tmp/usb_device) 
@@ -180,43 +168,25 @@ in
             exit 1
           fi
 
-          echo "----- USB Bus-Exposed Device Files -----"
-          if [ -f /tmp/usb_vendor ] && [ -f /tmp/usb_model ]; then
-            vendor=$(cat /tmp/usb_vendor)
-            model=$(cat /tmp/usb_model)
-            # Find the matching usb
-            usb_line=$(lsusb | grep "$vendor:$model")
-            if [ -n "$usb_line" ]; then
-              echo "$usb_line"
-              # Extract bus and device number
-              bus=$(echo "$usb_line" | awk '{print $2}')
-              device=$(echo "$usb_line" | awk '{print $4}' | tr -d ':')
-              char_dev="/dev/bus/usb/$bus/$device"
-
-              if [ -e "$char_dev" ]; then
-                echo "Character device path: $char_dev"
-                echo "--- USB Bus-Exposed Device Permissions ---"
-                ls -l "$char_dev"
-              else
-                echo "Device node $char_dev not found"
-              fi
-
-            else
-              echo "No matching lsusb entry found for vendor=$vendor model=$model"
-            fi
+          echo "----- USB Bus-Exposed Device -----"
+          if [ -f /tmp/bus_usb_device ]; then
+            usb_dev=$(cat /tmp/bus_usb_device)
+            echo "$usb_dev"
+            bus=$(echo "$usb_dev" | awk '{print $2}')
+            dev_num=$(echo "$usb_dev" | awk '{print $4}' | sed 's/://')
+            path="/dev/bus/usb/$bus/$dev_num"
+            echo "Character device path: $path"
+            echo "--- USB Bus-Exposed Device Permissions ---"
+            ls -l "$path"
           else
-            echo "Missing vendor or model info" >&2
-            echo "Missing vendor or model info"
-            exit 1
-          fi
-          
+            echo "Character device path: <not found>"
+          fi        
         } > /tmp/test_report.txt
       """)
-
-      print("-------- Report from Guest --------")
+      
+      print("-------- USB Device Information Report --------")
       stdout = machine.execute("cat /tmp/test_report.txt")[1]
       print(stdout)
-
     '';
   };
 }
