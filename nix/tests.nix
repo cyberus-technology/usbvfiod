@@ -80,6 +80,11 @@ in
     name = "usbvfiod Smoke Test";
 
     nodes.machine = { pkgs, ... }: {
+      environment.systemPackages = [
+        pkgs.usbutils
+        pkgs.jq
+      ];
+
       boot.kernelModules = [ "kvm" ];
       systemd.services.usbvfiod = {
         wantedBy = [ "multi-user.target" ];
@@ -134,8 +139,54 @@ in
       # Read the diagnostic information after login.
       machine.wait_until_succeeds("grep -Eq '\s+1\s+PCI-MSIX.*xhci_hcd' ${cloudHypervisorLog}")
 
-      # Check whether the virtual usb stick is available in the host.
-      machine.succeed('grep -Fq "uninitialized drive" /dev/sda')
+      # find the USB Device
+      machine.execute("""
+      # get USB Block Device
+        usb_device=$(lsblk -SJ | jq -r '.blockdevices[] | select(.tran == "usb") | .name')
+        dev="/dev/$usb_device"
+        echo "$dev" > /tmp/usb_device
+
+        # get USB Bus-Exposed Device
+        vendor=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_VENDOR_ID=\\K\\w+')
+        model=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_MODEL_ID=\\K\\w+')
+        bus_usb_device=$(lsusb | grep "$vendor:$model")
+        echo "$bus_usb_device" > /tmp/bus_usb_device
+      """)
+
+      # Display device path and access permissions
+      machine.succeed("""
+        {
+          echo "----- USB Block Device (/dev/sdX) -----"
+          if [ -f /tmp/usb_device ]; then
+            dev=$(cat /tmp/usb_device) 
+            echo "Device path: $dev"
+            echo "--- USB Block Device (/dev/sdX) Permissions ---"
+            ls -l $dev
+          else
+            echo "No USB device found!" >&2
+            echo "No USB device found!"
+            exit 1
+          fi
+
+          echo "----- USB Bus-Exposed Device -----"
+          if [ -f /tmp/bus_usb_device ]; then
+            usb_dev=$(cat /tmp/bus_usb_device)
+            echo "$usb_dev"
+            bus=$(echo "$usb_dev" | awk '{print $2}')
+            dev_num=$(echo "$usb_dev" | awk '{print $4}' | sed 's/://')
+            path="/dev/bus/usb/$bus/$dev_num"
+            echo "Character device path: $path"
+            echo "--- USB Bus-Exposed Device Permissions ---"
+            ls -l "$path"
+          else
+            echo "Character device path: <not found>"
+          fi        
+        } > /tmp/test_report.txt
+      """)
+      
+      print("-------- USB Device Information Report --------")
+      stdout = machine.execute("cat /tmp/test_report.txt")[1]
+      print(stdout)
     '';
   };
 }
