@@ -41,7 +41,7 @@ impl<const SIZE: usize> RegisterSetBuilder<SIZE> {
     /// Initialize a builder for a fully read-only MMIO region where
     /// all bits are set.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             data: [0xFF; SIZE],
             rw_mask: [0; SIZE],

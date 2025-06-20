@@ -106,12 +106,12 @@ impl EventRing {
     }
 
     /// Handle reads to the Event Ring Segment Table Base Address (ERSTBA).
-    pub fn read_base_address(&self) -> u64 {
+    pub const fn read_base_address(&self) -> u64 {
         self.base_address
     }
 
     /// Handle reads to the Event Ring Dequeue Pointer (ERDP).
-    pub fn read_dequeue_pointer(&self) -> u64 {
+    pub const fn read_dequeue_pointer(&self) -> u64 {
         self.dequeue_pointer
     }
 
@@ -147,7 +147,7 @@ impl EventRing {
     // The method is currently not capable of dealing with wrapping around to
     // the start of the single segment and just reports full once the segment
     // is filled up.
-    fn check_event_ring_full(&self) -> bool {
+    const fn check_event_ring_full(&self) -> bool {
         self.trb_count == 0
     }
 }

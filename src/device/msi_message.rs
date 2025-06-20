@@ -24,7 +24,7 @@ pub struct MsiMessage {
 impl MsiMessage {
     /// Create a new [`MsiMessage`] struct.
     #[must_use]
-    pub fn new(address: u64, data: u16) -> Self {
+    pub const fn new(address: u64, data: u16) -> Self {
         Self { address, data }
     }
 }

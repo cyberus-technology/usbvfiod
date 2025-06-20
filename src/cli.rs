@@ -58,13 +58,9 @@ pub enum ServerSocket<'a> {
 
 impl Cli {
     pub fn server_socket(&self) -> ServerSocket {
-        if let Some(fd) = self.fd {
-            ServerSocket::Fd(fd)
-        } else if let Some(socket_path) = &self.socket_path {
-            ServerSocket::Path(socket_path)
-        } else {
-            // The clap configuration above prevents that we run into this case.
-            unreachable!()
-        }
+        self.socket_path.as_ref().map_or_else(
+            || unreachable!(),
+            |socket_path| ServerSocket::Path(socket_path),
+        )
     }
 }

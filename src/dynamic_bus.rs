@@ -29,6 +29,8 @@ impl DynamicBus {
         for segment in segments.iter() {
             new_bus.add(segment.start_addr, segment.device.clone())?;
         }
+        // release lock early
+        drop(segments);
 
         // It's okay to use store here, because we only have a single
         // writer (serialized by the mutex).

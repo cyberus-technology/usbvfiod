@@ -136,22 +136,26 @@ impl XhciBackend {
                     | VFIO_PCI_BAR5_REGION_INDEX => {
                         let bar_no = i - VFIO_PCI_BAR0_REGION_INDEX;
 
-                        if let Some(bar_info) = u8::try_from(bar_no)
+                        u8::try_from(bar_no)
                             .ok()
                             .and_then(|bar_no| self.controller.bar(bar_no))
-                        {
-                            debug!("Client queried BAR{bar_no} region: {:?}", bar_info);
-                            vfio_region_info {
-                                argsz: size_of::<vfio_region_info>() as u32,
-                                index: i,
-                                size: bar_info.size.into(),
-                                flags: VFIO_REGION_INFO_FLAG_READ | VFIO_REGION_INFO_FLAG_WRITE,
-                                ..Default::default()
-                            }
-                        } else {
-                            debug!("Client queried BAR{bar_no} region: (empty)");
-                            empty_region
-                        }
+                            .map_or_else(
+                                || {
+                                    debug!("Client queried BAR{bar_no} region: (empty)");
+                                    empty_region
+                                },
+                                |bar_info| {
+                                    debug!("Client queried BAR{bar_no} region: {:?}", bar_info);
+                                    vfio_region_info {
+                                        argsz: size_of::<vfio_region_info>() as u32,
+                                        index: i,
+                                        size: bar_info.size.into(),
+                                        flags: VFIO_REGION_INFO_FLAG_READ
+                                            | VFIO_REGION_INFO_FLAG_WRITE,
+                                        ..Default::default()
+                                    }
+                                },
+                            )
                     }
 
                     unknown => {
@@ -338,6 +342,8 @@ impl ServerBackend for XhciBackend {
             })
             .collect();
 
+        // The solution offered by clippy produces a type error.
+        #[allow(clippy::option_if_let_else)]
         let irq: Arc<dyn InterruptLine> = match irqs.first() {
             Some(eventfd) => eventfd.clone(),
             _ => Arc::new(DummyInterruptLine::default()),

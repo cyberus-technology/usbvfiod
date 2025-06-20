@@ -30,7 +30,7 @@ pub struct BarInfo {
 }
 
 impl BarInfo {
-    fn new(size: u32, kind: RequestKind) -> Self {
+    const fn new(size: u32, kind: RequestKind) -> Self {
         Self { size, kind }
     }
 }
@@ -126,7 +126,7 @@ impl ConfigSpaceBuilder {
     /// When not specified, the revision defaults to 0.
     #[must_use]
     #[allow(unused)]
-    pub fn revision(mut self, revision: u8) -> Self {
+    pub const fn revision(mut self, revision: u8) -> Self {
         self.revision = revision;
 
         self
@@ -151,7 +151,7 @@ impl ConfigSpaceBuilder {
     /// This is necessary for guests to probe additional functions on this device.
     #[must_use]
     #[allow(unused)]
-    pub fn multifunction(mut self) -> Self {
+    pub const fn multifunction(mut self) -> Self {
         self.multifunction = true;
         self
     }
@@ -161,7 +161,7 @@ impl ConfigSpaceBuilder {
     /// When not specified, the interrupt pin defaults to 0 (None).
     #[must_use]
     #[allow(unused)]
-    pub fn interrupt_pin(mut self, irq_pin: u8) -> Self {
+    pub const fn interrupt_pin(mut self, irq_pin: u8) -> Self {
         self.interrupt_pin = irq_pin;
 
         self
@@ -172,7 +172,7 @@ impl ConfigSpaceBuilder {
     /// When not specified, the interrupt line defaults to `0xff` (not connected).
     #[must_use]
     #[allow(unused)]
-    pub fn interrupt_line(mut self, irq_line: u8) -> Self {
+    pub const fn interrupt_line(mut self, irq_line: u8) -> Self {
         self.interrupt_line = irq_line;
 
         self
