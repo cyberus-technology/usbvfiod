@@ -31,27 +31,28 @@ pub enum RequestSize {
 }
 
 impl From<RequestSize> for u8 {
-    fn from(r: RequestSize) -> u8 {
-        r as u8
+    fn from(r: RequestSize) -> Self {
+        r as Self
     }
 }
 
 impl From<RequestSize> for u32 {
-    fn from(r: RequestSize) -> u32 {
-        r as u32
+    fn from(r: RequestSize) -> Self {
+        r as Self
     }
 }
 
 impl From<RequestSize> for u64 {
-    fn from(r: RequestSize) -> u64 {
-        r as u64
+    fn from(r: RequestSize) -> Self {
+        r as Self
     }
 }
 
+#[allow(clippy::fallible_impl_from)]
 impl From<RequestSize> for NonZeroU64 {
-    fn from(r: RequestSize) -> NonZeroU64 {
+    fn from(r: RequestSize) -> Self {
         // This cannot panic as all valid [RequestSize]s are > 0.
-        NonZeroU64::new(r as u64).unwrap()
+        Self::new(r as u64).unwrap()
     }
 }
 
@@ -90,10 +91,10 @@ impl TryFrom<u64> for RequestSize {
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
-            1 => Ok(RequestSize::Size1),
-            2 => Ok(RequestSize::Size2),
-            4 => Ok(RequestSize::Size4),
-            8 => Ok(RequestSize::Size8),
+            1 => Ok(Self::Size1),
+            2 => Ok(Self::Size2),
+            4 => Ok(Self::Size4),
+            8 => Ok(Self::Size8),
             _ => Err(IllegalRequestSize {}),
         }
     }
@@ -122,13 +123,13 @@ impl Request {
     /// Create a new request from address and size.
     #[must_use]
     pub const fn new(addr: u64, size: RequestSize) -> Self {
-        Request { addr, size }
+        Self { addr, size }
     }
 
     /// Split a request into individual byte requests.
-    pub fn iter_bytes(&self) -> impl Iterator<Item = Request> {
+    pub fn iter_bytes(&self) -> impl Iterator<Item = Self> {
         (self.addr..self.addr + u64::from(self.size))
-            .map(|addr| Request::new(addr, RequestSize::Size1))
+            .map(|addr| Self::new(addr, RequestSize::Size1))
     }
 }
 
@@ -312,8 +313,8 @@ impl DefaultDevice {
     /// Construct a default device that spans the complete address space.
     #[must_use]
     #[allow(unused)]
-    pub fn new(name: &'static str) -> Self {
-        DefaultDevice {
+    pub const fn new(name: &'static str) -> Self {
+        Self {
             size: u64::MAX,
             name,
         }
@@ -321,8 +322,8 @@ impl DefaultDevice {
 
     /// Construct a default device that spans a specific size in bytes.
     #[must_use]
-    pub fn new_with_size(name: &'static str, size: u64) -> Self {
-        DefaultDevice { size, name }
+    pub const fn new_with_size(name: &'static str, size: u64) -> Self {
+        Self { size, name }
     }
 }
 
@@ -418,7 +419,7 @@ pub enum AddBusDeviceError {
 impl fmt::Display for AddBusDeviceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AddBusDeviceError::OverlapsExistingDevice {
+            Self::OverlapsExistingDevice {
                 existing_range,
                 added_range,
             } => write!(
@@ -426,7 +427,7 @@ impl fmt::Display for AddBusDeviceError {
                 "New device for {:x}-{:x} overlaps existing device at {:x}-{:x}",
                 added_range.start, added_range.end, existing_range.start, existing_range.end,
             ),
-            AddBusDeviceError::DeviceOutOfRange {
+            Self::DeviceOutOfRange {
                 bus_size,
                 added_range,
             } => write!(
@@ -549,7 +550,7 @@ impl<'a> Bus {
     /// Construct a new bus with a custom default handler.
     #[must_use]
     pub fn new_with_default(name: &'static str, default_device: BusDeviceRef) -> Self {
-        Bus {
+        Self {
             devices: Default::default(),
             error_device: DefaultDevice::new_with_size(name, default_device.size()),
             default: default_device,
@@ -568,13 +569,12 @@ impl<'a> Bus {
     /// Add a new item to the bus that claims the given range of
     /// addresses.
     pub fn add(&mut self, start_addr: u64, device: BusDeviceRef) -> Result<(), AddBusDeviceError> {
-        let range = start_addr
-            ..start_addr
-                .checked_add(device.size())
-                .ok_or(AddBusDeviceError::DeviceOutOfRange {
-                    bus_size: self.size(),
-                    added_range: start_addr..start_addr.overflowing_add(device.size()).0,
-                })?;
+        let range = start_addr..start_addr.checked_add(device.size()).ok_or_else(|| {
+            AddBusDeviceError::DeviceOutOfRange {
+                bus_size: self.size(),
+                added_range: start_addr..start_addr.overflowing_add(device.size()).0,
+            }
+        })?;
         if range.end > self.size() {
             Err(AddBusDeviceError::DeviceOutOfRange {
                 bus_size: self.size(),
@@ -684,10 +684,10 @@ mod tests {
 
         fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
             Strategy::boxed(prop_oneof![
-                Just(RequestSize::Size1),
-                Just(RequestSize::Size2),
-                Just(RequestSize::Size4),
-                Just(RequestSize::Size8),
+                Just(Self::Size1),
+                Just(Self::Size2),
+                Just(Self::Size4),
+                Just(Self::Size8),
             ])
         }
     }

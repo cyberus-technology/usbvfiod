@@ -31,8 +31,8 @@ impl EventTrb {
     pub fn to_bytes(&self, cycle_bit: bool) -> [u8; 16] {
         // layout the event-type-specific data
         let mut trb_data = match self {
-            EventTrb::CommandCompletionEvent(data) => data.to_bytes(),
-            EventTrb::PortStatusChangeEvent(data) => data.to_bytes(),
+            Self::CommandCompletionEvent(data) => data.to_bytes(),
+            Self::PortStatusChangeEvent(data) => data.to_bytes(),
         };
         // set cycle bit
         trb_data[12] = (trb_data[12] & !0x1) | cycle_bit as u8;
@@ -75,7 +75,7 @@ impl EventTrb {
         command_completion_parameter: u32,
         completion_code: CompletionCode,
         slot_id: u8,
-    ) -> EventTrb {
+    ) -> Self {
         assert_eq!(
             0,
             command_trb_pointer & 0x0f,
@@ -86,7 +86,7 @@ impl EventTrb {
             command_completion_parameter & 0xff000000,
             "command_completion_parameter has to be a 24-bit value."
         );
-        EventTrb::CommandCompletionEvent(CommandCompletionEventTrbData {
+        Self::CommandCompletionEvent(CommandCompletionEventTrbData {
             command_trb_pointer,
             command_completion_parameter,
             completion_code,
@@ -127,13 +127,13 @@ impl EventTrb {
     ///
     /// - `port_id`: The number of the root hub port that generated this
     ///   event.
-    pub fn new_port_status_change_event_trb(port_id: u8) -> EventTrb {
-        EventTrb::PortStatusChangeEvent(PortStatusChangeEventTrbData { port_id })
+    pub const fn new_port_status_change_event_trb(port_id: u8) -> Self {
+        Self::PortStatusChangeEvent(PortStatusChangeEventTrbData { port_id })
     }
 }
 
 impl PortStatusChangeEventTrbData {
-    fn to_bytes(&self) -> [u8; 16] {
+    const fn to_bytes(&self) -> [u8; 16] {
         let mut bytes = [0; 16];
 
         bytes[3] = self.port_id;

@@ -1,3 +1,16 @@
+#![deny(
+    clippy::all,
+    clippy::cargo,
+    clippy::nursery,
+    clippy::must_use_candidate
+)]
+// now allow a few rules which are denied by the above's statement
+#![allow(clippy::multiple_crate_versions)]
+#![deny(missing_debug_implementations)]
+#![deny(rustdoc::all)]
+
+//! usbvfiod
+
 mod cli;
 mod device;
 mod dynamic_bus;
