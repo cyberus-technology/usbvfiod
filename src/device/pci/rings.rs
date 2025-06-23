@@ -4,13 +4,13 @@
 //! The specification is available
 //! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
 
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use super::trb::{CommandTrb, CommandTrbParseError, EventTrb};
 
 use crate::device::{
     bus::{BusDeviceRef, Request, RequestSize},
-    pci::constants::xhci::rings::event_ring::segments_table_entry_offsets::*,
+    pci::constants::xhci::{operational::crcr, rings::event_ring::segments_table_entry_offsets::*},
 };
 
 /// The Event Ring: A unidirectional means of communication, allowing the XHCI
@@ -156,6 +156,16 @@ impl EventRing {
 /// driver to send commands to the XHCI controller.
 #[derive(Debug, Default, Clone)]
 pub struct CommandRing {
+    /// The controller's running state.
+    ///
+    /// This flag should be true when the controller is started (R/S bit ==1)
+    /// and a doorbell[0] write happens.
+    /// On the other hand, the driver can turn the command ring off
+    /// independently of the whole controller by writing the CA (command abort)
+    /// or CS (command stop) bits in the CRCR register.
+    ///
+    /// We currently ignore the value and assume the ring is always running.
+    running: bool,
     /// The Command Ring Dequeue Pointer.
     ///
     /// The driver initializes this pointer with a write to the CRCR register.
@@ -172,23 +182,55 @@ pub struct CommandRing {
 }
 
 impl CommandRing {
-    /// Configure the Command Ring.
+    /// Control the Command Ring.
     ///
-    /// Call this function when the driver writes to the CRCR register (as
-    /// part of setting up the controller).
+    /// Call this function when the driver writes to the CRCR register.
     ///
     /// # Parameters
     ///
-    /// - `dequeue_pointer`: the initial dequeue pointer from the CRCR write
-    /// - `cycle_state`: the initial cycle_state from the CRCR write
-    pub fn configure(&mut self, dequeue_pointer: u64, cycle_state: bool) {
-        assert_eq!(
-            0,
-            dequeue_pointer & 0x3f,
-            "The Command Ring Dequeue Pointer has to be 64-byte-aligned."
-        );
-        self.dequeue_pointer = dequeue_pointer;
-        self.cycle_state = cycle_state;
+    /// - `value`: the value the driver wrote to the CRCR register
+    ///
+    /// # Limitations
+    ///
+    /// The current implementation of this function is expecting to only be
+    /// called for initial setup. Any further writes (e.g., driver shopping the
+    /// command ring because a command has timed out) are currently not handled
+    /// properly.
+    pub fn control(&mut self, value: u64) {
+        if self.running {
+            match value {
+                abort if abort & crcr::CA != 0 => todo!(),
+                stop if stop & crcr::CS != 0 => todo!(),
+                ignored => {
+                    warn!(
+                        "received useless write to CRCR while running {:#x}",
+                        ignored
+                    )
+                }
+            }
+        } else {
+            self.dequeue_pointer = value & crcr::DEQUEUE_POINTER_MASK;
+            // Update internal consumer cycle state for next TRB fetch.
+            self.cycle_state = value & crcr::RCS != 0;
+            debug!(
+                "configuring command ring with dp={:#x} and cs={}",
+                self.dequeue_pointer, self.cycle_state as u8
+            );
+        }
+    }
+
+    /// Request status of the Command Ring.
+    ///
+    /// Call this function when the driver reads from the CRCR register.
+    ///
+    /// All bits are zero except the CRR bit, which indicates whether the
+    /// command ring is running.
+    pub fn status(&self) -> u64 {
+        if self.running {
+            crcr::CRR
+        } else {
+            0
+        }
     }
 
     /// Try to retrieve a new command from the command ring.
@@ -295,7 +337,7 @@ mod tests {
         // construct memory segment for a ring that can contain 4 TRBs
         let ram = Arc::new(BulkOnlyDevice::new(&[0; 16 * 4]));
         let mut command_ring = CommandRing::default();
-        command_ring.configure(0, true);
+        command_ring.control(0x1);
 
         // the ring is still empty
         let trb = command_ring.next_command_trb(ram.clone());

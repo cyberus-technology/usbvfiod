@@ -291,6 +291,7 @@ pub mod xhci {
             pub const RCS: u64 = 0x1;
             pub const CS: u64 = 0x2;
             pub const CA: u64 = 0x4;
+            pub const CRR: u64 = 0x8;
         }
 
         pub mod portsc {
