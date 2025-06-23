@@ -193,7 +193,7 @@ pub enum CompletionCode {
 pub enum CommandTrb {
     EnableSlotCommand,
     DisableSlotCommand,
-    AddressDeviceCommand,
+    AddressDeviceCommand(AddressDeviceCommandTrbData),
     ConfigureEndpointCommand,
     EvaluateContextCommand,
     ResetEndpointCommand,
@@ -218,7 +218,7 @@ impl TryFrom<&[u8]> for CommandTrb {
             6 => CommandTrb::Link(LinkTrbData::parse(bytes)?),
             9 => CommandTrb::EnableSlotCommand,
             10 => CommandTrb::DisableSlotCommand,
-            11 => CommandTrb::AddressDeviceCommand,
+            11 => CommandTrb::AddressDeviceCommand(AddressDeviceCommandTrbData::parse(bytes)?),
             12 => CommandTrb::ConfigureEndpointCommand,
             13 => CommandTrb::EvaluateContextCommand,
             14 => CommandTrb::ResetEndpointCommand,
@@ -307,6 +307,69 @@ impl LinkTrbData {
         Ok(LinkTrbData {
             ring_segment_pointer,
             toggle_cycle,
+        })
+    }
+
+    fn parse_transfer(trb_bytes: &[u8]) -> Result<Self, TransferTrbParseError> {
+        let rsp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
+        let ring_segment_pointer = u64::from_le_bytes(rsp_bytes);
+        let toggle_cycle = trb_bytes[12] & 0x2 != 0;
+
+        // the lowest for bit of the pointer are RsvdZ to ensure 16-byte
+        // alignment.
+        if ring_segment_pointer & 0xf != 0 {
+            return Err(TransferTrbParseError::RsvdZViolation);
+        }
+
+        Ok(LinkTrbData {
+            ring_segment_pointer,
+            toggle_cycle,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct AddressDeviceCommandTrbData {
+    /// The address of the input context.
+    pub input_context_pointer: u64,
+    /// The flag that indicates whether to send a USB SET_ADDRESS request to the
+    /// device.
+    pub block_set_address_request: bool,
+    /// The associated Slot ID
+    pub slot_id: u8,
+}
+
+impl AddressDeviceCommandTrbData {
+    /// Parse data of a Address Device Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function. Thus, we make
+    /// the following assumptions to avoid duplicate checks:
+    ///
+    /// - `value` is a slice of size 16.
+    /// - The TRB type (upper 6 bit of byte 13) indicate a link TRB.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects all RsvdZ
+    /// fields.
+    fn parse(trb_bytes: &[u8]) -> Result<Self, CommandTrbParseError> {
+        let icp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
+        let input_context_pointer = u64::from_le_bytes(icp_bytes);
+        let toggle_cycle = trb_bytes[12] & 0x2 != 0;
+
+        // the lowest for bit of the pointer are RsvdZ to ensure 16-byte
+        // alignment.
+        if input_context_pointer & 0xf != 0 {
+            return Err(CommandTrbParseError::RsvdZViolation);
+        }
+
+        let block_set_address_request = trb_bytes[13] & 0x2 != 0;
+        let slot_id = trb_bytes[15];
+
+        Ok(AddressDeviceCommandTrbData {
+            input_context_pointer,
+            block_set_address_request,
+            slot_id,
         })
     }
 }
