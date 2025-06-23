@@ -195,10 +195,15 @@ impl CommandRing {
     pub fn next_command_trb(
         &mut self,
         dma_bus: BusDeviceRef,
-    ) -> Option<Result<CommandTrb, CommandTrbParseError>> {
+    ) -> Option<(u64, Result<CommandTrb, CommandTrbParseError>)> {
         // retrieve TRB at current dequeue_pointer
         let mut trb_buffer = [0; 16];
         dma_bus.read_bulk(self.dequeue_pointer, &mut trb_buffer);
+
+        debug!(
+            "interpreting TRB at dequeue pointer; cycle state = {}, TRB = {:?}",
+            self.cycle_state as u8, trb_buffer
+        );
 
         // check if the TRB is fresh
         let cycle_bit = trb_buffer[12] & 0x1 != 0;
@@ -222,11 +227,13 @@ impl CommandRing {
             return self.next_command_trb(dma_bus);
         }
 
+        let trb_address = self.dequeue_pointer;
+
         // advance to next TRB
         self.dequeue_pointer += 16;
 
         // return parsed result
-        Some(trb_result)
+        Some((trb_address, trb_result))
     }
 }
 
@@ -305,7 +312,7 @@ mod tests {
 
         // ring abstraction should parse correctly
         let trb = command_ring.next_command_trb(ram.clone());
-        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        if let Some((_, Ok(CommandTrb::NoOpCommand))) = trb {
         } else {
             panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
         }
@@ -326,14 +333,14 @@ mod tests {
 
         // parse first noop
         let trb = command_ring.next_command_trb(ram.clone());
-        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        if let Some((_, Ok(CommandTrb::NoOpCommand))) = trb {
         } else {
             panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
         }
 
         // parse second noop
         let trb = command_ring.next_command_trb(ram.clone());
-        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        if let Some((_, Ok(CommandTrb::NoOpCommand))) = trb {
         } else {
             panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
         }
@@ -367,7 +374,7 @@ mod tests {
 
         // parse refreshed noop
         let trb = command_ring.next_command_trb(ram.clone());
-        if let Some(Ok(CommandTrb::NoOpCommand)) = trb {
+        if let Some((_, Ok(CommandTrb::NoOpCommand))) = trb {
         } else {
             panic!("Expected to parse a NoOpCommand, instead got: {:?}", trb);
         }
