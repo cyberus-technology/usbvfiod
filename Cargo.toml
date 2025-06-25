@@ -1,0 +1,7 @@
+[package]
+authors = ["Cyberus Technology GmbH"]
+description = "A vfio-user server for USB pass-through."
+name = "usbvfiod"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
