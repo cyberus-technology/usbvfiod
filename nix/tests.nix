@@ -149,7 +149,7 @@ in
         # get USB Bus-Exposed Device
         vendor=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_VENDOR_ID=\\K\\w+')
         model=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_MODEL_ID=\\K\\w+')
-        bus_usb_device=$(lsusb | grep "$vendor:$model")
+        bus_usb_device=$(lsusb -d "$vendor:$model")
         echo "$bus_usb_device" > /tmp/bus_usb_device
       """)
 
@@ -164,7 +164,6 @@ in
             ls -l $dev
           else
             echo "No USB device found!" >&2
-            echo "No USB device found!"
             exit 1
           fi
 
@@ -173,7 +172,7 @@ in
             usb_dev=$(cat /tmp/bus_usb_device)
             echo "$usb_dev"
             bus=$(echo "$usb_dev" | awk '{print $2}')
-            dev_num=$(echo "$usb_dev" | awk '{print $4}' | sed 's/://')
+            dev_num=$(awk '{ gsub(":",""); print $4 }' <<<"$usb_dev")
             path="/dev/bus/usb/$bus/$dev_num"
             echo "Character device path: $path"
             echo "--- USB Bus-Exposed Device Permissions ---"
@@ -181,7 +180,7 @@ in
           else
             echo "Character device path: <not found>"
           fi        
-        } > /tmp/test_report.txt
+        } &> /tmp/test_report.txt
       """)
       
       print("-------- USB Device Information Report --------")
