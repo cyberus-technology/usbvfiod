@@ -22,7 +22,7 @@ use super::{
     device_slots::DeviceSlotManager,
     registers::PortscRegister,
     rings::{CommandRing, EventRing},
-    trb::CommandTrb,
+    trb::{AddressDeviceCommandTrbData, CommandTrb},
 };
 
 /// The emulation of a XHCI controller.
@@ -181,8 +181,13 @@ impl XhciController {
             }
             CommandTrb::DisableSlotCommand => todo!(),
             CommandTrb::AddressDeviceCommand(data) => {
-                debug!("Handling Address Device Command (input context pointer: {:#x}, BSR: {}, slot id: {})", data.input_context_pointer, data.block_set_address_request, data.slot_id);
-                todo!();
+                self.handle_address_device(&data);
+                EventTrb::new_command_completion_event_trb(
+                    address,
+                    0,
+                    CompletionCode::Success,
+                    data.slot_id,
+                )
             }
             CommandTrb::ConfigureEndpointCommand => todo!(),
             CommandTrb::EvaluateContextCommand => todo!(),
@@ -211,6 +216,14 @@ impl XhciController {
                 (CompletionCode::Success, slot_id as u8)
             },
         )
+    }
+
+    fn handle_address_device(&self, data: &AddressDeviceCommandTrbData) {
+        if data.block_set_address_request {
+            panic!("encountered Address Device Command with BSR set");
+        }
+        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+        device_context.initialize(data.input_context_pointer);
     }
 }
 
