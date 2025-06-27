@@ -4,6 +4,7 @@
 //! The specification is available
 //! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
 
+use thiserror::Error;
 use tracing::{debug, trace, warn};
 
 use super::{
@@ -13,9 +14,12 @@ use super::{
 
 use crate::device::{
     bus::{BusDeviceRef, Request, RequestSize},
-    pci::constants::xhci::{
-        operational::crcr,
-        rings::{event_ring::segments_table_entry_offsets::*, TRB_SIZE},
+    pci::{
+        constants::xhci::{
+            operational::crcr,
+            rings::{event_ring::segments_table_entry_offsets::*, trb_types, TRB_SIZE},
+        },
+        request,
     },
 };
 
@@ -367,7 +371,7 @@ impl TransferRing {
     }
 
     // TODO rewrite this function to work like the CommandRing::next_command_trb
-    pub fn next_transfer_trb(&mut self) -> Option<(u64, Result<TransferTrb, TrbParseError>)> {
+    pub fn next_transfer_trb(&self) -> Option<(u64, Result<TransferTrb, TrbParseError>)> {
         let (mut dequeue_pointer, mut cycle_state) =
             self.endpoint_context.get_dequeue_pointer_and_cycle_state();
         // retrieve TRB at current dequeue_pointer
@@ -417,6 +421,130 @@ impl TransferRing {
         // return parsed result
         Some((trb_address, trb_result))
     }
+
+    /// take setup+data+status TRBs or setup+status TRBs from transfer ring
+    /// and extract the request information
+    pub fn next_request(&self) -> Option<Result<(u64, request::Request), RequestParseError>> {
+        let first_trb = self.next_transfer_trb();
+        let setup_trb_data = match first_trb {
+            None => {
+                // no TRB available -> no request available
+                return None;
+            }
+            Some((_, Err(err))) => {
+                // got a erroneous TRB, pass error on
+                return Some(Err(RequestParseError::TrbParseError(err)));
+            }
+            Some((_, Ok(TransferTrb::SetupStage(data)))) => {
+                // happy case, we got a Setup Stage TRB
+                data
+            }
+            Some((_, Ok(trb))) => {
+                // got some TRB, but not a Setup Stage
+                return Some(Err(RequestParseError::UnexpectedTrbType(
+                    vec![trb_types::SETUP_STAGE],
+                    trb,
+                )));
+            }
+        };
+
+        let second_trb = self.next_transfer_trb();
+        let data_trb_or_address = match second_trb {
+            None => {
+                // there should follow either Data or Status Stage
+                return Some(Err(RequestParseError::MissingTrb));
+            }
+            Some((_, Err(err))) => {
+                // got a erroneous TRB, pass error on
+                return Some(Err(RequestParseError::TrbParseError(err)));
+            }
+            Some((_, Ok(TransferTrb::DataStage(data)))) => {
+                // happy case, we got a Data Stage TRB
+                Ok(data)
+            }
+            Some((trb_address, Ok(TransferTrb::StatusStage))) => {
+                // happy case, we skipped Data Stage TRB and already got Status
+                // Stage.
+                // we indicate the address of the status stage (required for
+                // Transfer Event)
+                Err(trb_address)
+            }
+            Some((_, Ok(trb))) => {
+                // got some TRB, but neither a Data Stage nor a Status Stage
+                return Some(Err(RequestParseError::UnexpectedTrbType(
+                    vec![trb_types::DATA_STAGE, trb_types::STATUS_STAGE],
+                    trb,
+                )));
+            }
+        };
+
+        let (address, request) = match data_trb_or_address {
+            Ok(data_trb_data) => {
+                // the second TRB was a data stage.
+                // We need to retrieve the third TRB and make sure it is a status
+                // stage.
+                let third_trb = self.next_transfer_trb();
+                let address = match third_trb {
+                    None => {
+                        // there should follow a Status Stage
+                        return Some(Err(RequestParseError::MissingTrb));
+                    }
+                    Some((_, Err(err))) => {
+                        // got a erroneous TRB, pass error on
+                        return Some(Err(RequestParseError::TrbParseError(err)));
+                    }
+                    Some((trb_address, Ok(TransferTrb::StatusStage))) => {
+                        // happy case, we got a Data Stage TRB
+                        trb_address
+                    }
+                    Some((_, Ok(trb))) => {
+                        // got some TRB, but not a Status Stage
+                        return Some(Err(RequestParseError::UnexpectedTrbType(
+                            vec![trb_types::STATUS_STAGE],
+                            trb,
+                        )));
+                    }
+                };
+                // third TRB was Status Stage.
+                // build request with data pointer and return address of third
+                // TRB.
+                let request = request::Request::new_with_data(
+                    setup_trb_data.request_type,
+                    setup_trb_data.request,
+                    setup_trb_data.value,
+                    setup_trb_data.index,
+                    setup_trb_data.length,
+                    data_trb_data.data_pointer,
+                );
+                (address, request)
+            }
+            Err(address) => {
+                // the second TRB was a status stage.
+                // Then, all (two) TRBs were retrieved.
+                // build request and use address of second TRB
+                let request = request::Request::new(
+                    setup_trb_data.request_type,
+                    setup_trb_data.request,
+                    setup_trb_data.value,
+                    setup_trb_data.index,
+                    setup_trb_data.length,
+                );
+                (address, request)
+            }
+        };
+
+        Some(Ok((address, request)))
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum RequestParseError {
+    #[error("Encountered invalid TRB")]
+    TrbParseError(TrbParseError),
+    #[error("Encountered unexpected TRB type. Expected type(s) {0:?}, got TRB {1:?}")]
+    UnexpectedTrbType(Vec<u8>, TransferTrb),
+    #[error("Expected another TRB, but there was none.")]
+    MissingTrb,
 }
 
 #[cfg(test)]
