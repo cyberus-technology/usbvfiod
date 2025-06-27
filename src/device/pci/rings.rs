@@ -6,7 +6,10 @@
 
 use tracing::{debug, trace, warn};
 
-use super::trb::{CommandTrb, EventTrb, TrbParseError};
+use super::{
+    device_slots::EndpointContext,
+    trb::{CommandTrb, EventTrb, TransferTrb, TrbParseError},
+};
 
 use crate::device::{
     bus::{BusDeviceRef, Request, RequestSize},
@@ -344,6 +347,106 @@ impl CommandRing {
 
         // TRB is fresh; try to parse
         let trb_result = CommandTrb::try_from(&trb_buffer[..]);
+
+        Some(trb_result)
+    }
+}
+
+/// Transfer Rings: Unidirectional means of communication, allowing the
+/// driver to send requests over the XHCI controller to device endpoints.
+///
+/// All state lives in guest memory, this struct is merely a wrapper providing
+/// convenient methods to access the rings.
+#[derive(Debug)]
+pub struct TransferRing {
+    /// The context of the endpoint that the ring belongs to.
+    endpoint_context: EndpointContext,
+    /// A reference to guest memory.
+    dma_bus: BusDeviceRef,
+}
+
+impl TransferRing {
+    /// Create a new instance
+    ///
+    /// # Parameters
+    ///
+    /// - `endpoint_context`: the endpoint the rings belongs to.
+    /// - `dma_bus`: a reference to guest memory.
+    pub fn new(endpoint_context: EndpointContext, dma_bus: BusDeviceRef) -> Self {
+        Self {
+            endpoint_context,
+            dma_bus,
+        }
+    }
+
+    /// Try to retrieve a new TRB from a transfer ring.
+    ///
+    /// This function only returns `TransferTrb`s that represent commands that
+    /// are not Link TRBs. Instead, Link TRBs are handled correctly, which is
+    /// the reason why the function might read two TRBs to return a single one.
+    pub fn next_transfer_trb(&mut self) -> Option<(u64, Result<TransferTrb, TrbParseError>)> {
+        let (mut dequeue_pointer, mut cycle_state) =
+            self.endpoint_context.get_dequeue_pointer_and_cycle_state();
+        // retrieve TRB at dequeue pointer and return None if there is no fresh
+        // TRB
+        let first_trb_result = self.next_trb()?;
+        // special handling for Link TRBs
+        let trb_result = if let Ok(TransferTrb::Link(link_data)) = first_trb_result {
+            // encountered Link TRB
+            // update transfer ring status
+            dequeue_pointer = link_data.ring_segment_pointer;
+            if link_data.toggle_cycle {
+                cycle_state = !cycle_state;
+            }
+            self.endpoint_context
+                .set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
+            // lookup first TRB in the new memory segment
+            let second_trb_result = self.next_trb()?;
+            if let Ok(TransferTrb::Link(_)) = second_trb_result {
+                panic!("Link TRB should not follow directly after another Link TRB");
+            }
+            second_trb_result
+        } else {
+            first_trb_result
+        };
+
+        let trb_address = dequeue_pointer;
+
+        // advance to next TRB
+        dequeue_pointer += TRB_SIZE as u64;
+        self.endpoint_context
+            .set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
+
+        // return parsed result
+        Some((trb_address, trb_result))
+    }
+
+    /// Try to retrieve a new TRB from a transfer ring.
+    ///
+    /// If there is a fresh TRB at the dequeue pointer, the function tries to
+    /// parse the transfer TRB and returns the result. If there is a fresh Link
+    /// TRB, this function will return it!
+    fn next_trb(&self) -> Option<Result<TransferTrb, TrbParseError>> {
+        let (dequeue_pointer, cycle_state) =
+            self.endpoint_context.get_dequeue_pointer_and_cycle_state();
+        // retrieve TRB at current dequeue_pointer
+        let mut trb_buffer = vec![0; TRB_SIZE];
+        self.dma_bus.read_bulk(dequeue_pointer, &mut trb_buffer);
+
+        debug!(
+            "interpreting transfer TRB at dequeue pointer; cycle state = {}, TRB = {:?}",
+            cycle_state as u8, trb_buffer
+        );
+
+        // check if the TRB is fresh
+        let cycle_bit = trb_buffer[12] & 0x1 != 0;
+        if cycle_bit != cycle_state {
+            // cycle-bit mismatch: no new TRB available
+            return None;
+        }
+
+        // TRB is fresh; try to parse
+        let trb_result = TransferTrb::try_from(&trb_buffer[..]);
 
         Some(trb_result)
     }
