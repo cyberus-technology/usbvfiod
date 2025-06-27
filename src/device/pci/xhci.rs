@@ -227,6 +227,40 @@ impl XhciController {
             CommandTrb::Link(_) => unreachable!(),
         }
     }
+
+    fn doorbell_device(&mut self, value: u32) {
+        debug!("Ding Dong Device with value {}!", value);
+        // TODO inspect value
+        // currently we assume it is 1, which indicates a request on the control transfer ring
+        assert_eq!(1, value, "currently only implemented doorbell rings that indicate requests on the control transfer ring");
+
+        // check request available
+        let transfer_ring = self
+            .device_slot_manager
+            .get_device_context(1)
+            .get_control_transfer_ring();
+
+        let (address, request) = match transfer_ring.next_request() {
+            None => panic!(
+                "Device doorbell was rang, but there is no request on the control transfer ring"
+            ),
+            Some(Err(err)) => panic!(
+                "Failed to retrieve request from control transfer ring: {:?}",
+                err
+            ),
+            Some(Ok(res)) => res,
+        };
+
+        debug!("got request: {:?}", request);
+        // TODO forward request to device
+
+        // send transfer event
+        let trb =
+            EventTrb::new_transfer_event_trb(address, 0, CompletionCode::Success, false, 1, 1);
+        self.event_ring.enqueue(&trb);
+        self.interrupt_line.interrupt();
+        debug!("sent Transfer Event and signaled interrupt");
+    }
 }
 
 impl PciDevice for Mutex<XhciController> {
@@ -267,6 +301,7 @@ impl PciDevice for Mutex<XhciController> {
                 .update_dequeue_pointer(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::DOORBELL_CONTROLLER => self.lock().unwrap().doorbell_controller(),
+            offset::DOORBELL_DEVICE => self.lock().unwrap().doorbell_device(value as u32),
             addr => {
                 panic!("unknown write {}", addr);
             }
@@ -316,6 +351,7 @@ impl PciDevice for Mutex<XhciController> {
             offset::ERDP => self.lock().unwrap().event_ring.read_dequeue_pointer(),
             offset::ERDP_HI => 0,
             offset::DOORBELL_CONTROLLER => 0, // kernel reads the doorbell after write
+            offset::DOORBELL_DEVICE => 0,
 
             // Everything else is Reserved Zero
             addr => {
