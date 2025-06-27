@@ -7,6 +7,7 @@ pub mod config_space;
 pub mod constants;
 pub mod device_slots;
 pub mod msix_table;
+pub mod real_usb_device;
 pub mod registers;
 pub mod request;
 pub mod rings;

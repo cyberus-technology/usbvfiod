@@ -20,6 +20,7 @@ use crate::device::{
 use super::{
     config_space::BarInfo,
     device_slots::DeviceSlotManager,
+    real_usb_device::RealUsbDevice,
     registers::SimpleRegister,
     rings::{CommandRing, EventRing},
     trb::CommandTrb,
@@ -31,6 +32,9 @@ pub struct XhciController {
     /// A reference to the VM memory to perform DMA on.
     #[allow(unused)]
     dma_bus: BusDeviceRef,
+
+    /// The USB device that we pass through
+    real_device: Option<RealUsbDevice>,
 
     /// The PCI Configuration Space of the controller.
     config_space: ConfigSpace,
@@ -85,6 +89,7 @@ impl XhciController {
                 .mem32_nonprefetchable_bar(3, 2 * 0x1000)
                 .msix_capability(MAX_INTRS.try_into().unwrap(), 3, 0, 3, 0x1000)
                 .config_space(),
+            real_device: None,
             running: false,
             command_ring: CommandRing::new(dma_bus_for_command_ring),
             event_ring: EventRing::new(dma_bus_for_event_ring),
@@ -95,6 +100,12 @@ impl XhciController {
             interrupt_line: Arc::new(DummyInterruptLine::default()),
             portsc: SimpleRegister::new(0x00260203, 0x00260000),
         }
+    }
+
+    /// Add real USB device. We only support one, so the last one is saved.
+    pub fn add_real_device(&mut self, real_device: RealUsbDevice) {
+        debug!("added real device");
+        self.real_device = Some(real_device);
     }
 
     /// Configure the interrupt line for the controller.
@@ -253,6 +264,12 @@ impl XhciController {
 
         debug!("got request: {:?}", request);
         // TODO forward request to device
+        match &self.real_device {
+            Some(real_device) => {
+                real_device.send_control_request(request);
+            }
+            None => {}
+        }
 
         // send transfer event
         let trb =

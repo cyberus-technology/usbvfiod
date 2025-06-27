@@ -1,11 +1,11 @@
 #[derive(Debug)]
 pub struct Request {
-    request_type: u8,
-    request: u8,
-    value: u16,
-    index: u16,
-    length: u16,
-    data: Option<u64>,
+    pub request_type: u8,
+    pub request: u8,
+    pub value: u16,
+    pub index: u16,
+    pub length: u16,
+    pub data: Option<u64>,
 }
 
 impl Request {

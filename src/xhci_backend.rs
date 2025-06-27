@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 use vfio_bindings::bindings::vfio::{
     vfio_region_info, VFIO_PCI_BAR0_REGION_INDEX, VFIO_PCI_BAR1_REGION_INDEX,
@@ -20,7 +20,7 @@ use vfio_user::{IrqInfo, ServerBackend};
 use crate::device::{
     bus::{Request, RequestSize},
     interrupt_line::{DummyInterruptLine, InterruptLine},
-    pci::{traits::PciDevice, xhci::XhciController},
+    pci::{real_usb_device::RealUsbDevice, traits::PciDevice, xhci::XhciController},
 };
 
 use crate::{dynamic_bus::DynamicBus, memory_segment::MemorySegment};
@@ -85,8 +85,11 @@ impl XhciBackend {
 
         debug!("Device configuration: {active_configuration:?}");
 
-        // TODO Actually add the device to the XHCI controller.
-        warn!("Adding devices is not implemented yet.");
+        // Actually add the device to the XHCI controller.
+        self.controller
+            .lock()
+            .unwrap()
+            .add_real_device(RealUsbDevice::new(device));
 
         Ok(())
     }
