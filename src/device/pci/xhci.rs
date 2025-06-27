@@ -297,6 +297,8 @@ impl PciDevice for Mutex<XhciController> {
             offset::DNCTL => 2,
             offset::CRCR => self.lock().unwrap().command_ring.status(),
             offset::CRCR_HI => 0,
+            offset::DCBAAP => self.lock().unwrap().device_slot_manager.get_dcbaap(),
+            offset::DCBAAP_HI => 0,
             offset::PAGESIZE => 0x1, /* 4k Pages */
             offset::CONFIG => self.lock().unwrap().config(),
 

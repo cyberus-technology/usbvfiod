@@ -28,6 +28,10 @@ impl DeviceSlotManager {
         self.dcbaap = dcbaap;
     }
 
+    pub const fn get_dcbaap(&self) -> u64 {
+        self.dcbaap
+    }
+
     pub fn reserve_slot(&mut self) -> Option<usize> {
         let available_slot_id =
             (1..=self.num_slots).find(|slot_id| !self.used_slots.contains(slot_id));
