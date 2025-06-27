@@ -288,8 +288,9 @@ pub struct LinkTrbData {
 impl LinkTrbData {
     /// Parse data of a Link TRB.
     ///
-    /// Only `CommandTrb::try_from` should call this function. Thus, we make
-    /// the following assumptions to avoid duplicate checks:
+    /// Only `CommandTrb::try_from` and `TransferTrb::try_from` should call
+    /// this function. Thus, we make the following assumptions to avoid
+    /// duplicate checks:
     ///
     /// - `value` is a slice of size 16.
     /// - The TRB type (upper 6 bit of byte 13) indicates a link TRB.
@@ -377,6 +378,138 @@ impl AddressDeviceCommandTrbData {
     }
 }
 
+/// Represents a TRB that the driver can place on a transfer ring.
+#[derive(Debug)]
+pub enum TransferTrb {
+    Normal,
+    SetupStage(SetupStageTrbData),
+    DataStage(DataStageTrbData),
+    StatusStage,
+    Isoch,
+    Link(LinkTrbData),
+    EventData,
+    NoOp,
+}
+
+impl TryFrom<&[u8]> for TransferTrb {
+    type Error = TrbParseError;
+
+    /// Try to parse a transfer TRB from a byte slice.
+    ///
+    /// # Limitations
+    ///
+    /// While this function can parse all available Transfer TRB types, it does
+    /// not parse all of them in full detail. If the function returns only the
+    /// enum variant without an associated struct, the parsing for the
+    /// particular command is not yet implemented.
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        let slice_size = bytes.len();
+        if slice_size != 16 {
+            return Err(TrbParseError::IncorrectSliceSize(slice_size));
+        }
+        let trb_type = bytes[13] >> 2;
+        let command_trb = match trb_type {
+            trb_types::NORMAL => Self::Normal,
+            trb_types::SETUP_STAGE => Self::SetupStage(SetupStageTrbData::parse(bytes)?),
+            trb_types::DATA_STAGE => Self::DataStage(DataStageTrbData::parse(bytes)?),
+            trb_types::STATUS_STAGE => Self::StatusStage,
+            trb_types::ISOCH => Self::Isoch,
+            trb_types::LINK => Self::Link(LinkTrbData::parse(bytes)?),
+            trb_types::EVENT_DATA => Self::EventData,
+            trb_types::NO_OP => Self::NoOp,
+            trb_type => return Err(TrbParseError::UnknownTrbType(trb_type)),
+        };
+        Ok(command_trb)
+    }
+}
+
+#[derive(Debug)]
+pub struct SetupStageTrbData {
+    pub request_type: u8,
+    pub request: u8,
+    pub value: u16,
+    pub index: u16,
+    pub length: u16,
+}
+
+impl SetupStageTrbData {
+    /// Parse data of a Setup Stage TRB.
+    ///
+    /// Only `TransferTrb::try_from` should call this function. Thus, we make
+    /// the following assumptions to avoid duplicate checks:
+    ///
+    /// - `value` is a slice of size 16.
+    /// - The TRB type (upper 6 bit of byte 13) indicates a Setup Stage TRB.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects RsvdZ
+    /// fields.
+    fn parse(trb_bytes: &[u8]) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::SETUP_STAGE,
+            trb_type,
+            "SetupStageTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
+            trb_type
+        );
+
+        let request_type = trb_bytes[0];
+        let request = trb_bytes[1];
+        let value = trb_bytes[2] as u16 + ((trb_bytes[3] as u16) << 8);
+        let index = trb_bytes[4] as u16 + ((trb_bytes[5] as u16) << 8);
+        let length = trb_bytes[6] as u16 + ((trb_bytes[7] as u16) << 8);
+
+        Ok(Self {
+            request_type,
+            request,
+            value,
+            index,
+            length,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct DataStageTrbData {
+    pub data_pointer: u64,
+    pub chain: bool,
+}
+
+impl DataStageTrbData {
+    /// Parse data of a Data Stage TRB.
+    ///
+    /// Only `TransferTrb::try_from` should call this function. Thus, we make
+    /// the following assumptions to avoid duplicate checks:
+    ///
+    /// - `value` is a slice of size 16.
+    /// - The TRB type (upper 6 bit of byte 13) indicates a Data Stage TRB.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects RsvdZ
+    /// fields.
+    fn parse(trb_bytes: &[u8]) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::DATA_STAGE,
+            trb_type,
+            "DataStageTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
+            trb_type
+        );
+
+        let dp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
+        let data_pointer = u64::from_le_bytes(dp_bytes);
+
+        let chain = trb_bytes[12] & 0x10 != 0;
+
+        Ok(Self {
+            data_pointer,
+            chain,
+        })
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum TrbParseError {
     #[error("Cannot parse TRB from a slice of {0} bytes. A TRB always has a size of 16 bytes.")]
@@ -414,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_link_trb() {
+    fn test_parse_link_trb_as_command() {
         let trb_bytes = [
             0x80, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x02, 0x18,
             0x00, 0x00,
@@ -499,5 +632,88 @@ mod tests {
             ],
             trb.to_bytes(true),
         )
+    }
+
+    #[test]
+    fn test_parse_link_trb_as_transfer() {
+        let trb_bytes = [
+            0x80, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x02, 0x18,
+            0x00, 0x00,
+        ];
+        let trb_result = TransferTrb::try_from(&trb_bytes[..]);
+        assert!(
+            trb_result.is_ok(),
+            "A valid TRB byte representation should be parsed successfully."
+        );
+        let trb = trb_result.unwrap();
+        if let TransferTrb::Link(link_data) = trb {
+            assert_eq!(
+                0x1122334455667780, link_data.ring_segment_pointer,
+                "link_segment_pointer was parsed incorrectly."
+            );
+            assert!(
+                link_data.toggle_cycle,
+                "toggle_cycle bit was parsed incorrectly."
+            );
+        } else {
+            panic!(
+                "A TRB with TRB type 6 should result in a TransferTrb::Link. Got instead: {:?}",
+                trb
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_setup_stage_trb() {
+        let trb_bytes = [
+            0x11, 0x22, 0x44, 0x33, 0x66, 0x55, 0x88, 0x77, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08,
+            0x00, 0x00,
+        ];
+        let trb_result = TransferTrb::try_from(&trb_bytes[..]);
+        assert!(
+            trb_result.is_ok(),
+            "A valid TRB byte representation should be parsed successfully."
+        );
+        let trb = trb_result.unwrap();
+        if let TransferTrb::SetupStage(data) = trb {
+            assert_eq!(
+                0x11, data.request_type,
+                "request_type was parsed incorrectly."
+            );
+            assert_eq!(0x22, data.request, "request was parsed incorrectly.");
+            assert_eq!(0x3344, data.value, "value was parsed incorrectly.");
+            assert_eq!(0x5566, data.index, "value was parsed incorrectly.");
+            assert_eq!(0x7788, data.length, "value was parsed incorrectly.");
+        } else {
+            panic!(
+                "A TRB with TRB type 2 should result in a TransferTrb::StatusStage. Got instead: {:?}",
+                trb
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_data_stage_trb() {
+        let trb_bytes = [
+            0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c,
+            0x00, 0x00,
+        ];
+        let trb_result = TransferTrb::try_from(&trb_bytes[..]);
+        assert!(
+            trb_result.is_ok(),
+            "A valid TRB byte representation should be parsed successfully."
+        );
+        let trb = trb_result.unwrap();
+        if let TransferTrb::DataStage(data) = trb {
+            assert_eq!(
+                0x1122334455667788, data.data_pointer,
+                "request_type was parsed incorrectly."
+            );
+        } else {
+            panic!(
+                "A TRB with TRB type 3 should result in a TransferTrb::DataStage. Got instead: {:?}",
+                trb
+            );
+        }
     }
 }
