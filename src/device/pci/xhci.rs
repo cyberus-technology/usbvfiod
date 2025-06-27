@@ -13,7 +13,7 @@ use crate::device::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
         constants::xhci::{capability, offset, runtime, MAX_INTRS, MAX_SLOTS, OP_BASE, RUN_BASE},
         traits::PciDevice,
-        trb::EventTrb,
+        trb::{CompletionCode, EventTrb},
     },
 };
 
@@ -172,12 +172,12 @@ impl XhciController {
         }
     }
 
-    fn handle_command(&self, address: u64, cmd: CommandTrb) {
+    fn handle_command(&mut self, address: u64, cmd: CommandTrb) {
         debug!("handling command {:?} at {:#x}", cmd, address);
-        match cmd {
+        let completion_event = match cmd {
             CommandTrb::EnableSlotCommand => {
-                debug!("Handling Enable Slot Command");
-                todo!()
+                let (completion_code, slot_id) = self.handle_enable_slot();
+                EventTrb::new_command_completion_event_trb(address, 0, completion_code, slot_id)
             }
             CommandTrb::DisableSlotCommand => todo!(),
             CommandTrb::AddressDeviceCommand(data) => {
@@ -193,7 +193,24 @@ impl XhciController {
             CommandTrb::ForceHeaderCommand => todo!(),
             CommandTrb::NoOpCommand => todo!(),
             CommandTrb::Link(_) => unreachable!(),
-        }
+        };
+        self.event_ring.enqueue(&completion_event);
+        self.interrupt_line.interrupt();
+    }
+
+    fn handle_enable_slot(&mut self) -> (CompletionCode, u8) {
+        // try to reserve a device slot
+        let reservation = self.device_slot_manager.reserve_slot();
+        reservation.map_or_else(
+            || {
+                debug!("Answering driver that no free slot is available");
+                (CompletionCode::NoSlotsAvailableError, 0)
+            },
+            |slot_id| {
+                debug!("Answering driver to use Slot ID {}", slot_id);
+                (CompletionCode::Success, slot_id as u8)
+            },
+        )
     }
 }
 
