@@ -4,6 +4,8 @@
 
 use crate::device::bus::{BusDeviceRef, Request, RequestSize};
 
+use super::rings::TransferRing;
+
 #[derive(Debug, Clone)]
 pub struct DeviceSlotManager {
     num_slots: usize,
@@ -132,6 +134,17 @@ impl DeviceContext {
     fn get_control_endpoint_context(&self) -> EndpointContext {
         self.get_endpoint_context_internal(1)
     }
+
+    pub fn get_transfer_ring(&self, ep_index: u64, dir: EndpointDirection) -> TransferRing {
+        TransferRing::new(
+            self.get_endpoint_context(ep_index, dir),
+            self.dma_bus.clone(),
+        )
+    }
+
+    pub fn get_control_transfer_ring(&self) -> TransferRing {
+        TransferRing::new(self.get_control_endpoint_context(), self.dma_bus.clone())
+    }
 }
 
 /// XHCI spec 6.2.3
@@ -149,7 +162,7 @@ impl EndpointContext {
     pub fn get_dequeue_pointer_and_cycle_state(&self) -> (u64, bool) {
         let bytes = self
             .dma_bus
-            .read(Request::new(self.address, RequestSize::Size8));
+            .read(Request::new(self.address + 8, RequestSize::Size8));
         let dequeue_pointer = bytes & !0xf;
         let cycle_state = bytes & 0x1 != 0;
         (dequeue_pointer, cycle_state)
@@ -161,7 +174,7 @@ impl EndpointContext {
             "dequeue_pointer has to be aligned to 16 bytes"
         );
         self.dma_bus.write(
-            Request::new(self.address, RequestSize::Size8),
+            Request::new(self.address + 8, RequestSize::Size8),
             dequeue_pointer | cycle_state as u64,
         )
     }
