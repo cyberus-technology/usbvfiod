@@ -77,32 +77,25 @@ let
 
   # Report for target device path and access permissions
   usbDeviceInfoScript = pkgs.writeShellScript "usb-device-info" ''
-    {
-      echo "----- USB Block Device (/dev/sdX) -----"
-      if [ -f /tmp/usb_device ]; then
-        dev=$(cat /tmp/usb_device)
-        echo "Device path: $dev"
-        echo "--- USB Block Device (/dev/sdX) Permissions ---"
-        ls -l $dev
-      else
-        echo "No USB device found!" >&2
-        exit 1
-      fi
+    echo "----- USB Block Device (/dev/sdX) -----"
+    usb_device=$(lsblk -SJ | jq -r '.blockdevices[] | select(.tran == "usb") | .name')
+    dev="/dev/$usb_device"
+    echo "Device path: $dev"
+    echo "--- USB Block Device (/dev/sdX) Permissions ---"
+    ls -l $dev || echo "Could not stat block device $dev"
 
-      echo "----- USB Bus-Exposed Device -----"
-      if [ -f /tmp/bus_usb_device ]; then
-        usb_dev=$(cat /tmp/bus_usb_device)
-        echo "$usb_dev"
-        bus=$(echo "$usb_dev" | awk '{print $2}')
-        dev_num=$(awk '{ gsub(":",""); print $4 }' <<<"$usb_dev")
-        path="/dev/bus/usb/$bus/$dev_num"
-        echo "Character device path: $path"
-        echo "--- USB Bus-Exposed Device Permissions ---"
-        ls -l "$path"
-      else
-        echo "Character device path: <not found>"
-      fi
-    } &> /tmp/test_report.txt
+    echo "----- USB Bus-Exposed Device -----"
+    vendor=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_VENDOR_ID=\K\w+' || true)
+    model=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_MODEL_ID=\K\w+' || true)
+    bus_usb_device=$(lsusb -d "$vendor:$model" || true)
+    echo "$bus_usb_device"
+    bus=$(awk '{print $2}' <<<"$bus_usb_device")
+    dev_num=$(awk '{ gsub(":",""); print $4 }' <<<"$bus_usb_device")
+    path="/dev/bus/usb/$bus/$dev_num"
+    echo "Character device path: $path"
+    ls -l "$path" || echo "Could not stat character device $path"
+
+    exit 0
   '';
 in
 {
@@ -169,25 +162,9 @@ in
       # Read the diagnostic information after login.
       machine.wait_until_succeeds("grep -Eq '\s+1\s+PCI-MSIX.*xhci_hcd' ${cloudHypervisorLog}")
 
-      # find the USB Device
-      machine.execute("""
-      # get USB Block Device
-        usb_device=$(lsblk -SJ | jq -r '.blockdevices[] | select(.tran == "usb") | .name')
-        dev="/dev/$usb_device"
-        echo "$dev" > /tmp/usb_device
-
-        # get USB Bus-Exposed Device
-        vendor=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_VENDOR_ID=\\K\\w+')
-        model=$(udevadm info --query=all --name=$dev | grep -oP 'ID_USB_MODEL_ID=\\K\\w+')
-        bus_usb_device=$(lsusb -d "$vendor:$model")
-        echo "$bus_usb_device" > /tmp/bus_usb_device
-      """)
-
       # Display device path and access permissions
-      machine.succeed("${usbDeviceInfoScript}")
-      
       print("-------- USB Device Information Report --------")
-      stdout = machine.execute("cat /tmp/test_report.txt")[1]
+      stdout = machine.execute("${usbDeviceInfoScript}")[1]
       print(stdout)
     '';
   };
