@@ -203,7 +203,18 @@ impl XhciController {
             CommandTrb::DisableSlotCommand => todo!(),
             CommandTrb::AddressDeviceCommand(data) => {
                 debug!("Handling Address Device Command (input context pointer: {:#x}, BSR: {}, slot id: {})", data.input_context_pointer, data.block_set_address_request, data.slot_id);
-                todo!();
+
+                let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+                device_context.initialize(data.input_context_pointer);
+
+                let completion_event = EventTrb::new_command_completion_event_trb(
+                    address,
+                    0,
+                    CompletionCode::Success,
+                    data.slot_id,
+                );
+                self.event_ring.enqueue(&completion_event);
+                self.interrupt_line.interrupt();
             }
             CommandTrb::ConfigureEndpointCommand => todo!(),
             CommandTrb::EvaluateContextCommand => todo!(),
