@@ -26,7 +26,7 @@ let
         boot.consoleLogLevel = 8;
 
         # Convenience packages for interactive use
-        environment.systemPackages = [ pkgs.pciutils pkgs.usbutils ];
+        environment.systemPackages = with pkgs; [ pciutils usbutils ];
 
         # Add user services that run on automatic login.
         systemd.user.services = {
@@ -74,15 +74,45 @@ let
   usbDiskImage = pkgs.writeText "usb-stick-image.raw" ''
     This is an uninitialized drive.
   '';
+
+  # Report for target device path and access permissions
+  usbDeviceInfoScript = pkgs.writeShellScript "usb-device-info" ''
+    {
+      echo "----- USB Block Device (/dev/sdX) -----"
+      if [ -f /tmp/usb_device ]; then
+        dev=$(cat /tmp/usb_device)
+        echo "Device path: $dev"
+        echo "--- USB Block Device (/dev/sdX) Permissions ---"
+        ls -l $dev
+      else
+        echo "No USB device found!" >&2
+        exit 1
+      fi
+
+      echo "----- USB Bus-Exposed Device -----"
+      if [ -f /tmp/bus_usb_device ]; then
+        usb_dev=$(cat /tmp/bus_usb_device)
+        echo "$usb_dev"
+        bus=$(echo "$usb_dev" | awk '{print $2}')
+        dev_num=$(awk '{ gsub(":",""); print $4 }' <<<"$usb_dev")
+        path="/dev/bus/usb/$bus/$dev_num"
+        echo "Character device path: $path"
+        echo "--- USB Bus-Exposed Device Permissions ---"
+        ls -l "$path"
+      else
+        echo "Character device path: <not found>"
+      fi
+    } &> /tmp/test_report.txt
+  '';
 in
 {
   integration-smoke = pkgs.nixosTest {
     name = "usbvfiod Smoke Test";
 
     nodes.machine = { pkgs, ... }: {
-      environment.systemPackages = [
-        pkgs.usbutils
-        pkgs.jq
+      environment.systemPackages = with pkgs; [
+        jq
+        usbutils
       ];
 
       boot.kernelModules = [ "kvm" ];
@@ -154,34 +184,7 @@ in
       """)
 
       # Display device path and access permissions
-      machine.succeed("""
-        {
-          echo "----- USB Block Device (/dev/sdX) -----"
-          if [ -f /tmp/usb_device ]; then
-            dev=$(cat /tmp/usb_device) 
-            echo "Device path: $dev"
-            echo "--- USB Block Device (/dev/sdX) Permissions ---"
-            ls -l $dev
-          else
-            echo "No USB device found!" >&2
-            exit 1
-          fi
-
-          echo "----- USB Bus-Exposed Device -----"
-          if [ -f /tmp/bus_usb_device ]; then
-            usb_dev=$(cat /tmp/bus_usb_device)
-            echo "$usb_dev"
-            bus=$(echo "$usb_dev" | awk '{print $2}')
-            dev_num=$(awk '{ gsub(":",""); print $4 }' <<<"$usb_dev")
-            path="/dev/bus/usb/$bus/$dev_num"
-            echo "Character device path: $path"
-            echo "--- USB Bus-Exposed Device Permissions ---"
-            ls -l "$path"
-          else
-            echo "Character device path: <not found>"
-          fi        
-        } &> /tmp/test_report.txt
-      """)
+      machine.succeed("${usbDeviceInfoScript}")
       
       print("-------- USB Device Information Report --------")
       stdout = machine.execute("cat /tmp/test_report.txt")[1]
