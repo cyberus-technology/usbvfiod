@@ -13,7 +13,7 @@ use super::constants::xhci::rings::{
 /// Represents a TRB that the XHCI controller can place on the event ring.
 #[derive(Debug)]
 pub enum EventTrb {
-    //TransferEvent,
+    TransferEvent(TransferEventTrbData),
     CommandCompletionEvent(CommandCompletionEventTrbData),
     PortStatusChangeEvent(PortStatusChangeEventTrbData),
     //BandwidthRequestEvent,
@@ -36,6 +36,7 @@ impl EventTrb {
     pub fn to_bytes(&self, cycle_bit: bool) -> [u8; 16] {
         // layout the event-type-specific data
         let mut trb_data = match self {
+            Self::TransferEvent(data) => data.to_bytes(),
             Self::CommandCompletionEvent(data) => data.to_bytes(),
             Self::PortStatusChangeEvent(data) => data.to_bytes(),
         };
@@ -146,6 +147,59 @@ impl PortStatusChangeEventTrbData {
         bytes[13] = PORT_STATUS_CHANGE_EVENT << 2;
 
         bytes
+    }
+}
+
+#[derive(Debug)]
+pub struct TransferEventTrbData {
+    trb_pointer: u64,
+    trb_transfer_length: u32,
+    completion_code: CompletionCode,
+    event_data: bool,
+    endpoint_id: u8,
+    slot_id: u8,
+}
+
+impl EventTrb {
+    /// Create a new Transfer Event TRB.
+    ///
+    /// The XHCI spec describes this structure in Section 6.4.2.1.
+    ///
+    /// # Parameters
+    ///
+    /// TODO
+    pub fn new_transfer_event_trb(
+        trb_pointer: u64,
+        trb_transfer_length: u32,
+        completion_code: CompletionCode,
+        event_data: bool,
+        endpoint_id: u8,
+        slot_id: u8,
+    ) -> EventTrb {
+        EventTrb::TransferEvent(TransferEventTrbData {
+            trb_pointer,
+            trb_transfer_length,
+            completion_code,
+            event_data,
+            endpoint_id,
+            slot_id,
+        })
+    }
+}
+
+impl TransferEventTrbData {
+    fn to_bytes(&self) -> [u8; 16] {
+        let mut trb = [0; 16];
+
+        trb[0..8].copy_from_slice(&self.trb_pointer.to_le_bytes());
+        trb[8..11].copy_from_slice(&self.trb_transfer_length.to_le_bytes()[0..3]);
+        trb[11] = self.completion_code as u8;
+        trb[12] = (self.event_data as u8) << 2;
+        trb[13] = TRANSFER_EVENT << 2;
+        trb[14] = self.endpoint_id;
+        trb[15] = self.slot_id;
+
+        trb
     }
 }
 
@@ -373,6 +427,118 @@ impl AddressDeviceCommandTrbData {
             input_context_pointer,
             block_set_address_request,
             slot_id,
+        })
+    }
+}
+
+/// Represents a TRB that the driver can place on a transfer ring.
+#[derive(Debug)]
+pub enum TransferTrb {
+    Normal,
+    SetupStage(SetupStageTrbData),
+    DataStage(DataStageTrbData),
+    StatusStage,
+    Isoch,
+    Link(LinkTrbData),
+    EventData,
+    NoOp,
+}
+
+impl TryFrom<&[u8]> for TransferTrb {
+    type Error = TrbParseError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        let slice_size = bytes.len();
+        if slice_size != 16 {
+            return Err(TrbParseError::IncorrectSliceSize(slice_size));
+        }
+        let trb_type = bytes[13] >> 2;
+        let command_trb = match trb_type {
+            1 => TransferTrb::Normal,
+            2 => TransferTrb::SetupStage(SetupStageTrbData::parse(bytes)?),
+            3 => TransferTrb::DataStage(DataStageTrbData::parse(bytes)?),
+            4 => TransferTrb::StatusStage,
+            5 => TransferTrb::Isoch,
+            6 => TransferTrb::Link(LinkTrbData::parse(bytes)?),
+            7 => TransferTrb::EventData,
+            8 => TransferTrb::NoOp,
+            trb_type => return Err(TrbParseError::UnknownTrbType(trb_type)),
+        };
+        Ok(command_trb)
+    }
+}
+
+#[derive(Debug)]
+pub struct SetupStageTrbData {
+    pub request_type: u8,
+    pub request: u8,
+    pub value: u16,
+    pub index: u16,
+    pub length: u16,
+    pub chain: bool,
+}
+
+impl SetupStageTrbData {
+    /// Parse data of a Setup Stage TRB.
+    ///
+    /// Only `TransferTrb::try_from` should call this function. Thus, we make
+    /// the following assumptions to avoid duplicate checks:
+    ///
+    /// - `value` is a slice of size 16.
+    /// - The TRB type (upper 6 bit of byte 13) indicates a Data Stage TRB.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects RsvdZ
+    /// fields.
+    fn parse(trb_bytes: &[u8]) -> Result<Self, TrbParseError> {
+        let request_type = trb_bytes[0];
+        let request = trb_bytes[1];
+        let value = trb_bytes[2] as u16 + ((trb_bytes[3] as u16) << 8);
+        let index = trb_bytes[4] as u16 + ((trb_bytes[5] as u16) << 8);
+        let length = trb_bytes[6] as u16 + ((trb_bytes[7] as u16) << 8);
+        let chain = trb_bytes[12] & 0x1 != 0;
+
+        Ok(SetupStageTrbData {
+            request_type,
+            request,
+            value,
+            index,
+            length,
+            chain,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct DataStageTrbData {
+    pub data_pointer: u64,
+    pub chain: bool,
+}
+
+impl DataStageTrbData {
+    /// Parse data of a Data Stage TRB.
+    ///
+    /// Only `TransferTrb::try_from` should call this function. Thus, we make
+    /// the following assumptions to avoid duplicate checks:
+    ///
+    /// - `value` is a slice of size 16.
+    /// - The TRB type (upper 6 bit of byte 13) indicates a Data Stage TRB.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects RsvdZ
+    /// fields.
+    fn parse(trb_bytes: &[u8]) -> Result<Self, TrbParseError> {
+        let dp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
+        let data_pointer = u64::from_le_bytes(dp_bytes);
+        let toggle_cycle = trb_bytes[12] & 0x2 != 0;
+
+        let chain = trb_bytes[12] & 0x1 != 0;
+
+        Ok(DataStageTrbData {
+            data_pointer,
+            chain,
         })
     }
 }

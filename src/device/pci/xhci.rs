@@ -11,17 +11,17 @@ use crate::device::{
     interrupt_line::{DummyInterruptLine, InterruptLine},
     pci::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
-        constants::xhci::{
-            capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS, OP_BASE,
-            RUN_BASE,
-        },
+        constants::xhci::{capability, offset, runtime, MAX_INTRS, MAX_SLOTS, OP_BASE, RUN_BASE},
         traits::PciDevice,
-        trb::EventTrb,
+        trb::{CompletionCode, EventTrb},
     },
 };
 
 use super::{
     config_space::BarInfo,
+    device_slots::DeviceSlotManager,
+    real_usb_device::RealUsbDevice,
+    registers::SimpleRegister,
     rings::{CommandRing, EventRing},
     trb::CommandTrb,
 };
@@ -32,6 +32,9 @@ pub struct XhciController {
     /// A reference to the VM memory to perform DMA on.
     #[allow(unused)]
     dma_bus: BusDeviceRef,
+
+    /// The USB device that we pass through
+    real_device: Option<RealUsbDevice>,
 
     /// The PCI Configuration Space of the controller.
     config_space: ConfigSpace,
@@ -48,9 +51,8 @@ pub struct XhciController {
     /// Configured device slots.
     slots: Vec<()>,
 
-    /// Device Context Array
-    /// TODO: currently just the raw pointer configured by the OS
-    device_contexts: Vec<u64>,
+    /// Device Slot Management
+    device_slot_manager: DeviceSlotManager,
 
     /// Interrupt management register
     interrupt_management: u64,
@@ -60,6 +62,9 @@ pub struct XhciController {
 
     /// The interrupt line triggered to signal device events.
     interrupt_line: Arc<dyn InterruptLine>,
+
+    /// State of the PORTSC register
+    portsc: SimpleRegister,
 }
 
 impl XhciController {
@@ -73,6 +78,7 @@ impl XhciController {
 
         let dma_bus_for_command_ring = dma_bus.clone();
         let dma_bus_for_event_ring = dma_bus.clone();
+        let dma_bus_for_device_slot_manager = dma_bus.clone();
 
         Self {
             dma_bus,
@@ -83,15 +89,23 @@ impl XhciController {
                 .mem32_nonprefetchable_bar(3, 2 * 0x1000)
                 .msix_capability(MAX_INTRS.try_into().unwrap(), 3, 0, 3, 0x1000)
                 .config_space(),
+            real_device: None,
             running: false,
             command_ring: CommandRing::new(dma_bus_for_command_ring),
             event_ring: EventRing::new(dma_bus_for_event_ring),
             slots: vec![],
-            device_contexts: vec![],
+            device_slot_manager: DeviceSlotManager::new(1, dma_bus_for_device_slot_manager),
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
+            portsc: SimpleRegister::new(0x00260203, 0x00260000),
         }
+    }
+
+    /// Add real USB device. We only support one, so the last one is saved.
+    pub fn add_real_device(&mut self, real_device: RealUsbDevice) {
+        debug!("added real device");
+        self.real_device = Some(real_device);
     }
 
     /// Configure the interrupt line for the controller.
@@ -104,7 +118,7 @@ impl XhciController {
     /// Obtain the current host controller status as defined for the `USBSTS` register.
     #[must_use]
     pub fn status(&self) -> u64 {
-        !u64::from(self.running) & 0x1u64
+        !u64::from(self.running) & 0x1u64 | 0x8 | 0x10
     }
 
     /// Obtain the current host controller configuration as defined for the `CONFIG` register.
@@ -128,8 +142,8 @@ impl XhciController {
             "configuring device contexts from pointer {:#x}",
             device_context_base_array_ptr
         );
-        self.device_contexts.clear();
-        self.device_contexts.push(device_context_base_array_ptr);
+        self.device_slot_manager
+            .set_dcbaap(device_context_base_array_ptr);
     }
 
     /// Start/Stop controller operation
@@ -169,17 +183,49 @@ impl XhciController {
         }
     }
 
-    fn handle_command(&self, address: u64, cmd: CommandTrb) {
+    fn handle_command(&mut self, address: u64, cmd: CommandTrb) {
         debug!("handling command {:?} at {:#x}", cmd, address);
         match cmd {
             CommandTrb::EnableSlotCommand => {
                 debug!("Handling Enable Slot Command");
-                todo!()
+                // try to reserve a device slot
+                let reservation = self.device_slot_manager.reserve_slot();
+                let completion_event = if let Some(slot_id) = reservation {
+                    debug!("Answering driver to use Slot ID {}", slot_id);
+                    EventTrb::new_command_completion_event_trb(
+                        address,
+                        0,
+                        CompletionCode::Success,
+                        slot_id as u8,
+                    )
+                } else {
+                    // no free slot
+                    debug!("Answering driver that no free slot is available");
+                    EventTrb::new_command_completion_event_trb(
+                        address,
+                        0,
+                        CompletionCode::NoSlotsAvailableError,
+                        0,
+                    )
+                };
+                self.event_ring.enqueue(&completion_event);
+                self.interrupt_line.interrupt();
             }
             CommandTrb::DisableSlotCommand => todo!(),
             CommandTrb::AddressDeviceCommand(data) => {
                 debug!("Handling Address Device Command (input context pointer: {:#x}, BSR: {}, slot id: {})", data.input_context_pointer, data.block_set_address_request, data.slot_id);
-                todo!();
+
+                let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+                device_context.initialize(data.input_context_pointer);
+
+                let completion_event = EventTrb::new_command_completion_event_trb(
+                    address,
+                    0,
+                    CompletionCode::Success,
+                    data.slot_id,
+                );
+                self.event_ring.enqueue(&completion_event);
+                self.interrupt_line.interrupt();
             }
             CommandTrb::ConfigureEndpointCommand => todo!(),
             CommandTrb::EvaluateContextCommand => todo!(),
@@ -191,6 +237,46 @@ impl XhciController {
             CommandTrb::NoOpCommand => todo!(),
             CommandTrb::Link(_) => unreachable!(),
         }
+    }
+
+    fn doorbell_device(&mut self, value: u32) {
+        debug!("Ding Dong Device with value {}!", value);
+        // TODO inspect value
+        // currently we assume it is 1, which indicates a request on the control transfer ring
+        assert_eq!(1, value, "currently only implemented doorbell rings that indicate requests on the control transfer ring");
+
+        // check request available
+        let transfer_ring = self
+            .device_slot_manager
+            .get_device_context(1)
+            .get_control_transfer_ring();
+
+        let (address, request) = match transfer_ring.next_request() {
+            None => panic!(
+                "Device doorbell was rang, but there is no request on the control transfer ring"
+            ),
+            Some(Err(err)) => panic!(
+                "Failed to retrieve request from control transfer ring: {:?}",
+                err
+            ),
+            Some(Ok(res)) => res,
+        };
+
+        debug!("got request: {:?}", request);
+        // TODO forward request to device
+        match &self.real_device {
+            Some(real_device) => {
+                real_device.send_control_request(request);
+            }
+            None => {}
+        }
+
+        // send transfer event
+        let trb =
+            EventTrb::new_transfer_event_trb(address, 0, CompletionCode::Success, false, 1, 1);
+        self.event_ring.enqueue(&trb);
+        self.interrupt_line.interrupt();
+        debug!("sent Transfer Event and signaled interrupt");
     }
 }
 
@@ -216,12 +302,8 @@ impl PciDevice for Mutex<XhciController> {
             offset::DCBAAP => self.lock().unwrap().configure_device_contexts(value),
             offset::DCBAAP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::CONFIG => self.lock().unwrap().enable_slots(value),
-
-            offset::PORTSC => assert_eq!(
-                value & !portsc::WAKE_ON_EVENTS,
-                portsc::DEFAULT,
-                "port reconfiguration not yet supported"
-            ),
+            offset::USBSTS => {}
+            offset::PORTSC => self.lock().unwrap().portsc.write(value),
 
             // xHC Runtime Registers
             offset::IMAN => self.lock().unwrap().interrupt_management = value,
@@ -236,7 +318,10 @@ impl PciDevice for Mutex<XhciController> {
                 .update_dequeue_pointer(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::DOORBELL_CONTROLLER => self.lock().unwrap().doorbell_controller(),
-            _ => todo!(),
+            offset::DOORBELL_DEVICE => self.lock().unwrap().doorbell_device(value as u32),
+            addr => {
+                panic!("unknown write {}", addr);
+            }
         }
     }
 
@@ -266,10 +351,12 @@ impl PciDevice for Mutex<XhciController> {
             offset::DNCTL => 2,
             offset::CRCR => self.lock().unwrap().command_ring.status(),
             offset::CRCR_HI => 0,
+            offset::DCBAAP => self.lock().unwrap().device_slot_manager.get_dcbaap(),
+            offset::DCBAAP_HI => 0,
             offset::PAGESIZE => 0x1, /* 4k Pages */
             offset::CONFIG => self.lock().unwrap().config(),
 
-            offset::PORTSC => portsc::DEFAULT,
+            offset::PORTSC => self.lock().unwrap().portsc.read(),
             offset::PORTLI => 0,
 
             // xHC Runtime Registers
@@ -281,9 +368,12 @@ impl PciDevice for Mutex<XhciController> {
             offset::ERDP => self.lock().unwrap().event_ring.read_dequeue_pointer(),
             offset::ERDP_HI => 0,
             offset::DOORBELL_CONTROLLER => 0, // kernel reads the doorbell after write
+            offset::DOORBELL_DEVICE => 0,
 
             // Everything else is Reserved Zero
-            _ => todo!(),
+            addr => {
+                panic!("unknown read {}", addr);
+            }
         }
     }
 
