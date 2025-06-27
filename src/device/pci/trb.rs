@@ -13,7 +13,7 @@ use super::constants::xhci::rings::{
 /// Represents a TRB that the XHCI controller can place on the event ring.
 #[derive(Debug)]
 pub enum EventTrb {
-    //TransferEvent,
+    TransferEvent(TransferEventTrbData),
     CommandCompletionEvent(CommandCompletionEventTrbData),
     PortStatusChangeEvent(PortStatusChangeEventTrbData),
     //BandwidthRequestEvent,
@@ -36,6 +36,7 @@ impl EventTrb {
     pub fn to_bytes(&self, cycle_bit: bool) -> [u8; 16] {
         // layout the event-type-specific data
         let mut trb_data = match self {
+            Self::TransferEvent(data) => data.to_bytes(),
             Self::CommandCompletionEvent(data) => data.to_bytes(),
             Self::PortStatusChangeEvent(data) => data.to_bytes(),
         };
@@ -146,6 +147,59 @@ impl PortStatusChangeEventTrbData {
         bytes[13] = PORT_STATUS_CHANGE_EVENT << 2;
 
         bytes
+    }
+}
+
+#[derive(Debug)]
+pub struct TransferEventTrbData {
+    trb_pointer: u64,
+    trb_transfer_length: u32,
+    completion_code: CompletionCode,
+    event_data: bool,
+    endpoint_id: u8,
+    slot_id: u8,
+}
+
+impl EventTrb {
+    /// Create a new Transfer Event TRB.
+    ///
+    /// The XHCI spec describes this structure in Section 6.4.2.1.
+    ///
+    /// # Parameters
+    ///
+    /// TODO
+    pub fn new_transfer_event_trb(
+        trb_pointer: u64,
+        trb_transfer_length: u32,
+        completion_code: CompletionCode,
+        event_data: bool,
+        endpoint_id: u8,
+        slot_id: u8,
+    ) -> EventTrb {
+        EventTrb::TransferEvent(TransferEventTrbData {
+            trb_pointer,
+            trb_transfer_length,
+            completion_code,
+            event_data,
+            endpoint_id,
+            slot_id,
+        })
+    }
+}
+
+impl TransferEventTrbData {
+    fn to_bytes(&self) -> [u8; 16] {
+        let mut trb = [0; 16];
+
+        trb[0..8].copy_from_slice(&self.trb_pointer.to_le_bytes());
+        trb[8..11].copy_from_slice(&self.trb_transfer_length.to_le_bytes()[0..3]);
+        trb[11] = self.completion_code as u8;
+        trb[12] = (self.event_data as u8) << 2;
+        trb[13] = TRANSFER_EVENT << 2;
+        trb[14] = self.endpoint_id;
+        trb[15] = self.slot_id;
+
+        trb
     }
 }
 
