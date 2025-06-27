@@ -106,7 +106,7 @@ impl XhciController {
     /// Obtain the current host controller status as defined for the `USBSTS` register.
     #[must_use]
     pub fn status(&self) -> u64 {
-        !u64::from(self.running) & 0x1u64
+        !u64::from(self.running) & 0x1u64 | 0x8 | 0x10
     }
 
     /// Obtain the current host controller configuration as defined for the `CONFIG` register.
@@ -218,7 +218,8 @@ impl PciDevice for Mutex<XhciController> {
             offset::DCBAAP => self.lock().unwrap().configure_device_contexts(value),
             offset::DCBAAP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::CONFIG => self.lock().unwrap().enable_slots(value),
-
+            // USBSTS writes occur but we can ignore them (to get a device enumerated)
+            offset::USBSTS => {}
             offset::PORTSC => self.lock().unwrap().portsc.write(value),
 
             // xHC Runtime Registers
