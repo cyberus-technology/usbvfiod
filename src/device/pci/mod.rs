@@ -11,4 +11,5 @@ pub mod registers;
 pub mod rings;
 pub mod traits;
 pub mod trb;
+pub mod usbrequest;
 pub mod xhci;
