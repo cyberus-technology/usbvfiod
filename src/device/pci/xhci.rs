@@ -19,6 +19,7 @@ use crate::device::{
 
 use super::{
     config_space::BarInfo,
+    device_slots::DeviceSlotManager,
     registers::SimpleRegister,
     rings::{CommandRing, EventRing},
     trb::CommandTrb,
@@ -46,9 +47,8 @@ pub struct XhciController {
     /// Configured device slots.
     slots: Vec<()>,
 
-    /// Device Context Array
-    /// TODO: currently just the raw pointer configured by the OS
-    device_contexts: Vec<u64>,
+    /// Device Slot Management
+    device_slot_manager: DeviceSlotManager,
 
     /// Interrupt management register
     interrupt_management: u64,
@@ -74,6 +74,7 @@ impl XhciController {
 
         let dma_bus_for_command_ring = dma_bus.clone();
         let dma_bus_for_event_ring = dma_bus.clone();
+        let dma_bus_for_device_slot_manager = dma_bus.clone();
 
         Self {
             dma_bus,
@@ -88,7 +89,7 @@ impl XhciController {
             command_ring: CommandRing::new(dma_bus_for_command_ring),
             event_ring: EventRing::new(dma_bus_for_event_ring),
             slots: vec![],
-            device_contexts: vec![],
+            device_slot_manager: DeviceSlotManager::new(1, dma_bus_for_device_slot_manager),
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
@@ -130,8 +131,8 @@ impl XhciController {
             "configuring device contexts from pointer {:#x}",
             device_context_base_array_ptr
         );
-        self.device_contexts.clear();
-        self.device_contexts.push(device_context_base_array_ptr);
+        self.device_slot_manager
+            .set_dcbaap(device_context_base_array_ptr);
     }
 
     /// Start/Stop controller operation
