@@ -6,7 +6,10 @@
 
 use tracing::{debug, trace, warn};
 
-use super::trb::{CommandTrb, EventTrb, TrbParseError};
+use super::{
+    device_slots::EndpointContext,
+    trb::{CommandTrb, EventTrb, TransferTrb, TrbParseError},
+};
 
 use crate::device::{
     bus::{BusDeviceRef, Request, RequestSize},
@@ -346,6 +349,73 @@ impl CommandRing {
         let trb_result = CommandTrb::try_from(&trb_buffer[..]);
 
         Some(trb_result)
+    }
+}
+
+#[derive(Debug)]
+pub struct TransferRing {
+    endpoint_context: EndpointContext,
+    dma_bus: BusDeviceRef,
+}
+
+impl TransferRing {
+    pub fn new(endpoint_context: EndpointContext, dma_bus: BusDeviceRef) -> Self {
+        Self {
+            endpoint_context,
+            dma_bus,
+        }
+    }
+
+    // TODO rewrite this function to work like the CommandRing::next_command_trb
+    pub fn next_transfer_trb(&mut self) -> Option<(u64, Result<TransferTrb, TrbParseError>)> {
+        let (mut dequeue_pointer, mut cycle_state) =
+            self.endpoint_context.get_dequeue_pointer_and_cycle_state();
+        // retrieve TRB at current dequeue_pointer
+        let mut trb_buffer = [0; 16];
+        self.dma_bus.read_bulk(dequeue_pointer, &mut trb_buffer);
+
+        debug!(
+            "interpreting TRB at dequeue pointer; cycle state = {}, TRB = {:?}",
+            cycle_state as u8, trb_buffer
+        );
+
+        // check if the TRB is fresh
+        let cycle_bit = trb_buffer[12] & 0x1 != 0;
+        if cycle_bit != cycle_state {
+            // cycle-bit mismatch: no new transfer TRB available
+            return None;
+        }
+
+        // TRB is fresh; try to parse
+        let trb_result = TransferTrb::try_from(&trb_buffer[..]);
+        if let Ok(TransferTrb::Link(link_data)) = trb_result {
+            // encountered Link TRB
+            // update transfer ring status
+            dequeue_pointer = link_data.ring_segment_pointer;
+            if link_data.toggle_cycle {
+                cycle_state = !cycle_state;
+            }
+            // update endpoint context
+            self.endpoint_context
+                .set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
+            // we still need to deliver the newest actual (non-link) TRB.
+            // Recursion is the simplest way to achieve the additional fetch,
+            // but the guest could cause a stack overflow. Is that a problem?
+            // --> Rewrite, see CommandRing::next_command_trb
+            return self.next_transfer_trb();
+        }
+
+        let trb_address = dequeue_pointer;
+
+        // advance to next TRB
+        dequeue_pointer += 16;
+
+        // update endpoint context
+        self.endpoint_context
+            .set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
+
+        // return parsed result
+        Some((trb_address, trb_result))
     }
 }
 
