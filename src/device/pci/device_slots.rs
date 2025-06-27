@@ -58,6 +58,10 @@ impl DeviceSlotManager {
         self.dcbaap = dcbaap;
     }
 
+    pub const fn get_dcbaap(&self) -> u64 {
+        self.dcbaap
+    }
+
     /// Retrieve one of the available slot IDs.
     ///
     /// If a unused slot is available, this function returns the slot ID.
