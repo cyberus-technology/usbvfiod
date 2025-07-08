@@ -182,7 +182,7 @@ in
       machine.wait_until_succeeds("grep -Fq 'hub 1-0:1.0: 1 port detected' ${cloudHypervisorLog}")
 
       # Read the diagnostic information after login.
-      machine.wait_until_succeeds("grep -Eq '\s+1\s+PCI-MSIX.*xhci_hcd' ${cloudHypervisorLog}")
+      machine.wait_until_succeeds("grep -Eq '\s+9\s+PCI-MSIX.*xhci_hcd' ${cloudHypervisorLog}")
     '';
   };
 }
