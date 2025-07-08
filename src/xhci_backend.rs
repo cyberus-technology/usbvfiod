@@ -20,7 +20,7 @@ use vfio_user::{IrqInfo, ServerBackend};
 use crate::device::{
     bus::{Request, RequestSize},
     interrupt_line::{DummyInterruptLine, InterruptLine},
-    pci::{traits::PciDevice, xhci::XhciController},
+    pci::{nusb::NusbDeviceWrapper, traits::PciDevice, xhci::XhciController},
 };
 
 use crate::{dynamic_bus::DynamicBus, memory_segment::MemorySegment};
@@ -89,8 +89,9 @@ impl XhciBackend {
 
         debug!("Device configuration: {active_configuration:?}");
 
-        // TODO Actually add the device to the XHCI controller.
-        warn!("Adding devices is not implemented yet.");
+        // Add the device to the XHCI controller.
+        let wrapped_device = Box::new(NusbDeviceWrapper::new(device));
+        self.controller.lock().unwrap().set_device(wrapped_device);
 
         Ok(())
     }
