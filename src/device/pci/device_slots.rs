@@ -4,6 +4,8 @@
 
 use crate::device::bus::{BusDeviceRef, Request, RequestSize};
 
+use super::rings::TransferRing;
+
 /// Abstraction for Device Slots.
 ///
 /// Each USB device needs a device slot ID to be addressable.
@@ -199,6 +201,13 @@ impl DeviceContext {
     /// Endpoint 0 is a special endpoint. It always exists and it is bi-directional.
     fn get_control_endpoint_context(&self) -> EndpointContext {
         self.get_endpoint_context_internal(1)
+    }
+
+    /// Give access to the transfer ring of the default control endpoint.
+    ///
+    /// Endpoint 0 is a special endpoint. It always exists and it is bi-directional.
+    pub fn get_control_transfer_ring(&self) -> TransferRing {
+        TransferRing::new(self.get_control_endpoint_context(), self.dma_bus.clone())
     }
 }
 
