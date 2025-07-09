@@ -156,12 +156,13 @@ impl XhciController {
             // inspect the PORTSC status register.
             let trb = EventTrb::new_port_status_change_event_trb(0);
             self.event_ring.enqueue(&trb);
+            debug!("enqueued port status change event: {:?}", trb);
 
             // XXX: This is just a test to see if we can generate interrupts.
             // This will be removed once we generate interrupts in the right
             // place, (e.g. generate a Port Connect Status Event) and test it.
             self.interrupt_line.interrupt();
-            debug!("signalled a bogus interrupt");
+            debug!("signalled an interrupt");
         } else {
             debug!("controller stopped with cmd {usbcmd:#x}");
         }
@@ -214,6 +215,7 @@ impl XhciController {
         };
         self.event_ring.enqueue(&completion_event);
         self.interrupt_line.interrupt();
+        debug!("enqueued command completion event and signaled interrupt");
     }
 
     fn handle_enable_slot(&mut self) -> (CompletionCode, u8) {

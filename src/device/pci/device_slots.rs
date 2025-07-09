@@ -2,6 +2,8 @@
 //!
 //! This module offers an abstraction for device slots.
 
+use tracing::debug;
+
 use crate::device::bus::{BusDeviceRef, Request, RequestSize};
 
 use super::rings::TransferRing;
@@ -168,20 +170,24 @@ impl DeviceContext {
         // copy slot context (as indicated by flag A0)
         self.dma_bus
             .write_bulk(self.address, &input_context[32..64]);
+        debug!("Copied slot context from input context to device context");
 
         // copy endpoint context 0 (as indicated by flag A1)
         self.dma_bus
             .write_bulk(self.address + 32, &input_context[64..96]);
+        debug!("Copied endpoint 0 context from input context to device context");
 
         // set slot state to addressed
         let slot_state_addressed = 2;
         self.dma_bus
             .write_bulk(self.address + 15, &[slot_state_addressed << 3; 1]);
+        debug!("Set slot context state to 'addressed'");
 
         // set endpoint state to enabled
         let ep_state_running = 1;
         self.dma_bus
             .write_bulk(self.address + 32, &[ep_state_running]);
+        debug!("Set endpoint 0 context state to 'running'");
     }
 
     /// Give access to an endpoint context based on its index in the device

@@ -1,3 +1,5 @@
+use tracing::debug;
+
 /// A simple PORTSC register implementation supporting RW1C bits.
 ///
 /// The PORTSC register requires us to initially set some bits and
@@ -26,7 +28,8 @@ impl PortscRegister {
     /// Read the current register value.
     ///
     /// This function should be called when an MMIO read happens.
-    pub const fn read(&self) -> u64 {
+    pub fn read(&self) -> u64 {
+        debug!("PORTSC: read value {:#x}", self.value);
         self.value
     }
 
@@ -35,8 +38,12 @@ impl PortscRegister {
     /// This function should be called when an MMIO write happens.
     /// RW1C bits are updates according to RW1C semantics, all
     /// other bits are treated as read-only.
-    pub const fn write(&mut self, new_value: u64) {
+    pub fn write(&mut self, new_value: u64) {
         let bits_to_clear = new_value & self.bitmask_rw1c;
         self.value &= !bits_to_clear;
+        debug!(
+            "PORTSC: write value {:#x}, new value is {:#x}",
+            new_value, self.value
+        );
     }
 }
