@@ -198,10 +198,14 @@ impl XhciController {
                     data.slot_id,
                 )
             }
-            CommandTrb::ConfigureEndpointCommand => todo!(),
+            CommandTrb::ConfigureEndpointCommand => {
+                EventTrb::new_command_completion_event_trb(address, 0, CompletionCode::Success, 1)
+            }
             CommandTrb::EvaluateContextCommand => todo!(),
             CommandTrb::ResetEndpointCommand => todo!(),
-            CommandTrb::StopEndpointCommand => todo!(),
+            CommandTrb::StopEndpointCommand => {
+                EventTrb::new_command_completion_event_trb(address, 0, CompletionCode::Success, 1)
+            }
             CommandTrb::SetTrDequeuePointerCommand => todo!(),
             CommandTrb::ResetDeviceCommand => todo!(),
             CommandTrb::ForceHeaderCommand => todo!(),
