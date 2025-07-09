@@ -1,8 +1,10 @@
+use crate::device::bus::BusDeviceRef;
+
 use super::usbrequest::UsbRequest;
 use std::fmt::Debug;
 
 pub trait RealDevice: Debug + RealDeviceClone {
-    fn control_transfer(&self, request: &UsbRequest);
+    fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef);
 }
 
 pub trait RealDeviceClone {

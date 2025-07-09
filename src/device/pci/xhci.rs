@@ -307,7 +307,7 @@ impl XhciController {
         self.real_device
             .as_ref()
             .unwrap()
-            .control_transfer(&request);
+            .control_transfer(&request, &self.dma_bus);
 
         // send transfer event
         let trb = EventTrb::new_transfer_event_trb(

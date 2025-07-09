@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 use vfio_bindings::bindings::vfio::{
     vfio_region_info, VFIO_PCI_BAR0_REGION_INDEX, VFIO_PCI_BAR1_REGION_INDEX,
