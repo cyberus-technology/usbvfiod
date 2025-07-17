@@ -38,6 +38,8 @@ let
               ExecStart = pkgs.writeShellScript "diagnostic-dump" ''
                 echo Dumping Diagnostics
                 cat /proc/interrupts
+                echo
+                ${pkgs.usbutils}/bin/lsusb
               '';
               StandardOutput = "journal+console";
               StandardError = "journal+console";
@@ -183,6 +185,7 @@ in
 
       # Read the diagnostic information after login.
       machine.wait_until_succeeds("grep -Eq '\s+[1-9][0-9]*\s+PCI-MSIX.*xhci_hcd' ${cloudHypervisorLog}")
+      machine.wait_until_succeeds("grep -q 'ID ${vendorId}:${productId} QEMU QEMU USB HARDDRIVE' ${cloudHypervisorLog}")
     '';
   };
 }
