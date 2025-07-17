@@ -48,7 +48,7 @@ impl RealDevice for NusbDeviceWrapper {
             let mut data = vec![0; request.length as usize];
             let result =
                 self.device
-                    .control_in_blocking(control, &mut data, Duration::from_millis(100));
+                    .control_in_blocking(control, &mut data, Duration::from_millis(200));
             debug!("control in result: {:?}, data: {:?}", result, data);
             dma_bus.write_bulk(request.data.unwrap(), &data);
         } else {
@@ -68,7 +68,7 @@ impl RealDevice for NusbDeviceWrapper {
             };
             let result =
                 self.device
-                    .control_out_blocking(control, &data, Duration::from_millis(100));
+                    .control_out_blocking(control, &data, Duration::from_millis(200));
             debug!("control out result: {:?}", result);
         }
     }
