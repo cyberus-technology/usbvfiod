@@ -14,8 +14,47 @@ pub struct NusbDeviceWrapper {
 }
 
 impl NusbDeviceWrapper {
-    pub fn new(device: nusb::Device) -> Self {
+    pub const fn new(device: nusb::Device) -> Self {
         Self { device }
+    }
+
+    fn control_transfer_device_to_host(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
+        let control = Control {
+            control_type: ControlType::Standard,
+            recipient: Recipient::Device,
+            request: request.request,
+            value: request.value,
+            index: request.index,
+        };
+
+        debug!("sending control in request to device");
+        let mut data = vec![0; request.length as usize];
+        let result =
+            self.device
+                .control_in_blocking(control, &mut data, Duration::from_millis(200));
+        debug!("control in result: {:?}, data: {:?}", result, data);
+        dma_bus.write_bulk(request.data.unwrap(), &data);
+    }
+
+    fn control_transfer_host_to_device(&self, request: &UsbRequest, _dma_bus: &BusDeviceRef) {
+        let control = Control {
+            control_type: ControlType::Standard,
+            recipient: Recipient::Device,
+            request: request.request,
+            value: request.value,
+            index: request.index,
+        };
+
+        debug!("sending control out request to device");
+        let data = if request.data.is_some() {
+            todo!("cannot handle control out with data currently")
+        } else {
+            Vec::new()
+        };
+        let result = self
+            .device
+            .control_out_blocking(control, &data, Duration::from_millis(200));
+        debug!("control out result: {:?}", result);
     }
 }
 
@@ -34,42 +73,9 @@ impl RealDeviceClone for NusbDeviceWrapper {
 impl RealDevice for NusbDeviceWrapper {
     fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
         let direction = request.request_type & 0x80 != 0;
-        // direction true -> device-to-host, false -> host-to-device
-        if direction {
-            // device-to-host
-            debug!("sending control in request to device");
-            let control = Control {
-                control_type: ControlType::Standard,
-                recipient: Recipient::Device,
-                request: request.request,
-                value: request.value,
-                index: request.index,
-            };
-            let mut data = vec![0; request.length as usize];
-            let result =
-                self.device
-                    .control_in_blocking(control, &mut data, Duration::from_millis(200));
-            debug!("control in result: {:?}, data: {:?}", result, data);
-            dma_bus.write_bulk(request.data.unwrap(), &data);
-        } else {
-            // host-to-device
-            debug!("sending control out request to device");
-            let control = Control {
-                control_type: ControlType::Standard,
-                recipient: Recipient::Device,
-                request: request.request,
-                value: request.value,
-                index: request.index,
-            };
-            let data = if request.data.is_some() {
-                panic!("cannot handle control out with data currently")
-            } else {
-                Vec::new()
-            };
-            let result =
-                self.device
-                    .control_out_blocking(control, &data, Duration::from_millis(200));
-            debug!("control out result: {:?}", result);
+        match direction {
+            true => self.control_transfer_device_to_host(request, dma_bus),
+            false => self.control_transfer_host_to_device(request, dma_bus),
         }
     }
 }
