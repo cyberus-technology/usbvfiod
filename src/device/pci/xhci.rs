@@ -4,7 +4,7 @@
 //! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
 
 use std::sync::{Arc, Mutex};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::device::{
     bus::{BusDeviceRef, Request, SingleThreadedBusDevice},
@@ -235,7 +235,20 @@ impl XhciController {
                 )
             }
             CommandTrbVariant::SetTrDequeuePointer => todo!(),
-            CommandTrbVariant::ResetDevice => todo!(),
+            CommandTrbVariant::ResetDevice => {
+                // TODO this command probably requires more handling. The guest
+                // driver will attempt resets when descriptors do not match what
+                // the virtual port announces.
+                // Currently, we just acknowledge to not crash usbvfiod when
+                // testing with unsupported devices.
+                warn!("device reset! the driver probably didn't like it.");
+                EventTrb::new_command_completion_event_trb(
+                    cmd.address,
+                    0,
+                    CompletionCode::Success,
+                    1,
+                )
+            }
             CommandTrbVariant::ForceHeader => todo!(),
             CommandTrbVariant::NoOp => todo!(),
             CommandTrbVariant::Link(_) => unreachable!(),
@@ -312,11 +325,10 @@ impl XhciController {
             request.length,
             request.data
         );
-        // TODO forward request to device
-        self.real_device
-            .as_ref()
-            .unwrap()
-            .control_transfer(&request, &self.dma_bus);
+        // forward request to device
+        if let Some(device) = self.real_device.as_ref() {
+            device.control_transfer(&request, &self.dma_bus);
+        }
 
         // send transfer event
         let trb = EventTrb::new_transfer_event_trb(
