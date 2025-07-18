@@ -64,12 +64,6 @@ impl Debug for NusbDeviceWrapper {
     }
 }
 
-impl RealDeviceClone for NusbDeviceWrapper {
-    fn clone_box(&self) -> Box<dyn RealDevice> {
-        panic!();
-    }
-}
-
 impl RealDevice for NusbDeviceWrapper {
     fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
         let direction = request.request_type & 0x80 != 0;

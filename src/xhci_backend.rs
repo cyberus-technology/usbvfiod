@@ -80,15 +80,6 @@ impl XhciBackend {
 
     /// Add a USB device to the virtual XHCI controller.
     fn add_device(&self, device: nusb::Device) -> Result<()> {
-        // The configuration is not super interesting, but as long as
-        // we don't do anything else here this serves as a way to see
-        // whether the file is actually a USB device.
-        let active_configuration = device
-            .active_configuration()
-            .context("Failed to query active configuration")?;
-
-        debug!("Device configuration: {active_configuration:?}");
-
         // Add the device to the XHCI controller.
         let wrapped_device = Box::new(NusbDeviceWrapper::new(device));
         self.controller.lock().unwrap().set_device(wrapped_device);
