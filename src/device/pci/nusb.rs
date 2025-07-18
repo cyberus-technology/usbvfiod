@@ -1,5 +1,5 @@
 use nusb::transfer::{Control, ControlType, Recipient};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::device::bus::BusDeviceRef;
 
@@ -36,10 +36,16 @@ impl NusbDeviceWrapper {
 
         debug!("sending control in request to device");
         let mut data = vec![0; request.length as usize];
-        let result =
-            self.device
-                .control_in_blocking(control, &mut data, Duration::from_millis(200));
-        debug!("control in result: {:?}, data: {:?}", result, data);
+        match self
+            .device
+            .control_in_blocking(control, &mut data, Duration::from_millis(200))
+        {
+            Ok(result) => debug!("control in result: {:?}, data {:?}", result, data),
+            Err(error) => warn!("control in request failed: {:?}", error),
+        }
+
+        // TODO: ideally the control transfer targets the right location for us and we get rid
+        // of the additional DMA write here.
         dma_bus.write_bulk(request.data.unwrap(), &data);
     }
 
@@ -58,10 +64,13 @@ impl NusbDeviceWrapper {
         } else {
             Vec::new()
         };
-        let result = self
+        match self
             .device
-            .control_out_blocking(control, &data, Duration::from_millis(200));
-        debug!("control out result: {:?}", result);
+            .control_out_blocking(control, &data, Duration::from_millis(200))
+        {
+            Ok(result) => debug!("control out result: {:?}", result),
+            Err(error) => warn!("control out request failed: {:?}", error),
+        }
     }
 }
 
