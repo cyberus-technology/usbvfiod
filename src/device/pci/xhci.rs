@@ -31,7 +31,7 @@ use super::{
 };
 
 /// The emulation of a XHCI controller.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct XhciController {
     /// real USB devices
     real_device: Option<Box<dyn RealDevice>>,

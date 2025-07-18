@@ -3,14 +3,21 @@ use tracing::debug;
 
 use crate::device::bus::BusDeviceRef;
 
-use super::{
-    realdevice::{RealDevice, RealDeviceClone},
-    usbrequest::UsbRequest,
-};
+use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::{fmt::Debug, time::Duration};
 
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
+}
+
+impl Debug for NusbDeviceWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The active configuration is either cached or not available
+        // for unconfigured devices. There is no I/O for this.
+        f.debug_struct("NusbDeviceWrapper")
+            .field("device", &self.device.active_configuration())
+            .finish()
+    }
 }
 
 impl NusbDeviceWrapper {
@@ -55,12 +62,6 @@ impl NusbDeviceWrapper {
             .device
             .control_out_blocking(control, &data, Duration::from_millis(200));
         debug!("control out result: {:?}", result);
-    }
-}
-
-impl Debug for NusbDeviceWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("lolusb")
     }
 }
 
