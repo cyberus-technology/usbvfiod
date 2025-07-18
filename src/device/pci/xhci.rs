@@ -4,7 +4,7 @@
 //! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
 
 use std::sync::{Arc, Mutex};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::device::{
     bus::{BusDeviceRef, Request, SingleThreadedBusDevice},
@@ -24,14 +24,18 @@ use super::{
     config_space::BarInfo,
     constants::xhci::operational::usbsts,
     device_slots::DeviceSlotManager,
+    realdevice::RealDevice,
     registers::PortscRegister,
     rings::{CommandRing, EventRing},
     trb::{AddressDeviceCommandTrbData, CommandTrb},
 };
 
 /// The emulation of a XHCI controller.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct XhciController {
+    /// real USB devices
+    real_device: Option<Box<dyn RealDevice>>,
+
     /// A reference to the VM memory to perform DMA on.
     #[allow(unused)]
     dma_bus: BusDeviceRef,
@@ -78,6 +82,7 @@ impl XhciController {
         let dma_bus_for_device_slot_manager = dma_bus.clone();
 
         Self {
+            real_device: None,
             dma_bus,
             config_space: ConfigSpaceBuilder::new(vendor::REDHAT, device::REDHAT_XHCI)
                 .class(class::SERIAL, subclass::SERIAL_USB, progif::USB_XHCI)
@@ -97,6 +102,10 @@ impl XhciController {
                 portsc::CCS | portsc::PED | portsc::PP | portsc::CSC | portsc::PEC | portsc::PRC,
             ),
         }
+    }
+
+    pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
+        self.real_device = Some(device);
     }
 
     /// Configure the interrupt line for the controller.
@@ -202,7 +211,16 @@ impl XhciController {
                     data.slot_id,
                 )
             }
-            CommandTrbVariant::ConfigureEndpoint => todo!(),
+            CommandTrbVariant::ConfigureEndpoint => {
+                // TODO actually configure the endpoint.
+                // For now we just acknowledge the configuration.
+                EventTrb::new_command_completion_event_trb(
+                    cmd.address,
+                    0,
+                    CompletionCode::Success,
+                    1,
+                )
+            }
             CommandTrbVariant::EvaluateContext => todo!(),
             CommandTrbVariant::ResetEndpoint => todo!(),
             CommandTrbVariant::StopEndpoint => {
@@ -217,7 +235,20 @@ impl XhciController {
                 )
             }
             CommandTrbVariant::SetTrDequeuePointer => todo!(),
-            CommandTrbVariant::ResetDevice => todo!(),
+            CommandTrbVariant::ResetDevice => {
+                // TODO this command probably requires more handling. The guest
+                // driver will attempt resets when descriptors do not match what
+                // the virtual port announces.
+                // Currently, we just acknowledge to not crash usbvfiod when
+                // testing with unsupported devices.
+                warn!("device reset! the driver probably didn't like it.");
+                EventTrb::new_command_completion_event_trb(
+                    cmd.address,
+                    0,
+                    CompletionCode::Success,
+                    1,
+                )
+            }
             CommandTrbVariant::ForceHeader => todo!(),
             CommandTrbVariant::NoOp => todo!(),
             CommandTrbVariant::Link(_) => unreachable!(),
@@ -294,7 +325,10 @@ impl XhciController {
             request.length,
             request.data
         );
-        // TODO forward request to device
+        // forward request to device
+        if let Some(device) = self.real_device.as_ref() {
+            device.control_transfer(&request, &self.dma_bus);
+        }
 
         // send transfer event
         let trb = EventTrb::new_transfer_event_trb(
