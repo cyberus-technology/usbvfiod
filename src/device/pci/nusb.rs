@@ -13,6 +13,7 @@ use std::{
 
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
+    interface: Option<nusb::Interface>,
 }
 
 impl Debug for NusbDeviceWrapper {
@@ -26,8 +27,9 @@ impl Debug for NusbDeviceWrapper {
 }
 
 impl NusbDeviceWrapper {
-    pub const fn new(device: nusb::Device) -> Self {
-        Self { device }
+    pub fn new(device: nusb::Device) -> Self {
+        let interface = Some(device.detach_and_claim_interface(0).wait().unwrap());
+        Self { device, interface }
     }
 
     fn control_transfer_device_to_host(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
