@@ -214,7 +214,7 @@ impl XhciController {
                     data.slot_id,
                 )
             }
-            CommandTrbVariant::ConfigureEndpoint => {
+            CommandTrbVariant::ConfigureEndpoint(_data) => {
                 // TODO actually configure the endpoint.
                 // For now we just acknowledge the configuration.
                 EventTrb::new_command_completion_event_trb(
