@@ -419,7 +419,6 @@ impl CommandTrbVariant {
     }
 }
 
-/// Custom error type to represent errors in TRB parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkTrbData {
     /// The address of the next ring segment.
@@ -681,6 +680,7 @@ impl TrbData for DataStageTrbData {
     }
 }
 
+/// Custom error type to represent errors in TRB parsing.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum TrbParseError {
     #[error("TRB type {0} refers to \"{1}\", which is optional and not supported.")]
