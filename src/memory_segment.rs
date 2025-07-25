@@ -74,7 +74,7 @@ impl Mapping {
 }
 
 /// A contiguous piece of mmap'ed memory.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MemorySegment {
     size: u64,
     mapping: Arc<Mapping>,

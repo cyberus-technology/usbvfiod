@@ -30,7 +30,7 @@ use crate::device::{
 /// This implementation is a simplified version of the full mechanism specified
 /// in the XHCI specification. We assume that the Event Ring Segment Table only
 /// holds a single segment.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EventRing {
     /// Access to guest memory.
     ///
@@ -191,7 +191,7 @@ impl EventRing {
 
 /// The Command Ring: A unidirectional means of communication, allowing the
 /// driver to send commands to the XHCI controller.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CommandRing {
     /// Access to guest memory.
     ///

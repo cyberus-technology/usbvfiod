@@ -450,7 +450,7 @@ impl Default for Bus {
 /// Information for a single bulk request to a specific device.
 ///
 /// See [`Bus::iter_bulk_request`].
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct BulkRequestChunk<'a> {
     /// The device to perform the bulk request on.
     device: &'a dyn BusDevice,
@@ -465,6 +465,7 @@ struct BulkRequestChunk<'a> {
 /// An iterator to split bulk requests.
 ///
 /// See [`Bus::iter_bulk_request`].
+#[derive(Debug)]
 struct BulkRequestIterator<'a> {
     bus: &'a Bus,
 
@@ -771,7 +772,7 @@ mod tests {
 
     /// A device that returns a constant value for all read requests
     /// and expects all writes to have that value as well.
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct ConstDevice {
         value: u64,
         size: u64,
@@ -930,7 +931,7 @@ mod tests {
 
     /// A device that asserts all read and write requests are
     /// for a configured address. It returns constant 0 on read.
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct AddressCheckDevice {
         expected_address: u64,
         size: u64,

@@ -35,7 +35,7 @@ pub const CONTROL_MASKED: u32 = 1 << 0;
 /// Due to [limitations](https://github.com/rust-lang/rust/issues/44580) in Rust's generic
 /// programming, this type has to be instantiated with the **size in bytes** instead of the number
 /// of desired vectors.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MsixTable<const SIZE_BYTES: usize> {
     registers: RegisterSet<{ SIZE_BYTES }>,
 }

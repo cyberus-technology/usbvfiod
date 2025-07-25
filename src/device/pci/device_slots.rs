@@ -285,7 +285,7 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     struct DummyMemory {}
 
     impl BusDevice for DummyMemory {
@@ -304,7 +304,7 @@ mod tests {
     fn device_slot_reservation() {
         // we test with only one device slot, because that case is currently
         // what we run with
-        let mut device_slot_manager = DeviceSlotManager::new(1, Arc::new(DummyMemory {}));
+        let mut device_slot_manager = DeviceSlotManager::new(1, Arc::new(DummyMemory::default()));
 
         // reserve the only slot
         assert_eq!(Some(1), device_slot_manager.reserve_slot());

@@ -464,7 +464,7 @@ impl TrbData for LinkTrbData {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AddressDeviceCommandTrbData {
     /// The address of the input context.
     pub input_context_pointer: u64,
