@@ -77,6 +77,19 @@ pub struct EventRing {
     /// event ring (i.e., in our case, when we move from the back of the
     /// segment to the front of the single segment).
     cycle_state: bool,
+    /// The base address of the first (and only) Event Ring segment.
+    ///
+    /// This value is derived from the Event Ring Segment Table during
+    /// controller initialization (ERSTBA write).
+    /// We use this address to wrap around the enqueue pointer once the
+    /// segment is full.
+    segment_base: u64,
+    /// The number of TRBs that the first (and only) segment can hold.
+    ///
+    /// The size is parsed from the Event Ring Segment Table at setup time.
+    /// When the TRB count reaches 0, the ring wraps to `segment_base`
+    /// and this value is used to reset `trb_count`.
+    segment_size: u32,
 }
 
 impl EventRing {
@@ -93,6 +106,8 @@ impl EventRing {
             enqueue_pointer: 0,
             trb_count: 0,
             cycle_state: false,
+            segment_base: 0,
+            segment_size: 0,
         }
     }
 
@@ -120,6 +135,8 @@ impl EventRing {
             .read(Request::new(erstba.wrapping_add(SIZE), RequestSize::Size4))
             as u32;
         self.cycle_state = true;
+        self.segment_base = self.enqueue_pointer;
+        self.segment_size = self.trb_count;
 
         debug!("event ring segment table is at {:#x}", erstba);
         debug!(
@@ -163,10 +180,6 @@ impl EventRing {
     ///
     /// - `trb`: the TRB to enqueue.
     pub fn enqueue(&mut self, trb: &EventTrb) {
-        if self.check_event_ring_full() {
-            todo!();
-        }
-
         self.dma_bus
             .write_bulk(self.enqueue_pointer, &trb.to_bytes(self.cycle_state));
 
@@ -179,11 +192,16 @@ impl EventRing {
             "enqueued TRB in first segment of event ring at address {:#x}. Space for {} more TRBs left (TRB: {:?})",
             enqueue_address, self.trb_count, trb
         );
+
+        if self.check_event_ring_full() {
+            self.enqueue_pointer = self.segment_base;
+            self.trb_count = self.segment_size;
+            self.cycle_state = !self.cycle_state;
+        }
     }
 
-    // The method is currently not capable of dealing with wrapping around to
-    // the start of the single segment and just reports full once the segment
-    // is filled up.
+    /// The method returns true when the event ring segment has been fully used.
+    /// This triggers a wrap-around to the start of the segment in enqueue().
     const fn check_event_ring_full(&self) -> bool {
         self.trb_count == 0
     }
@@ -604,6 +622,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::device::bus::BusDevice;
+    use crate::device::pci::trb::CompletionCode;
 
     use super::*;
 
@@ -650,6 +669,46 @@ mod tests {
             let offset: usize = offset.try_into().unwrap();
             self.data.lock().unwrap()[offset..(offset + data.len())].copy_from_slice(data)
         }
+    }
+
+    #[test]
+    fn event_ring_wraps_correctly() {
+        // construct memory segment for a ring that can contain 4 TRBs
+        let trb_capacity = 4;
+        let ram = Arc::new(TestingRamDevice::new(&vec![0; trb_capacity * 16]));
+        let mut event_ring = EventRing::new(ram);
+
+        event_ring.segment_base = 0;
+        event_ring.segment_size = trb_capacity as u32;
+        event_ring.enqueue_pointer = 0;
+        event_ring.trb_count = trb_capacity as u32;
+        event_ring.cycle_state = true;
+
+        // construct a dummy TRB
+        let dummy_trb = EventTrb::new_transfer_event_trb(
+            0,                       // trb_pointer
+            0,                       // trb_transfer_length
+            CompletionCode::Success, // completion_code
+            false,                   // event_data
+            1,                       // endpoint_id
+            1,                       // slot_id
+        );
+
+        // fill the event ring
+        for i in 0..trb_capacity {
+            event_ring.enqueue(&dummy_trb);
+
+            // Verify that the enqueue_pointer advances backward after each enqueue.
+            assert_eq!(
+                event_ring.enqueue_pointer,
+                (((i + 1) % trb_capacity) * 16) as u64
+            );
+        }
+
+        // Verify that it wraps around to the beginning of the single segment.
+        assert_eq!(event_ring.enqueue_pointer, 0);
+        assert_eq!(event_ring.trb_count, trb_capacity as u32);
+        assert!(!event_ring.cycle_state);
     }
 
     #[test]
