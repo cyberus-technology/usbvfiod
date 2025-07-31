@@ -653,6 +653,7 @@ impl TransferTrbVariant {
 #[derive(Debug, PartialEq, Eq)]
 pub struct NormalTrbData {
     pub data_pointer: u64,
+    pub transfer_length: u16,
     pub chain: bool,
     pub interrupt_on_completion: bool,
 }
@@ -678,11 +679,15 @@ impl TrbData for NormalTrbData {
         let dp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
         let data_pointer = u64::from_le_bytes(dp_bytes);
 
+        let tl_bytes: [u8; 2] = trb_bytes[8..10].try_into().unwrap();
+        let transfer_length = u16::from_le_bytes(tl_bytes);
+
         let chain = trb_bytes[12] & 0x10 != 0;
         let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
 
         Ok(Self {
             data_pointer,
+            transfer_length,
             chain,
             interrupt_on_completion,
         })
@@ -900,11 +905,12 @@ mod tests {
     #[test]
     fn test_parse_normal_trb() {
         let trb_bytes = [
-            0x11, 0x22, 0x44, 0x33, 0x66, 0x55, 0x88, 0x77, 0x00, 0x00, 0x00, 0x00, 0x30, 0x04,
+            0x11, 0x22, 0x44, 0x33, 0x66, 0x55, 0x88, 0x77, 0x12, 0x34, 0x00, 0x00, 0x30, 0x04,
             0x00, 0x00,
         ];
         let expected = TransferTrbVariant::Normal(NormalTrbData {
             data_pointer: 0x7788556633442211,
+            transfer_length: 0x3412,
             chain: true,
             interrupt_on_completion: true,
         });

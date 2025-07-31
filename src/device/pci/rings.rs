@@ -394,6 +394,7 @@ impl TransferRing {
     pub fn next_transfer_trb(&self) -> Option<TransferTrb> {
         let (mut dequeue_pointer, mut cycle_state) =
             self.endpoint_context.get_dequeue_pointer_and_cycle_state();
+        debug!("dequeue: {:?}", (dequeue_pointer, cycle_state));
         // retrieve TRB at dequeue pointer and return None if there is no fresh
         // TRB
         let first_trb_buffer = self.next_trb_buffer()?;

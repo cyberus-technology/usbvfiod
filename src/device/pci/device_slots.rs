@@ -230,7 +230,7 @@ impl DeviceContext {
 
             debug!("Configure Endpoint: D{} is set", i);
 
-            let ep_context_offset = (i + 1) * 32;
+            let ep_context_offset = i * 32;
             self.dma_bus.write(
                 Request::new(self.address + ep_context_offset, RequestSize::Size1),
                 0,
@@ -245,7 +245,7 @@ impl DeviceContext {
 
             debug!("Configure Endpoint: A{} is set", i);
 
-            let ep_context_offset = (i + 1) * 32;
+            let ep_context_offset = i * 32;
             input_context[ep_context_offset] = 1;
             self.dma_bus.write_bulk(
                 self.address + ep_context_offset as u64,
@@ -262,6 +262,22 @@ impl DeviceContext {
         input_context[12] = 2;
 
         self.dma_bus.write_bulk(self.address, &input_context[0..32]);
+
+        let mut data = [0; 192];
+        self.dma_bus.read_bulk(self.address, &mut data);
+
+        debug!("slot context {:?}", &data[0..32]);
+        debug!("A1 {:?}", &data[32..64]);
+        debug!("A2 {:?}", &data[64..96]);
+        debug!("A3 {:?}", &data[96..128]);
+        debug!("A4 {:?}", &data[128..160]);
+    }
+
+    pub fn set_endpoint_state(&self, endpoint_id: u8, state: u8) {
+        self.dma_bus.write(
+            Request::new(self.address + endpoint_id as u64 * 32, RequestSize::Size1),
+            state as u64,
+        );
     }
 
     /// Give access to an endpoint context based on its index in the device
@@ -301,6 +317,16 @@ impl DeviceContext {
     /// Endpoint 0 is a special endpoint. It always exists and it is bi-directional.
     pub fn get_control_transfer_ring(&self) -> TransferRing {
         TransferRing::new(self.get_control_endpoint_context(), self.dma_bus.clone())
+    }
+
+    pub fn get_transfer_ring(&self, endpoint_index: u64) -> TransferRing {
+        let endpoint_context = self.get_endpoint_context_internal(endpoint_index);
+        match endpoint_context.get_state() {
+            0 => panic!("requested transferring for disabled EP{}", endpoint_index),
+            1 => {}
+            _ => endpoint_context.set_state(1),
+        };
+        TransferRing::new(endpoint_context, self.dma_bus.clone())
     }
 }
 
@@ -354,6 +380,16 @@ impl EndpointContext {
             Request::new(self.address.wrapping_add(8), RequestSize::Size8),
             dequeue_pointer | cycle_state as u64,
         )
+    }
+
+    fn get_state(&self) -> u8 {
+        self.dma_bus
+            .read(Request::new(self.address, RequestSize::Size1)) as u8
+    }
+
+    fn set_state(&self, state: u8) {
+        self.dma_bus
+            .write(Request::new(self.address, RequestSize::Size1), state as u64);
     }
 }
 

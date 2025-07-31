@@ -30,7 +30,10 @@ use super::{
     realdevice::RealDevice,
     registers::PortscRegister,
     rings::{CommandRing, EventRing},
-    trb::{AddressDeviceCommandTrbData, CommandTrb, ConfigureEndpointCommandTrbData},
+    trb::{
+        AddressDeviceCommandTrbData, CommandTrb, ConfigureEndpointCommandTrbData,
+        StopEndpointCommandTrbData,
+    },
 };
 
 /// The emulation of a XHCI controller.
@@ -176,14 +179,8 @@ impl XhciController {
     fn doorbell_controller(&mut self) {
         debug!("Ding Dong!");
         // check command available
-        let next = self.command_ring.next_command_trb();
-        if let Some(cmd) = next {
+        while let Some(cmd) = self.command_ring.next_command_trb() {
             self.handle_command(cmd);
-        } else {
-            debug!(
-                "Doorbell was rang, but no (valid) command found on the command ring ({:?})",
-                next
-            );
         }
     }
 
@@ -229,7 +226,7 @@ impl XhciController {
                 // TODO this command probably requires more handling.
                 // Currently, we just acknowledge to not crash usbvfiod in the
                 // integration test.
-                let _ = data.endpoint_id;
+                self.handle_stop_endpoint(&data);
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
@@ -245,6 +242,7 @@ impl XhciController {
                 // Currently, we just acknowledge to not crash usbvfiod when
                 // testing with unsupported devices.
                 warn!("device reset! the driver probably didn't like it.");
+                panic!();
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
@@ -305,8 +303,57 @@ impl XhciController {
         device_context.configure_endpoints(data.input_context_pointer);
     }
 
+    fn handle_stop_endpoint(&self, data: &StopEndpointCommandTrbData) {
+        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+        device_context.set_endpoint_state(data.endpoint_id, 3);
+    }
+
     fn doorbell_device(&mut self, value: u32) {
         debug!("Ding Dong Device with value {}!", value);
+
+        if value == 4 {
+            let transfer_ring = self
+                .device_slot_manager
+                .get_device_context(1)
+                .get_transfer_ring(4 as u64);
+
+            let trb = transfer_ring.next_transfer_trb().unwrap();
+            debug!("{:?}", trb);
+            let _ = self.real_device.as_ref().unwrap().out(&trb, &self.dma_bus);
+            // send transfer event
+            let trb = EventTrb::new_transfer_event_trb(
+                trb.address,
+                0,
+                CompletionCode::Success,
+                false,
+                4,
+                1,
+            );
+            self.event_ring.enqueue(&trb);
+            self.interrupt_line.interrupt();
+            debug!("sent Transfer Event and signaled interrupt");
+            return;
+        }
+        if value == 3 {
+            let transfer_ring = self
+                .device_slot_manager
+                .get_device_context(1)
+                .get_transfer_ring(3 as u64);
+
+            let trb = transfer_ring.next_transfer_trb().unwrap();
+            debug!("{:?}", trb);
+            if let Some(completion_event) =
+                self.real_device.as_ref().unwrap().in_(&trb, &self.dma_bus)
+            {
+                // send transfer event
+                self.event_ring.enqueue(&completion_event);
+                self.interrupt_line.interrupt();
+                debug!("sent Transfer Event and signaled interrupt");
+            } else {
+                debug!("did not send completion event!");
+            }
+            return;
+        }
         // TODO inspect value
         // currently we assume it is 1, which indicates a request on the control transfer ring
         assert_eq!(1, value, "currently only implemented doorbell rings that indicate requests on the control transfer ring");
