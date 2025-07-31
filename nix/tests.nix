@@ -40,6 +40,8 @@ let
                 cat /proc/interrupts
                 echo
                 ${pkgs.usbutils}/bin/lsusb
+                echo
+                ${pkgs.util-linux}/bin/fdisk -l
               '';
               StandardOutput = "journal+console";
               StandardError = "journal+console";
@@ -186,6 +188,7 @@ in
       # Read the diagnostic information after login.
       machine.wait_until_succeeds("grep -Eq '\s+[1-9][0-9]*\s+PCI-MSIX.*xhci_hcd' ${cloudHypervisorLog}")
       machine.wait_until_succeeds("grep -q 'ID ${vendorId}:${productId} QEMU QEMU USB HARDDRIVE' ${cloudHypervisorLog}")
+      machine.wait_until_succeeds("grep -q 'Disk /dev/sda:' ${cloudHypervisorLog}")
     '';
   };
 }
