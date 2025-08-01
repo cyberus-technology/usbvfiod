@@ -16,6 +16,8 @@ use std::{
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
     interface: nusb::Interface,
+    ep_in: Option<nusb::Endpoint<Bulk, In>>,
+    ep_out: Option<nusb::Endpoint<Bulk, Out>>,
 }
 
 impl Debug for NusbDeviceWrapper {
@@ -31,7 +33,12 @@ impl Debug for NusbDeviceWrapper {
 impl NusbDeviceWrapper {
     pub fn new(device: nusb::Device) -> Self {
         let interface = device.detach_and_claim_interface(0).wait().unwrap();
-        Self { device, interface }
+        Self {
+            device,
+            interface,
+            ep_in: None,
+            ep_out: None,
+        }
     }
 
     fn control_transfer_device_to_host(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
@@ -104,8 +111,8 @@ impl RealDevice for NusbDeviceWrapper {
         }
     }
 
-    fn out(&self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> Option<EventTrb> {
-        let mut ep_out = self.interface.endpoint::<Bulk, Out>(0x02).unwrap();
+    fn out(&mut self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> Option<EventTrb> {
+        let ep_out = self.ep_out.as_mut().unwrap();
         let normal_data = match trb {
             TransferTrb {
                 address: _,
@@ -123,8 +130,8 @@ impl RealDevice for NusbDeviceWrapper {
         None
     }
 
-    fn in_(&self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> Option<EventTrb> {
-        let mut ep_in = self.interface.endpoint::<Bulk, In>(0x81).unwrap();
+    fn in_(&mut self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> Option<EventTrb> {
+        let ep_in = self.ep_in.as_mut().unwrap();
         let normal_data = match trb {
             TransferTrb {
                 address: _,
@@ -155,6 +162,29 @@ impl RealDevice for NusbDeviceWrapper {
                 3,
                 1,
             ))
+        }
+    }
+
+    fn enable_endpoint(&mut self, endpoint_id: u8) {
+        match endpoint_id {
+            3 => {
+                if self.ep_in.is_some() {
+                    return;
+                }
+                //assert!(self.ep_in.is_none(), "EP3 is already enabled");
+                self.ep_in = Some(self.interface.endpoint::<Bulk, In>(0x81).unwrap());
+                debug!("enabled EP3 on real device");
+            }
+            4 => {
+                if self.ep_out.is_some() {
+                    return;
+                }
+                assert!(self.ep_out.is_none(), "EP4 is already enabled");
+                self.ep_out = Some(self.interface.endpoint::<Bulk, Out>(0x2).unwrap());
+                debug!("enabled EP4 on real device");
+            }
+            1 => {}
+            _ => todo!(),
         }
     }
 }

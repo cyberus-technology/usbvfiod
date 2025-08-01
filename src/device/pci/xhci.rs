@@ -295,12 +295,15 @@ impl XhciController {
         device_context.initialize(data.input_context_pointer);
     }
 
-    fn handle_configure_endpoint(&self, data: &ConfigureEndpointCommandTrbData) {
+    fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) {
         if data.deconfigure {
             panic!("encountered Configure Endpoint Command with deconfigure set");
         }
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
-        device_context.configure_endpoints(data.input_context_pointer);
+        let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
+        for i in enabled_endpoints {
+            self.real_device.as_mut().unwrap().enable_endpoint(i);
+        }
     }
 
     fn handle_stop_endpoint(&self, data: &StopEndpointCommandTrbData) {
@@ -319,7 +322,7 @@ impl XhciController {
 
             let trb = transfer_ring.next_transfer_trb().unwrap();
             debug!("{:?}", trb);
-            let _ = self.real_device.as_ref().unwrap().out(&trb, &self.dma_bus);
+            let _ = self.real_device.as_mut().unwrap().out(&trb, &self.dma_bus);
             // send transfer event
             let trb = EventTrb::new_transfer_event_trb(
                 trb.address,
@@ -343,7 +346,7 @@ impl XhciController {
             let trb = transfer_ring.next_transfer_trb().unwrap();
             debug!("{:?}", trb);
             if let Some(completion_event) =
-                self.real_device.as_ref().unwrap().in_(&trb, &self.dma_bus)
+                self.real_device.as_mut().unwrap().in_(&trb, &self.dma_bus)
             {
                 // send transfer event
                 self.event_ring.enqueue(&completion_event);

@@ -209,7 +209,7 @@ impl DeviceContext {
     ///
     /// - addr_input_context: address of the input context used for
     ///   initialization.
-    pub fn configure_endpoints(&self, addr_input_context: u64) {
+    pub fn configure_endpoints(&self, addr_input_context: u64) -> Vec<u8> {
         let drop_flags = self
             .dma_bus
             .read(Request::new(addr_input_context, RequestSize::Size4));
@@ -237,11 +237,14 @@ impl DeviceContext {
             );
         }
 
+        let mut enabled_endpoints = vec![];
+
         // copy context of added endpoints and enable
         for i in 1..=31 {
             if add_flags & (1 << i) == 0 {
                 continue;
             }
+            enabled_endpoints.push(i as u8);
 
             debug!("Configure Endpoint: A{} is set", i);
 
@@ -271,6 +274,8 @@ impl DeviceContext {
         debug!("A2 {:?}", &data[64..96]);
         debug!("A3 {:?}", &data[96..128]);
         debug!("A4 {:?}", &data[128..160]);
+
+        enabled_endpoints
     }
 
     pub fn set_endpoint_state(&self, endpoint_id: u8, state: u8) {
