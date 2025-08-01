@@ -25,6 +25,9 @@ let
         # Enable debug verbosity.
         boot.consoleLogLevel = 8;
 
+        # allow disk access for users
+        users.users.nixos.extraGroups = [ "disk" ];
+
         # Convenience packages for interactive use
         environment.systemPackages = with pkgs; [ pciutils usbutils ];
 
@@ -42,6 +45,8 @@ let
                 ${pkgs.usbutils}/bin/lsusb
                 echo
                 ${pkgs.util-linux}/bin/fdisk -l
+                echo
+                cat /dev/sda
               '';
               StandardOutput = "journal+console";
               StandardError = "journal+console";
@@ -189,6 +194,7 @@ in
       machine.wait_until_succeeds("grep -Eq '\s+[1-9][0-9]*\s+PCI-MSIX.*xhci_hcd' ${cloudHypervisorLog}")
       machine.wait_until_succeeds("grep -q 'ID ${vendorId}:${productId} QEMU QEMU USB HARDDRIVE' ${cloudHypervisorLog}")
       machine.wait_until_succeeds("grep -q 'Disk /dev/sda:' ${cloudHypervisorLog}")
+      machine.wait_until_succeeds("grep -q 'This is an uninitialized drive.' ${cloudHypervisorLog}")
     '';
   };
 }
