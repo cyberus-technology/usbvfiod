@@ -4,6 +4,7 @@ use tracing::{debug, warn};
 
 use crate::device::bus::BusDeviceRef;
 
+use super::trb::{CompletionCode, EventTrb, TransferTrb};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::{
     fmt::Debug,
@@ -98,5 +99,17 @@ impl RealDevice for NusbDeviceWrapper {
             true => self.control_transfer_device_to_host(request, dma_bus),
             false => self.control_transfer_host_to_device(request, dma_bus),
         }
+    }
+
+    fn out(&mut self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> (CompletionCode, u32) {
+        todo!();
+    }
+
+    fn in_(&mut self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> (CompletionCode, u32) {
+        todo!();
+    }
+
+    fn enable_endpoint(&mut self, endpoint_id: u8) {
+        todo!();
     }
 }
