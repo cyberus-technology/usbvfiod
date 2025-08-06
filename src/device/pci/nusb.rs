@@ -1,10 +1,11 @@
-use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
+use nusb::transfer::{Bulk, ControlIn, ControlOut, ControlType, In, Out, Recipient};
 use nusb::MaybeFuture;
 use tracing::{debug, warn};
 
 use crate::device::bus::BusDeviceRef;
+use crate::device::pci::trb::CompletionCode;
 
-use super::trb::{CompletionCode, EventTrb, TransferTrb};
+use super::trb::{TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::{
     fmt::Debug,
@@ -14,6 +15,9 @@ use std::{
 
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
+    interface: nusb::Interface,
+    ep_in: Option<nusb::Endpoint<Bulk, In>>,
+    ep_out: Option<nusb::Endpoint<Bulk, Out>>,
 }
 
 impl Debug for NusbDeviceWrapper {
@@ -27,8 +31,14 @@ impl Debug for NusbDeviceWrapper {
 }
 
 impl NusbDeviceWrapper {
-    pub const fn new(device: nusb::Device) -> Self {
-        Self { device }
+    pub fn new(device: nusb::Device) -> Self {
+        let interface = device.detach_and_claim_interface(0).wait().unwrap();
+        Self {
+            device,
+            interface,
+            ep_in: None,
+            ep_out: None,
+        }
     }
 
     fn control_transfer_device_to_host(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
@@ -102,14 +112,62 @@ impl RealDevice for NusbDeviceWrapper {
     }
 
     fn out(&mut self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> (CompletionCode, u32) {
-        todo!();
+        let ep_out = self.ep_out.as_mut().unwrap();
+        let normal_data = match trb {
+            TransferTrb {
+                address: _,
+                variant: TransferTrbVariant::Normal(data),
+            } => data,
+            _ => todo!("not normal TRB found for OUT"),
+        };
+        let mut data = vec![0; normal_data.transfer_length as usize];
+        dma_bus.read_bulk(normal_data.data_pointer, &mut data);
+        debug!("{:?}", &data);
+        ep_out.submit(data.into());
+        ep_out
+            .wait_next_complete(Duration::from_millis(200))
+            .unwrap();
+        (CompletionCode::Success, 0)
     }
 
     fn in_(&mut self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> (CompletionCode, u32) {
-        todo!();
+        let ep_in = self.ep_in.as_mut().unwrap();
+        let normal_data = match trb {
+            TransferTrb {
+                address: _,
+                variant: TransferTrbVariant::Normal(data),
+            } => data,
+            _ => todo!("not normal TRB found for IN"),
+        };
+        let buffer = ep_in.allocate(4096);
+        ep_in.submit(buffer);
+        if let Some(buffer) = ep_in.wait_next_complete(Duration::from_millis(200)) {
+            debug!("{:?}", &buffer);
+            dma_bus.write_bulk(normal_data.data_pointer, &buffer.buffer);
+        }
+        (CompletionCode::Success, 0)
     }
 
     fn enable_endpoint(&mut self, endpoint_id: u8) {
-        todo!();
+        match endpoint_id {
+            3 => {
+                if self.ep_in.is_some() {
+                    return;
+                }
+                //assert!(self.ep_in.is_none(), "EP3 is already enabled");
+                self.ep_in = Some(self.interface.endpoint::<Bulk, In>(0x81).unwrap());
+                debug!("enabled EP3 on real device");
+            }
+            4 => {
+                if self.ep_out.is_some() {
+                    return;
+                }
+                assert!(self.ep_out.is_none(), "EP4 is already enabled");
+                self.ep_out = Some(self.interface.endpoint::<Bulk, Out>(0x2).unwrap());
+                debug!("enabled EP4 on real device");
+            }
+            1 => {}
+            _ => todo!(),
+        }
     }
 }
