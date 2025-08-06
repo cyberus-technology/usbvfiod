@@ -30,7 +30,10 @@ use super::{
     realdevice::RealDevice,
     registers::PortscRegister,
     rings::{CommandRing, EventRing},
-    trb::{AddressDeviceCommandTrbData, CommandTrb},
+    trb::{
+        AddressDeviceCommandTrbData, CommandTrb, ConfigureEndpointCommandTrbData,
+        StopEndpointCommandTrbData,
+    },
 };
 
 /// The emulation of a XHCI controller.
@@ -207,14 +210,13 @@ impl XhciController {
                     data.slot_id,
                 )
             }
-            CommandTrbVariant::ConfigureEndpoint(_data) => {
-                // TODO actually configure the endpoint.
-                // For now we just acknowledge the configuration.
+            CommandTrbVariant::ConfigureEndpoint(data) => {
+                self.handle_configure_endpoint(&data);
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
                     CompletionCode::Success,
-                    1,
+                    data.slot_id,
                 )
             }
             CommandTrbVariant::EvaluateContext => todo!(),
@@ -289,6 +291,17 @@ impl XhciController {
         }
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         device_context.initialize(data.input_context_pointer);
+    }
+
+    fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) {
+        if data.deconfigure {
+            panic!("encountered Configure Endpoint Command with deconfigure set");
+        }
+        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+        let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
+        for i in enabled_endpoints {
+            self.real_device.as_mut().unwrap().enable_endpoint(i);
+        }
     }
 
     fn doorbell_device(&mut self, value: u32) {
