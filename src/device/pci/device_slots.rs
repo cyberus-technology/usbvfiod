@@ -6,7 +6,7 @@ use tracing::debug;
 
 use crate::device::bus::{BusDeviceRef, Request, RequestSize};
 
-use super::rings::TransferRing;
+use super::{constants::xhci::device_slots::endpoint_state::*, rings::TransferRing};
 
 /// Abstraction for Device Slots.
 ///
@@ -303,6 +303,18 @@ impl DeviceContext {
     pub fn get_control_transfer_ring(&self) -> TransferRing {
         TransferRing::new(self.get_control_endpoint_context(), self.dma_bus.clone())
     }
+
+    pub fn get_transfer_ring(&self, endpoint_index: u64) -> TransferRing {
+        let endpoint_context = self.get_endpoint_context_internal(endpoint_index);
+        match endpoint_context.get_state() {
+            DISABLED => {
+                panic!("requested transferring for disabled EP{}", endpoint_index)
+            }
+            RUNNING => {}
+            _ => endpoint_context.set_state(RUNNING),
+        };
+        TransferRing::new(endpoint_context, self.dma_bus.clone())
+    }
 }
 
 /// A wrapper around DMA accesses to endpoint context structures.
@@ -355,6 +367,16 @@ impl EndpointContext {
             Request::new(self.address.wrapping_add(8), RequestSize::Size8),
             dequeue_pointer | cycle_state as u64,
         )
+    }
+
+    fn get_state(&self) -> u8 {
+        self.dma_bus
+            .read(Request::new(self.address, RequestSize::Size1)) as u8
+    }
+
+    fn set_state(&self, state: u8) {
+        self.dma_bus
+            .write(Request::new(self.address, RequestSize::Size1), state as u64);
     }
 }
 
