@@ -258,6 +258,13 @@ impl DeviceContext {
         enabled_endpoints
     }
 
+    pub fn set_endpoint_state(&self, endpoint_id: u8, state: u8) {
+        self.dma_bus.write(
+            Request::new(self.address + endpoint_id as u64 * 32, RequestSize::Size1),
+            state as u64,
+        );
+    }
+
     /// Give access to an endpoint context based on its index in the device
     /// context.
     ///

@@ -25,7 +25,7 @@ use crate::device::{
 
 use super::{
     config_space::BarInfo,
-    constants::xhci::operational::usbsts,
+    constants::xhci::{device_slots::endpoint_state, operational::usbsts},
     device_slots::DeviceSlotManager,
     realdevice::RealDevice,
     registers::PortscRegister,
@@ -222,10 +222,7 @@ impl XhciController {
             CommandTrbVariant::EvaluateContext => todo!(),
             CommandTrbVariant::ResetEndpoint => todo!(),
             CommandTrbVariant::StopEndpoint(data) => {
-                // TODO this command probably requires more handling.
-                // Currently, we just acknowledge to not crash usbvfiod in the
-                // integration test.
-                let _ = data.endpoint_id;
+                self.handle_stop_endpoint(&data);
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
@@ -302,6 +299,11 @@ impl XhciController {
         for i in enabled_endpoints {
             self.real_device.as_mut().unwrap().enable_endpoint(i);
         }
+    }
+
+    fn handle_stop_endpoint(&self, data: &StopEndpointCommandTrbData) {
+        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+        device_context.set_endpoint_state(data.endpoint_id, endpoint_state::RUNNING);
     }
 
     fn doorbell_device(&mut self, value: u32) {
