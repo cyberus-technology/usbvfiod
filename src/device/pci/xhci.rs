@@ -311,14 +311,20 @@ impl XhciController {
 
     fn doorbell_device(&mut self, value: u32) {
         debug!("Ding Dong Device with value {}!", value);
-        // TODO inspect value
-        // currently we assume it is 1, which indicates a request on the control transfer ring
-        assert_eq!(1, value, "currently only implemented doorbell rings that indicate requests on the control transfer ring");
 
+        match value {
+            ep if ep == 0 || ep > 31 => panic!("invalid value {} on doorbell write", ep),
+            1 => self.check_control_endpoint(1),
+            ep if ep % 2 == 0 => self.check_out_endpoint(1, value as u8),
+            ep => self.check_in_endpoint(1, ep as u8),
+        };
+    }
+
+    fn check_control_endpoint(&mut self, slot: u8) {
         // check request available
         let transfer_ring = self
             .device_slot_manager
-            .get_device_context(1)
+            .get_device_context(slot)
             .get_control_transfer_ring();
 
         let request = match transfer_ring.next_request() {
@@ -361,9 +367,58 @@ impl XhciController {
             CompletionCode::Success,
             false,
             1,
-            1,
+            slot,
         );
         self.event_ring.enqueue(&trb);
+        self.interrupt_line.interrupt();
+        debug!("sent Transfer Event and signaled interrupt");
+    }
+
+    fn check_out_endpoint(&mut self, slot: u8, ep: u8) {
+        let transfer_ring = self
+            .device_slot_manager
+            .get_device_context(slot)
+            .get_transfer_ring(ep as u64);
+
+        let trb = transfer_ring.next_transfer_trb().unwrap();
+        debug!("TRB on endpoint {} (OUT): {:?}", ep, trb);
+        let (completion_code, residual_bytes) =
+            self.real_device.as_mut().unwrap().out(&trb, &self.dma_bus);
+        // send transfer event
+        let trb = EventTrb::new_transfer_event_trb(
+            trb.address,
+            residual_bytes,
+            completion_code,
+            false,
+            ep,
+            slot,
+        );
+        self.event_ring.enqueue(&trb);
+        self.interrupt_line.interrupt();
+        debug!("sent Transfer Event and signaled interrupt");
+        return;
+    }
+
+    fn check_in_endpoint(&mut self, slot: u8, ep: u8) {
+        let transfer_ring = self
+            .device_slot_manager
+            .get_device_context(slot)
+            .get_transfer_ring(ep as u64);
+
+        let trb = transfer_ring.next_transfer_trb().unwrap();
+        debug!("TRB on endpoint {} (IN): {:?}", ep, trb);
+        let (completion_code, residual_bytes) =
+            self.real_device.as_mut().unwrap().in_(&trb, &self.dma_bus);
+        // send transfer event
+        let transfer_event = EventTrb::new_transfer_event_trb(
+            trb.address,
+            residual_bytes,
+            completion_code,
+            false,
+            ep,
+            slot,
+        );
+        self.event_ring.enqueue(&transfer_event);
         self.interrupt_line.interrupt();
         debug!("sent Transfer Event and signaled interrupt");
     }
