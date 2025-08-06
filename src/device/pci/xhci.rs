@@ -175,15 +175,8 @@ impl XhciController {
 
     fn doorbell_controller(&mut self) {
         debug!("Ding Dong!");
-        // check command available
-        let next = self.command_ring.next_command_trb();
-        if let Some(cmd) = next {
+        while let Some(cmd) = self.command_ring.next_command_trb() {
             self.handle_command(cmd);
-        } else {
-            debug!(
-                "Doorbell was rang, but no (valid) command found on the command ring ({:?})",
-                next
-            );
         }
     }
 
