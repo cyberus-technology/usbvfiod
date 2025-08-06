@@ -401,22 +401,23 @@ impl XhciController {
             .get_device_context(slot)
             .get_transfer_ring(ep as u64);
 
-        let trb = transfer_ring.next_transfer_trb().unwrap();
-        debug!("TRB on endpoint {} (IN): {:?}", ep, trb);
-        let (completion_code, residual_bytes) =
-            self.real_device.as_mut().unwrap().in_(&trb, &self.dma_bus);
-        // send transfer event
-        let transfer_event = EventTrb::new_transfer_event_trb(
-            trb.address,
-            residual_bytes,
-            completion_code,
-            false,
-            ep,
-            slot,
-        );
-        self.event_ring.enqueue(&transfer_event);
-        self.interrupt_line.interrupt();
-        debug!("sent Transfer Event and signaled interrupt");
+        while let Some(trb) = transfer_ring.next_transfer_trb() {
+            debug!("TRB on endpoint {} (IN): {:?}", ep, trb);
+            let (completion_code, residual_bytes) =
+                self.real_device.as_mut().unwrap().in_(&trb, &self.dma_bus);
+            // send transfer event
+            let transfer_event = EventTrb::new_transfer_event_trb(
+                trb.address,
+                residual_bytes,
+                completion_code,
+                false,
+                ep,
+                slot,
+            );
+            self.event_ring.enqueue(&transfer_event);
+            self.interrupt_line.interrupt();
+            debug!("sent Transfer Event and signaled interrupt");
+        }
     }
 }
 
