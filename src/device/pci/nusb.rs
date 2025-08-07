@@ -54,7 +54,7 @@ impl NusbDeviceWrapper {
         debug!("sending control in request to device");
         let data = match self
             .device
-            .control_in(control, Duration::from_millis(200))
+            .control_in(control, Duration::from_millis(400))
             .wait()
         {
             Ok(data) => {
@@ -93,7 +93,7 @@ impl NusbDeviceWrapper {
         };
         match self
             .device
-            .control_out(control, Duration::from_millis(200))
+            .control_out(control, Duration::from_millis(400))
             .wait()
         {
             Ok(_) => debug!("control out success"),
@@ -125,7 +125,7 @@ impl RealDevice for NusbDeviceWrapper {
         debug!("{:?}", &data);
         ep_out.submit(data.into());
         ep_out
-            .wait_next_complete(Duration::from_millis(200))
+            .wait_next_complete(Duration::from_millis(400))
             .unwrap();
         (CompletionCode::Success, 0)
     }
@@ -141,9 +141,12 @@ impl RealDevice for NusbDeviceWrapper {
         };
         let buffer = ep_in.allocate(4096);
         ep_in.submit(buffer);
-        if let Some(buffer) = ep_in.wait_next_complete(Duration::from_millis(200)) {
+        if let Some(buffer) = ep_in.wait_next_complete(Duration::from_millis(400)) {
             debug!("{:?}", &buffer);
-            dma_bus.write_bulk(normal_data.data_pointer, &buffer.buffer);
+            dma_bus.write_bulk(
+                normal_data.data_pointer,
+                &buffer.buffer[0..normal_data.transfer_length as usize],
+            );
         }
         (CompletionCode::Success, 0)
     }
