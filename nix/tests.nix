@@ -32,27 +32,27 @@ let
         environment.systemPackages = with pkgs; [ pciutils usbutils ];
 
         # Add user services that run on automatic login.
-        systemd.user.services = {
-          dump-diagnostics = {
-            description = "Dump diagnostic information";
-            wantedBy = [ "default.target" ];
+        #systemd.user.services = {
+        #  dump-diagnostics = {
+        #    description = "Dump diagnostic information";
+        #    wantedBy = [ "default.target" ];
 
-            serviceConfig = {
-              ExecStart = pkgs.writeShellScript "diagnostic-dump" ''
-                echo Dumping Diagnostics
-                cat /proc/interrupts
-                echo
-                ${pkgs.usbutils}/bin/lsusb
-                echo
-                ${pkgs.util-linux}/bin/lsblk
-                echo
-                cat /dev/sda
-              '';
-              StandardOutput = "journal+console";
-              StandardError = "journal+console";
-            };
-          };
-        };
+        #    serviceConfig = {
+        #      ExecStart = pkgs.writeShellScript "diagnostic-dump" ''
+        #        echo Dumping Diagnostics
+        #        cat /proc/interrupts
+        #        echo
+        #        ${pkgs.usbutils}/bin/lsusb
+        #        echo
+        #        ${pkgs.util-linux}/bin/lsblk
+        #        echo
+        #        cat /dev/sda
+        #      '';
+        #      StandardOutput = "journal+console";
+        #      StandardError = "journal+console";
+        #    };
+        #  };
+        #};
 
         # Silence the useless stateVersion warning. We have no state to keep.
         system.stateVersion = config.system.nixos.release;
@@ -117,6 +117,17 @@ in
       environment.systemPackages = with pkgs; [
         jq
         usbutils
+        tmux
+        (pkgs.writeScriptBin "usbvfiod" ''
+          ${lib.getExe usbvfiod} -v --socket-path ${usbvfiodSocket} --device "/dev/bus/usb/teststorage"
+        '')
+        (pkgs.writeScriptBin "chv" ''
+          ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off --serial tty \
+              --kernel ${netboot.kernel} \
+              --cmdline ${lib.escapeShellArg netboot.cmdline} \
+              --initramfs ${netboot.initrd} \
+              --user-device socket=${usbvfiodSocket}
+        '')
       ];
 
       services.udev.extraRules = ''
@@ -132,35 +143,35 @@ in
 
       boot.kernelModules = [ "kvm" ];
       systemd.services = {
-        usbvfiod = {
-          wantedBy = [ "multi-user.target" ];
+        #usbvfiod = {
+        #  wantedBy = [ "multi-user.target" ];
 
-          serviceConfig = {
-            User = "usbaccess";
-            Group = "usbaccess";
-            ExecStart = ''
-              ${lib.getExe usbvfiod} -v --socket-path ${usbvfiodSocket} --device "/dev/bus/usb/teststorage"
-            '';
-          };
-        };
+        #  serviceConfig = {
+        #    User = "usbaccess";
+        #    Group = "usbaccess";
+        #    ExecStart = ''
+        #      ${lib.getExe usbvfiod} -v --socket-path ${usbvfiodSocket} --device "/dev/bus/usb/teststorage"
+        #    '';
+        #  };
+        #};
 
-        cloud-hypervisor = {
-          wantedBy = [ "multi-user.target" ];
-          requires = [ "usbvfiod.service" ];
-          after = [ "usbvfiod.service" ];
+        #cloud-hypervisor = {
+        #  wantedBy = [ "multi-user.target" ];
+        #  requires = [ "usbvfiod.service" ];
+        #  after = [ "usbvfiod.service" ];
 
-          serviceConfig = {
-            Restart = "on-failure";
-            RestartSec = "2s";
-            ExecStart = ''
-              ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off --serial file=${cloudHypervisorLog} \
-                --kernel ${netboot.kernel} \
-                --cmdline ${lib.escapeShellArg netboot.cmdline} \
-                --initramfs ${netboot.initrd} \
-                --user-device socket=${usbvfiodSocket}
-            '';
-          };
-        };
+        #  serviceConfig = {
+        #    Restart = "on-failure";
+        #    RestartSec = "2s";
+        #    ExecStart = ''
+        #      ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off --serial file=${cloudHypervisorLog} \
+        #        --kernel ${netboot.kernel} \
+        #        --cmdline ${lib.escapeShellArg netboot.cmdline} \
+        #        --initramfs ${netboot.initrd} \
+        #        --user-device socket=${usbvfiodSocket}
+        #    '';
+        #  };
+        #};
       };
 
       virtualisation = {
