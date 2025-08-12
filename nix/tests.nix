@@ -47,6 +47,9 @@ let
                 ${pkgs.util-linux}/bin/fdisk -l
                 echo
                 cat /dev/sda
+                echo
+                echo -n "You are" > /dev/sda
+                cat /dev/sda
               '';
               StandardOutput = "journal+console";
               StandardError = "journal+console";
@@ -195,6 +198,7 @@ in
       machine.wait_until_succeeds("grep -q 'ID ${vendorId}:${productId} QEMU QEMU USB HARDDRIVE' ${cloudHypervisorLog}")
       machine.wait_until_succeeds("grep -q 'Disk /dev/sda:' ${cloudHypervisorLog}")
       machine.wait_until_succeeds("grep -q 'This is an uninitialized drive.' ${cloudHypervisorLog}")
+      machine.wait_until_succeeds("grep -q 'You are an uninitialized drive.' ${cloudHypervisorLog}")
     '';
   };
 }
