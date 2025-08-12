@@ -153,6 +153,8 @@ in
           after = [ "usbvfiod.service" ];
 
           serviceConfig = {
+            Restart = "on-failure";
+            RestartSec = "2s";
             ExecStart = ''
               ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off --serial file=${cloudHypervisorLog} \
                 --kernel ${netboot.kernel} \
