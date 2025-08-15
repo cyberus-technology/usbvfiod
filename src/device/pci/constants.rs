@@ -394,4 +394,23 @@ pub mod xhci {
             }
         }
     }
+
+    /// Constants specific to device slots and their context structures
+    pub mod device_slots {
+        /// The slot state encoded in the slot context
+        pub mod slot_state {
+            pub const DISABLED_ENABLED: u8 = 0;
+            pub const DEFAULT: u8 = 1;
+            pub const ADDRESSED: u8 = 2;
+            pub const CONFIGURED: u8 = 3;
+        }
+        /// The endpoint state encoded in endpoint contexts
+        pub mod endpoint_state {
+            pub const DISABLED: u8 = 0;
+            pub const RUNNING: u8 = 1;
+            pub const HALTED: u8 = 2;
+            pub const STOPPED: u8 = 3;
+            pub const ERROR: u8 = 4;
+        }
+    }
 }
