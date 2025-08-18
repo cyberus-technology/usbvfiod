@@ -77,19 +77,6 @@ pub struct EventRing {
     /// event ring (i.e., in our case, when we move from the back of the
     /// segment to the front of the single segment).
     cycle_state: bool,
-    /// The base address of the first (and only) Event Ring segment.
-    ///
-    /// This value is derived from the Event Ring Segment Table during
-    /// controller initialization (ERSTBA write).
-    /// We use this address to wrap around the enqueue pointer once the
-    /// segment is full.
-    segment_base: u64,
-    /// The number of TRBs that the first (and only) segment can hold.
-    ///
-    /// The size is parsed from the Event Ring Segment Table at setup time.
-    /// When the TRB count reaches 0, the ring wraps to `segment_base`
-    /// and this value is used to reset `trb_count`.
-    segment_size: u32,
 }
 
 impl EventRing {
@@ -106,8 +93,6 @@ impl EventRing {
             enqueue_pointer: 0,
             trb_count: 0,
             cycle_state: false,
-            segment_base: 0,
-            segment_size: 0,
         }
     }
 
@@ -126,17 +111,15 @@ impl EventRing {
         assert_eq!(erstba & 0x3f, 0, "unaligned event ring base address");
 
         self.base_address = erstba;
-        self.segment_base = self.dma_bus.read(Request::new(
+        self.enqueue_pointer = self.dma_bus.read(Request::new(
             erstba.wrapping_add(BASE_ADDR),
             RequestSize::Size8,
         ));
-        self.segment_size = self
+        self.trb_count = self
             .dma_bus
             .read(Request::new(erstba.wrapping_add(SIZE), RequestSize::Size4))
             as u32;
         self.cycle_state = true;
-        self.enqueue_pointer = self.segment_base;
-        self.trb_count = self.segment_size;
 
         debug!("event ring segment table is at {:#x}", erstba);
         debug!(
@@ -217,23 +200,35 @@ impl EventRing {
     /// # Return
     /// - `true` if the Event Ring is full and an Event Ring Full Error Event should be enqueued at the current position.
     /// - `false` if there is at least one more slot available.
-    const fn check_event_ring_full(&self) -> bool {
+    fn check_event_ring_full(&self) -> bool {
         self.dequeue_pointer
             == match self.trb_count {
-                1 => self.segment_base,
+                1 => self.dma_bus.read(Request::new(
+                    self.base_address.wrapping_add(BASE_ADDR),
+                    RequestSize::Size8,
+                )),
                 _ => self.enqueue_pointer.wrapping_add(TRB_SIZE as u64),
             }
     }
 
     /// Wraps the Event Ring back to the segment base to start a new cycle.
     fn wraparound(&mut self) {
-        self.enqueue_pointer = self.segment_base;
-        self.trb_count = self.segment_size;
+        self.enqueue_pointer = self.dma_bus.read(Request::new(
+            self.base_address.wrapping_add(BASE_ADDR),
+            RequestSize::Size8,
+        ));
+        self.trb_count = self.dma_bus.read(Request::new(
+            self.base_address.wrapping_add(SIZE),
+            RequestSize::Size4,
+        )) as u32;
         self.cycle_state = !self.cycle_state;
 
         trace!(
             "Wrapped around event ring to base {:#x}, cycle_state flipped",
-            self.segment_base
+            self.dma_bus.read(Request::new(
+                self.base_address.wrapping_add(BASE_ADDR),
+                RequestSize::Size8,
+            ))
         );
     }
 }
@@ -668,7 +663,10 @@ mod tests {
         ram.write_bulk(0x0, &erste);
         let mut ring = EventRing::new(ram.clone());
         ring.configure(0x0);
-        ring.update_dequeue_pointer(ring.segment_base);
+        ring.update_dequeue_pointer(
+            ring.dma_bus
+                .read(Request::new(ring.base_address, RequestSize::Size8)),
+        );
 
         (ram, ring)
     }
