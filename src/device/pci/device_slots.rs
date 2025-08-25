@@ -175,13 +175,8 @@ impl DeviceContext {
         self.dma_bus
             .read_bulk(addr_input_context, &mut input_context);
 
-        // set slot state to addressed
-        let slot_state_addressed = 2;
-        input_context[32 + 15] = slot_state_addressed << 3;
-
-        // set endpoint state to enabled
-        let ep_state_running = 1;
-        input_context[64] = ep_state_running;
+        input_context[32 + 15] = slot_state::ADDRESSED << 3;
+        input_context[64] = endpoint_state::RUNNING;
 
         // fill slot context and ep0 context (as indicated by flags A0 and A1)
         self.dma_bus
