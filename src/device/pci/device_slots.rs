@@ -4,7 +4,10 @@
 
 use tracing::debug;
 
-use crate::device::bus::{BusDeviceRef, Request, RequestSize};
+use crate::device::{
+    bus::{BusDeviceRef, Request, RequestSize},
+    pci::constants::xhci::device_slots::{endpoint_state, slot_state},
+};
 
 use super::{constants::xhci::device_slots::endpoint_state::*, rings::TransferRing};
 
@@ -250,8 +253,7 @@ impl DeviceContext {
         // copy slot context
         assert_eq!(add_flags & 0x1, 1, "Flag A0 should always be set");
 
-        let slot_state_configured = 3;
-        input_context[15] = slot_state_configured << 3;
+        input_context[15] = slot_state::CONFIGURED << 3;
 
         self.dma_bus.write_bulk(self.address, &input_context[0..32]);
 
