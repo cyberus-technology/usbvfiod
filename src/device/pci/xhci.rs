@@ -303,7 +303,7 @@ impl XhciController {
 
     fn handle_stop_endpoint(&self, data: &StopEndpointCommandTrbData) {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
-        device_context.set_endpoint_state(data.endpoint_id, endpoint_state::RUNNING);
+        device_context.set_endpoint_state(data.endpoint_id, endpoint_state::STOPPED);
     }
 
     fn doorbell_device(&mut self, value: u32) {
