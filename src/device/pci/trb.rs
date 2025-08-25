@@ -345,7 +345,7 @@ pub enum CommandTrbVariant {
     EnableSlot,
     DisableSlot,
     AddressDevice(AddressDeviceCommandTrbData),
-    ConfigureEndpoint,
+    ConfigureEndpoint(ConfigureEndpointCommandTrbData),
     EvaluateContext,
     ResetEndpoint,
     StopEndpoint(StopEndpointCommandTrbData),
@@ -381,7 +381,7 @@ impl CommandTrbVariant {
             trb_types::ENABLE_SLOT_COMMAND => Self::EnableSlot,
             trb_types::DISABLE_SLOT_COMMAND => Self::DisableSlot,
             trb_types::ADDRESS_DEVICE_COMMAND => parse(Self::AddressDevice, bytes),
-            trb_types::CONFIGURE_ENDPOINT_COMMAND => Self::ConfigureEndpoint,
+            trb_types::CONFIGURE_ENDPOINT_COMMAND => parse(Self::ConfigureEndpoint, bytes),
             trb_types::EVALUATE_CONTEXT_COMMAND => Self::EvaluateContext,
             trb_types::RESET_ENDPOINT_COMMAND => Self::ResetEndpoint,
             trb_types::STOP_ENDPOINT_COMMAND => parse(Self::StopEndpoint, bytes),
@@ -419,7 +419,6 @@ impl CommandTrbVariant {
     }
 }
 
-/// Custom error type to represent errors in TRB parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkTrbData {
     /// The address of the next ring segment.
@@ -514,6 +513,51 @@ impl TrbData for AddressDeviceCommandTrbData {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub struct ConfigureEndpointCommandTrbData {
+    pub input_context_pointer: u64,
+    pub deconfigure: bool,
+    pub slot_id: u8,
+}
+
+impl TrbData for ConfigureEndpointCommandTrbData {
+    /// Parse data of a Configure Endpoint Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects all RsvdZ
+    /// fields.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::CONFIGURE_ENDPOINT_COMMAND,
+            trb_type,
+            "ConfigureEndpointCommandTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
+            trb_type
+        );
+
+        let icp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
+        let input_context_pointer = u64::from_le_bytes(icp_bytes);
+
+        // the lowest four bit of the pointer are RsvdZ to ensure 16-byte
+        // alignment.
+        if input_context_pointer & 0xf != 0 {
+            return Err(TrbParseError::RsvdZViolation);
+        }
+
+        let deconfigure = trb_bytes[13] & 0x2 != 0;
+        let slot_id = trb_bytes[15];
+
+        Ok(Self {
+            input_context_pointer,
+            deconfigure,
+            slot_id,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct StopEndpointCommandTrbData {
     /// The endpoint to stop.
     pub endpoint_id: u8,
@@ -561,7 +605,7 @@ pub struct TransferTrb {
 /// Represents a TRB that the driver can place on a transfer ring.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TransferTrbVariant {
-    Normal,
+    Normal(NormalTrbData),
     SetupStage(SetupStageTrbData),
     DataStage(DataStageTrbData),
     StatusStage,
@@ -589,7 +633,7 @@ impl TransferTrbVariant {
     pub fn parse(bytes: RawTrbBuffer) -> Self {
         let trb_type = bytes[13] >> 2;
         match trb_type {
-            trb_types::NORMAL => Self::Normal,
+            trb_types::NORMAL => parse(Self::Normal, bytes),
             trb_types::SETUP_STAGE => parse(Self::SetupStage, bytes),
             trb_types::DATA_STAGE => parse(Self::DataStage, bytes),
             trb_types::STATUS_STAGE => Self::StatusStage,
@@ -599,6 +643,50 @@ impl TransferTrbVariant {
             trb_types::NO_OP => Self::NoOp,
             trb_type => Self::Unrecognized(bytes, TrbParseError::UnknownTrbType(trb_type)),
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct NormalTrbData {
+    pub data_pointer: u64,
+    pub transfer_length: u16,
+    pub chain: bool,
+    pub interrupt_on_completion: bool,
+}
+
+impl TrbData for NormalTrbData {
+    /// Parse data of a Normal TRB.
+    ///
+    /// Only `TransferTrb::try_from` should call this function.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects RsvdZ
+    /// fields.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::NORMAL,
+            trb_type,
+            "SetupStageTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
+            trb_type
+        );
+
+        let dp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
+        let data_pointer = u64::from_le_bytes(dp_bytes);
+
+        let tl_bytes: [u8; 2] = trb_bytes[8..10].try_into().unwrap();
+        let transfer_length = u16::from_le_bytes(tl_bytes);
+
+        let chain = trb_bytes[12] & 0x10 != 0;
+        let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
+
+        Ok(Self {
+            data_pointer,
+            transfer_length,
+            chain,
+            interrupt_on_completion,
+        })
     }
 }
 
@@ -681,6 +769,7 @@ impl TrbData for DataStageTrbData {
     }
 }
 
+/// Custom error type to represent errors in TRB parsing.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum TrbParseError {
     #[error("TRB type {0} refers to \"{1}\", which is optional and not supported.")]
@@ -727,6 +816,20 @@ mod tests {
         let expected = CommandTrbVariant::AddressDevice(AddressDeviceCommandTrbData {
             input_context_pointer: 0x1122334455667780,
             block_set_address_request: true,
+            slot_id: 0x13,
+        });
+        assert_eq!(CommandTrbVariant::parse(trb_bytes), expected);
+    }
+
+    #[test]
+    fn parse_configure_endpoint_command_trb() {
+        let trb_bytes = [
+            0x80, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x02, 0x32,
+            0x00, 0x13,
+        ];
+        let expected = CommandTrbVariant::ConfigureEndpoint(ConfigureEndpointCommandTrbData {
+            input_context_pointer: 0x1122334455667780,
+            deconfigure: true,
             slot_id: 0x13,
         });
         assert_eq!(CommandTrbVariant::parse(trb_bytes), expected);
@@ -783,6 +886,21 @@ mod tests {
         let expected = TransferTrbVariant::Link(LinkTrbData {
             ring_segment_pointer: 0x1122334455667780,
             toggle_cycle: true,
+        });
+        assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
+    }
+
+    #[test]
+    fn test_parse_normal_trb() {
+        let trb_bytes = [
+            0x11, 0x22, 0x44, 0x33, 0x66, 0x55, 0x88, 0x77, 0x12, 0x34, 0x00, 0x00, 0x30, 0x04,
+            0x00, 0x00,
+        ];
+        let expected = TransferTrbVariant::Normal(NormalTrbData {
+            data_pointer: 0x7788556633442211,
+            transfer_length: 0x3412,
+            chain: true,
+            interrupt_on_completion: true,
         });
         assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
     }

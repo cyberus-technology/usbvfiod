@@ -2,9 +2,14 @@
 //!
 //! This module offers an abstraction for device slots.
 
-use crate::device::bus::{BusDeviceRef, Request, RequestSize};
+use tracing::debug;
 
-use super::rings::TransferRing;
+use crate::device::{
+    bus::{BusDeviceRef, Request, RequestSize},
+    pci::constants::xhci::device_slots::{endpoint_state, slot_state},
+};
+
+use super::{constants::xhci::device_slots::endpoint_state::*, rings::TransferRing};
 
 /// Abstraction for Device Slots.
 ///
@@ -170,17 +175,91 @@ impl DeviceContext {
         self.dma_bus
             .read_bulk(addr_input_context, &mut input_context);
 
-        // set slot state to addressed
-        let slot_state_addressed = 2;
-        input_context[32 + 15] = slot_state_addressed << 3;
-
-        // set endpoint state to enabled
-        let ep_state_running = 1;
-        input_context[64] = ep_state_running;
+        input_context[32 + 15] = slot_state::ADDRESSED << 3;
+        input_context[64] = endpoint_state::RUNNING;
 
         // fill slot context and ep0 context (as indicated by flags A0 and A1)
         self.dma_bus
             .write_bulk(self.address, &input_context[32..96]);
+    }
+
+    /// Update the device context with an input context.
+    ///
+    /// Call this function on ConfigureEndpointCommand. The command contains a
+    /// pointer to an input context (which is this function's parameter).
+    /// The XHCI controller is supposed to validate the values and copy the
+    /// data to the device context---we only do the latter and assume the
+    /// input is fine.
+    ///
+    /// The function returns the enabled endpoints, so that the same
+    /// endpoints can be configured on the real device.
+    ///
+    /// # Parameters
+    ///
+    /// - addr_input_context: address of the input context used for
+    ///   initialization.
+    pub fn configure_endpoints(&self, addr_input_context: u64) -> Vec<u8> {
+        let drop_flags = self
+            .dma_bus
+            .read(Request::new(addr_input_context, RequestSize::Size4));
+        let add_flags = self
+            .dma_bus
+            .read(Request::new(addr_input_context + 4, RequestSize::Size4));
+
+        // read slot and endpoint contexts
+        let mut input_context = [0; 1024];
+        self.dma_bus
+            .read_bulk(addr_input_context + 32, &mut input_context);
+
+        // disable dropped endpoints
+        for i in 2..=31 {
+            if drop_flags & (1 << i) == 0 {
+                continue;
+            }
+
+            debug!("Configure Endpoint: D{} is set", i);
+
+            let ep_context_offset = i * 32;
+            self.dma_bus.write(
+                Request::new(self.address + ep_context_offset, RequestSize::Size1),
+                0,
+            );
+        }
+
+        let mut enabled_endpoints = vec![];
+
+        // copy context of added endpoints and enable
+        for i in 1..=31 {
+            if add_flags & (1 << i) == 0 {
+                continue;
+            }
+            enabled_endpoints.push(i as u8);
+
+            debug!("Configure Endpoint: A{} is set", i);
+
+            let ep_context_offset = i * 32;
+            input_context[ep_context_offset] = 1;
+            self.dma_bus.write_bulk(
+                self.address + ep_context_offset as u64,
+                &input_context[ep_context_offset..ep_context_offset + 32],
+            );
+        }
+
+        // copy slot context
+        assert_eq!(add_flags & 0x1, 1, "Flag A0 should always be set");
+
+        input_context[15] = slot_state::CONFIGURED << 3;
+
+        self.dma_bus.write_bulk(self.address, &input_context[0..32]);
+
+        enabled_endpoints
+    }
+
+    pub fn set_endpoint_state(&self, endpoint_id: u8, state: u8) {
+        self.dma_bus.write(
+            Request::new(self.address + endpoint_id as u64 * 32, RequestSize::Size1),
+            state as u64,
+        );
     }
 
     /// Give access to an endpoint context based on its index in the device
@@ -220,6 +299,18 @@ impl DeviceContext {
     /// Endpoint 0 is a special endpoint. It always exists and it is bi-directional.
     pub fn get_control_transfer_ring(&self) -> TransferRing {
         TransferRing::new(self.get_control_endpoint_context(), self.dma_bus.clone())
+    }
+
+    pub fn get_transfer_ring(&self, endpoint_index: u64) -> TransferRing {
+        let endpoint_context = self.get_endpoint_context_internal(endpoint_index);
+        match endpoint_context.get_state() {
+            DISABLED => {
+                panic!("requested transferring for disabled EP{}", endpoint_index)
+            }
+            RUNNING => {}
+            _ => endpoint_context.set_state(RUNNING),
+        };
+        TransferRing::new(endpoint_context, self.dma_bus.clone())
     }
 }
 
@@ -273,6 +364,16 @@ impl EndpointContext {
             Request::new(self.address.wrapping_add(8), RequestSize::Size8),
             dequeue_pointer | cycle_state as u64,
         )
+    }
+
+    fn get_state(&self) -> u8 {
+        self.dma_bus
+            .read(Request::new(self.address, RequestSize::Size1)) as u8
+    }
+
+    fn set_state(&self, state: u8) {
+        self.dma_bus
+            .write(Request::new(self.address, RequestSize::Size1), state as u64);
     }
 }
 

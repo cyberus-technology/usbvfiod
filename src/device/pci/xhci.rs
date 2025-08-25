@@ -25,12 +25,15 @@ use crate::device::{
 
 use super::{
     config_space::BarInfo,
-    constants::xhci::operational::usbsts,
+    constants::xhci::{device_slots::endpoint_state, operational::usbsts},
     device_slots::DeviceSlotManager,
     realdevice::RealDevice,
     registers::PortscRegister,
     rings::{CommandRing, EventRing},
-    trb::{AddressDeviceCommandTrbData, CommandTrb},
+    trb::{
+        AddressDeviceCommandTrbData, CommandTrb, ConfigureEndpointCommandTrbData,
+        StopEndpointCommandTrbData,
+    },
 };
 
 /// The emulation of a XHCI controller.
@@ -175,15 +178,8 @@ impl XhciController {
 
     fn doorbell_controller(&mut self) {
         debug!("Ding Dong!");
-        // check command available
-        let next = self.command_ring.next_command_trb();
-        if let Some(cmd) = next {
+        while let Some(cmd) = self.command_ring.next_command_trb() {
             self.handle_command(cmd);
-        } else {
-            debug!(
-                "Doorbell was rang, but no (valid) command found on the command ring ({:?})",
-                next
-            );
         }
     }
 
@@ -214,23 +210,19 @@ impl XhciController {
                     data.slot_id,
                 )
             }
-            CommandTrbVariant::ConfigureEndpoint => {
-                // TODO actually configure the endpoint.
-                // For now we just acknowledge the configuration.
+            CommandTrbVariant::ConfigureEndpoint(data) => {
+                self.handle_configure_endpoint(&data);
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
                     CompletionCode::Success,
-                    1,
+                    data.slot_id,
                 )
             }
             CommandTrbVariant::EvaluateContext => todo!(),
             CommandTrbVariant::ResetEndpoint => todo!(),
             CommandTrbVariant::StopEndpoint(data) => {
-                // TODO this command probably requires more handling.
-                // Currently, we just acknowledge to not crash usbvfiod in the
-                // integration test.
-                let _ = data.endpoint_id;
+                self.handle_stop_endpoint(&data);
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
@@ -298,16 +290,38 @@ impl XhciController {
         device_context.initialize(data.input_context_pointer);
     }
 
+    fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) {
+        if data.deconfigure {
+            todo!("encountered Configure Endpoint Command with deconfigure set");
+        }
+        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+        let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
+        for i in enabled_endpoints {
+            self.real_device.as_mut().unwrap().enable_endpoint(i);
+        }
+    }
+
+    fn handle_stop_endpoint(&self, data: &StopEndpointCommandTrbData) {
+        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+        device_context.set_endpoint_state(data.endpoint_id, endpoint_state::STOPPED);
+    }
+
     fn doorbell_device(&mut self, value: u32) {
         debug!("Ding Dong Device with value {}!", value);
-        // TODO inspect value
-        // currently we assume it is 1, which indicates a request on the control transfer ring
-        assert_eq!(1, value, "currently only implemented doorbell rings that indicate requests on the control transfer ring");
 
+        match value {
+            ep if ep == 0 || ep > 31 => panic!("invalid value {} on doorbell write", ep),
+            1 => self.check_control_endpoint(1),
+            ep if ep % 2 == 0 => self.check_out_endpoint(1, ep as u8),
+            ep => self.check_in_endpoint(1, ep as u8),
+        };
+    }
+
+    fn check_control_endpoint(&mut self, slot: u8) {
         // check request available
         let transfer_ring = self
             .device_slot_manager
-            .get_device_context(1)
+            .get_device_context(slot)
             .get_control_transfer_ring();
 
         let request = match transfer_ring.next_request() {
@@ -350,11 +364,66 @@ impl XhciController {
             CompletionCode::Success,
             false,
             1,
-            1,
+            slot,
         );
         self.event_ring.enqueue(&trb);
         self.interrupt_line.interrupt();
         debug!("sent Transfer Event and signaled interrupt");
+    }
+
+    fn check_out_endpoint(&mut self, slot: u8, ep: u8) {
+        let transfer_ring = self
+            .device_slot_manager
+            .get_device_context(slot)
+            .get_transfer_ring(ep as u64);
+
+        let trb = transfer_ring.next_transfer_trb().unwrap();
+        debug!("TRB on endpoint {} (OUT): {:?}", ep, trb);
+        let (completion_code, residual_bytes) = self
+            .real_device
+            .as_mut()
+            .unwrap()
+            .transfer_out(&trb, &self.dma_bus);
+        // send transfer event
+        let trb = EventTrb::new_transfer_event_trb(
+            trb.address,
+            residual_bytes,
+            completion_code,
+            false,
+            ep,
+            slot,
+        );
+        self.event_ring.enqueue(&trb);
+        self.interrupt_line.interrupt();
+        debug!("sent Transfer Event and signaled interrupt");
+    }
+
+    fn check_in_endpoint(&mut self, slot: u8, ep: u8) {
+        let transfer_ring = self
+            .device_slot_manager
+            .get_device_context(slot)
+            .get_transfer_ring(ep as u64);
+
+        while let Some(trb) = transfer_ring.next_transfer_trb() {
+            debug!("TRB on endpoint {} (IN): {:?}", ep, trb);
+            let (completion_code, residual_bytes) = self
+                .real_device
+                .as_mut()
+                .unwrap()
+                .transfer_in(&trb, &self.dma_bus);
+            // send transfer event
+            let transfer_event = EventTrb::new_transfer_event_trb(
+                trb.address,
+                residual_bytes,
+                completion_code,
+                false,
+                ep,
+                slot,
+            );
+            self.event_ring.enqueue(&transfer_event);
+            self.interrupt_line.interrupt();
+            debug!("sent Transfer Event and signaled interrupt");
+        }
     }
 }
 
