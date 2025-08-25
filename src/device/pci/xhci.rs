@@ -292,7 +292,7 @@ impl XhciController {
 
     fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) {
         if data.deconfigure {
-            panic!("encountered Configure Endpoint Command with deconfigure set");
+            todo!("encountered Configure Endpoint Command with deconfigure set");
         }
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
