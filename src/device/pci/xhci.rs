@@ -312,7 +312,7 @@ impl XhciController {
         match value {
             ep if ep == 0 || ep > 31 => panic!("invalid value {} on doorbell write", ep),
             1 => self.check_control_endpoint(1),
-            ep if ep % 2 == 0 => self.check_out_endpoint(1, value as u8),
+            ep if ep % 2 == 0 => self.check_out_endpoint(1, ep as u8),
             ep => self.check_in_endpoint(1, ep as u8),
         };
     }
