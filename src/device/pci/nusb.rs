@@ -112,7 +112,7 @@ impl RealDevice for NusbDeviceWrapper {
         }
     }
 
-    fn out(&mut self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> (CompletionCode, u32) {
+    fn transfer_out(&mut self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> (CompletionCode, u32) {
         assert!(
             matches!(trb.variant, TransferTrbVariant::Normal(_)),
             "Expected Normal TRB but got {:?}",
@@ -131,7 +131,7 @@ impl RealDevice for NusbDeviceWrapper {
         (CompletionCode::Success, 0)
     }
 
-    fn in_(&mut self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> (CompletionCode, u32) {
+    fn transfer_in(&mut self, trb: &TransferTrb, dma_bus: &BusDeviceRef) -> (CompletionCode, u32) {
         assert!(
             matches!(trb.variant, TransferTrbVariant::Normal(_)),
             "Expected Normal TRB but got {:?}",
