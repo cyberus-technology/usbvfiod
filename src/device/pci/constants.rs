@@ -276,6 +276,7 @@ pub mod xhci {
         pub const HCIVERSION: u64 = 0x100;
         pub const HCSPARAMS1: u64 =
             (super::MAX_PORTS << 24) | (super::MAX_INTRS << 8) | super::MAX_SLOTS;
+        pub const HCSPARAMS2: u64 = 2 << 4; /* ERST Max = 4 */
         pub const HCCPARAMS1: u64 = super::offset::SUPPORTED_PROTOCOLS << 14;
 
         pub mod supported_protocols {

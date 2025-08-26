@@ -110,13 +110,14 @@ impl EventRing {
     ///
     /// Call this function when the driver writes to the ERSTBA register (as
     /// part of setting up the controller).
-    /// Amongst setting the base address of the Event Ring Segment Table, this
-    /// method initializes the enqueue_pointer to the start of the first and
-    /// only segment, the trb_count to
+    /// Besides setting the base address of the Event Ring Segment Table, this
+    /// method initializes `enqueue_pointer` to the start of segment 0 and
+    /// sets `trb_count` from `ERST[0]`.
     ///
     /// # Parameters
     ///
-    /// - `erstba`: base address of the Event Ring Segment Table
+    /// - `erstba`: base address of the Event Ring Segment Table (ERST).
+    #[allow(clippy::cognitive_complexity)]
     pub fn configure(&mut self, erstba: u64) {
         assert_eq!(erstba & 0x3f, 0, "unaligned event ring base address");
 
@@ -133,15 +134,16 @@ impl EventRing {
 
         if self.erst_size == 0 {
             self.set_erst_size(1);
+            warn!("ERSTSZ not set; defaulting to 1.");
         }
 
         debug!("event ring segment table is at {:#x}", erstba);
         debug!(
-            "initializing event ring enqueue pointer with base address of the first (and only) segment: {:#x}",
+            "initializing event ring enqueue pointer from ERST[0] base: {:#x}",
             self.enqueue_pointer
         );
         debug!(
-            "retrieving TRB count of the first (and only) event ring segment from the segment table: {}",
+            "retrieving TRB count of the first event ring segment from the segment table: {}",
             self.trb_count
         );
     }
@@ -177,6 +179,11 @@ impl EventRing {
         self.dequeue_pointer
     }
 
+    /// Handle reads to the Event Ring Segment Table Size (ERSTSZ).
+    pub const fn read_erst_size(&self) -> u32 {
+        self.erst_size
+    }
+
     /// Enqueue a new Event TRB into the Ring.
     ///
     /// # Parameters
@@ -203,8 +210,8 @@ impl EventRing {
         self.trb_count -= 1;
 
         trace!(
-            "enqueued TRB in first segment of event ring at address {:#x}. Space for {} more TRBs left in segment (TRB: {:?})",
-            self.enqueue_pointer, self.trb_count, trb
+            "enqueued TRB in segment {} (total_segments={}) of event ring at address {:#x}. Space for {} more TRBs left in segment; cycle={}; (TRB: {:?})",
+            self.erst_count, self.erst_size,  self.enqueue_pointer, self.trb_count, self.cycle_state, trb
         );
 
         self.advance_enqueue_pointer();
@@ -267,18 +274,20 @@ impl EventRing {
 
         if wrapped {
             trace!(
-                "wrapped to segment 0; base={:#x}, trb_count={}, cycle={}",
+                "wrapped to segment 0; base={:#x}, trb_count={}, cycle={}, total_segments={}",
                 self.enqueue_pointer,
                 self.trb_count,
-                self.cycle_state
+                self.cycle_state,
+                self.erst_size
             );
         } else {
             trace!(
-                "advanced to segment {}; base={:#x}, trb_count={}, cycle={}",
+                "advanced to segment {}; base={:#x}, trb_count={}, cycle={}, total_segments={}",
                 self.erst_count,
                 self.enqueue_pointer,
                 self.trb_count,
-                self.cycle_state
+                self.cycle_state,
+                self.erst_size
             );
         }
     }
@@ -724,8 +733,8 @@ mod tests {
         let ram = Arc::new(TestBusDevice::new(&[0; 0x90]));
         ram.write_bulk(0x0, &erste);
         let mut ring = EventRing::new(ram.clone());
-        ring.configure(0x0);
         ring.set_erst_size(3);
+        ring.configure(0x0);
         ring.update_dequeue_pointer(
             ring.dma_bus
                 .read(Request::new(ring.base_address, RequestSize::Size8)),
