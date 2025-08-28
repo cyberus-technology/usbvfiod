@@ -719,12 +719,12 @@ mod tests {
             0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00,
             // segment 1
-            // segment_base = 0x50
+            // segment_base = 0x60
             // trb_count = 1
             0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00,
             // segment 2
-            // segment_base = 0x60
+            // segment_base = 0x70
             // trb_count = 2
             0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00,
@@ -870,6 +870,130 @@ mod tests {
         // segment 0
         ring.enqueue(&dummy_trb()); // TRB 1
         assert_trb_written(&ram, 0x30, true);
+    }
+
+    #[test]
+    fn defaults_erstsz_to_one_when_not_set() {
+        let erste = [
+            0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let ram = Arc::new(TestBusDevice::new(&[0; 0x90]));
+        ram.write_bulk(0x0, &erste);
+        let mut ring = EventRing::new(ram);
+        ring.configure(0x0);
+        ring.update_dequeue_pointer(
+            ring.dma_bus
+                .read(Request::new(ring.base_address, RequestSize::Size8)),
+        );
+        assert_eq!(
+            ring.read_erst_size(),
+            1,
+            "ERSTSZ should default to 1 when not set"
+        );
+    }
+
+    #[test]
+    fn event_ring_dynamic_grow_from_1_to_3() {
+        let erste = [
+            0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let ram = Arc::new(TestBusDevice::new(&[0; 0x90]));
+        ram.write_bulk(0x0, &erste);
+        let mut ring = EventRing::new(ram.clone());
+        // set ERSTSZ = 1
+        ring.set_erst_size(1);
+        ring.configure(0x0);
+        ring.update_dequeue_pointer(
+            ring.dma_bus
+                .read(Request::new(ring.base_address, RequestSize::Size8)),
+        );
+
+        // segment 0
+        ring.enqueue(&dummy_trb()); // TRB 1
+        ring.enqueue(&dummy_trb()); // TRB 2
+
+        ring.update_dequeue_pointer(0x30 + 16);
+        // set ERSTSZ to 3
+        ring.set_erst_size(3);
+
+        ring.enqueue(&dummy_trb()); // TRB 3
+        assert_trb_written(&ram, 0x30 + 32, true);
+
+        // should enter segment 1 without wraparound
+        ring.enqueue(&dummy_trb());
+        assert_trb_written(&ram, 0x60, true);
+
+        // continue write until the ring is full
+        ring.enqueue(&dummy_trb()); // TRB 1 in segment 2
+        ring.enqueue(&dummy_trb()); // TRB 2 in segment 2
+        assert_trb_written(&ram, 0x70, true);
+        assert_trb_written(&ram, 0x70 + 16, true);
+
+        // write one more TRB, it should be wraparound now
+        ring.update_dequeue_pointer(0x30 + 32);
+        ring.enqueue(&dummy_trb());
+        assert_trb_written(&ram, 0x30, false);
+    }
+
+    #[test]
+    fn event_ring_dynamic_shrink_to_1() {
+        let (ram, mut ring) = init_ram_and_ring();
+
+        ring.enqueue(&dummy_trb()); // TRB 1
+        ring.enqueue(&dummy_trb()); // TRB 2
+
+        ring.update_dequeue_pointer(0x30 + 16);
+
+        // before write the last TRB to segment 0, shrink ERSTSZ to 1
+        ring.set_erst_size(1);
+
+        ring.enqueue(&dummy_trb()); // TRB 3
+        assert_trb_written(&ram, 0x50, true);
+
+        ring.update_dequeue_pointer(0x30 + 32);
+
+        // wraparound
+        ring.enqueue(&dummy_trb());
+        assert_trb_written(&ram, 0x30, false);
+    }
+
+    #[test]
+    fn event_ring_dynamic_overwrite() {
+        let (ram, mut ring) = init_ram_and_ring();
+
+        // segment 0
+        ring.enqueue(&dummy_trb()); // TRB 1
+        ring.enqueue(&dummy_trb()); // TRB 2
+
+        // modify the segment 1
+        let erste_new = [
+            0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, //set size of segment 1 to 2
+            0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+        ram.write_bulk(0x0, &erste_new);
+        ring.set_erst_size(2);
+
+        ring.enqueue(&dummy_trb()); // TRB 3 in segment 0
+        ring.update_dequeue_pointer(0x30 + 32);
+
+        // new segment 1
+        ring.enqueue(&dummy_trb()); // TRB 1
+        ring.enqueue(&dummy_trb()); // TRB 2
+        assert_trb_written(&ram, 0x60 + 16, true);
+
+        // should be wraparounded
+        ring.enqueue(&dummy_trb());
+        assert_trb_written(&ram, 0x30, false);
     }
 
     #[test]
