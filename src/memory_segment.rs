@@ -97,7 +97,10 @@ impl MemorySegment {
             mapping: Arc::new({
                 let mut mmap = MmapOptions::new();
 
-                mmap.len(size.try_into().unwrap());
+                mmap.len(
+                    size.try_into()
+                        .map_err(|_| std::io::ErrorKind::InvalidInput)?,
+                );
                 mmap.offset(file_offset);
 
                 match access_rights {
