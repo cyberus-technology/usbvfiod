@@ -456,7 +456,10 @@ impl PciDevice for Mutex<XhciController> {
             // xHC Runtime Registers
             offset::IMAN => self.lock().unwrap().interrupt_management = value,
             offset::IMOD => self.lock().unwrap().interrupt_moderation_interval = value,
-            offset::ERSTSZ => assert_eq!(value, 1, "only a single segment supported"),
+            offset::ERSTSZ => {
+                let sz = (value as u32) & 0xFFFF;
+                self.lock().unwrap().event_ring.set_erst_size(sz);
+            }
             offset::ERSTBA => self.lock().unwrap().event_ring.configure(value),
             offset::ERSTBA_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::ERDP => self
@@ -482,7 +485,7 @@ impl PciDevice for Mutex<XhciController> {
             offset::CAPLENGTH => OP_BASE,
             offset::HCIVERSION => capability::HCIVERSION,
             offset::HCSPARAMS1 => capability::HCSPARAMS1,
-            offset::HCSPARAMS2 => 0, /* ERST Max size is a single segment */
+            offset::HCSPARAMS2 => capability::HCSPARAMS2, /* ERST Max size */
             offset::HCSPARAMS3 => 0,
             offset::HCCPARAMS1 => capability::HCCPARAMS1,
             offset::DBOFF => offset::DOORBELL_CONTROLLER,
@@ -510,7 +513,7 @@ impl PciDevice for Mutex<XhciController> {
             // xHC Runtime Registers
             offset::IMAN => self.lock().unwrap().interrupt_management,
             offset::IMOD => self.lock().unwrap().interrupt_moderation_interval,
-            offset::ERSTSZ => 1,
+            offset::ERSTSZ => self.lock().unwrap().event_ring.read_erst_size() as u64,
             offset::ERSTBA => self.lock().unwrap().event_ring.read_base_address(),
             offset::ERSTBA_HI => 0,
             offset::ERDP => self.lock().unwrap().event_ring.read_dequeue_pointer(),
