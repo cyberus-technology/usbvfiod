@@ -710,15 +710,27 @@ mod tests {
 
     fn init_ram_and_ring() -> (Arc<TestBusDevice>, EventRing) {
         let erste = [
-            // segment_base = 0x10
-            // trb_count = 4
-            0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+            // segment 0
+            // segment_base = 0x30
+            // trb_count = 3
+            0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+            // segment 1
+            // segment_base = 0x60
+            // trb_count = 1
+            0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+            // segment 2
+            // segment_base = 0x70
+            // trb_count = 2
+            0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00,
         ];
 
-        let ram = Arc::new(TestBusDevice::new(&[0; 0x50]));
+        let ram = Arc::new(TestBusDevice::new(&[0; 0x90]));
         ram.write_bulk(0x0, &erste);
         let mut ring = EventRing::new(ram.clone());
+        ring.set_erst_size(3);
         ring.configure(0x0);
         ring.update_dequeue_pointer(
             ring.dma_bus
@@ -754,21 +766,34 @@ mod tests {
     fn event_ring_start_empty_enqueue_fill_then_wraparound_after_dequeue_pointer_move() {
         let (ram, mut ring) = init_ram_and_ring();
 
+        // segment 0
         ring.enqueue(&dummy_trb()); // TRB 1
         ring.enqueue(&dummy_trb()); // TRB 2
         ring.enqueue(&dummy_trb()); // TRB 3
 
-        assert_trb_written(&ram, 0x10, true);
-        assert_trb_written(&ram, 0x10 + 16, true);
-        assert_trb_written(&ram, 0x10 + 32, true);
+        assert_trb_written(&ram, 0x30, true);
+        assert_trb_written(&ram, 0x30 + 16, true);
+        assert_trb_written(&ram, 0x30 + 32, true);
 
-        ring.update_dequeue_pointer(0x10 + 32);
+        ring.update_dequeue_pointer(0x30 + 32);
 
-        ring.enqueue(&dummy_trb()); // TRB 4 and wraparound
-        assert_trb_written(&ram, 0x10 + 48, true);
+        // segment 1
+        ring.enqueue(&dummy_trb()); // TRB 1
 
-        ring.enqueue(&dummy_trb()); // TRB 5
-        assert_trb_written(&ram, 0x10, false);
+        assert_trb_written(&ram, 0x60, true);
+
+        ring.update_dequeue_pointer(0x60);
+
+        // segment 2
+        ring.enqueue(&dummy_trb()); // TRB 1
+
+        assert_trb_written(&ram, 0x70, true);
+
+        ring.enqueue(&dummy_trb()); // TRB 2 and wraparound
+        assert_trb_written(&ram, 0x70 + 16, true);
+
+        ring.enqueue(&dummy_trb()); // write one more TRB after wraparound
+        assert_trb_written(&ram, 0x30, false);
     }
 
     #[test]
@@ -776,14 +801,22 @@ mod tests {
     fn event_ring_panics_on_wraparound_mid_segment_full() {
         let (_ram, mut ring) = init_ram_and_ring();
 
+        // segment 0
         ring.enqueue(&dummy_trb()); // TRB 1
         ring.enqueue(&dummy_trb()); // TRB 2
         ring.enqueue(&dummy_trb()); // TRB 3
 
-        ring.update_dequeue_pointer(0x10 + 32);
+        ring.update_dequeue_pointer(0x30 + 16);
 
-        ring.enqueue(&dummy_trb()); // TRB 4 and wraparound
-        ring.enqueue(&dummy_trb()); // TRB 5
+        // segment 1
+        ring.enqueue(&dummy_trb()); // TRB 1
+
+        // segment 2
+        ring.enqueue(&dummy_trb()); // TRB 1
+        ring.enqueue(&dummy_trb()); // TRB 2 and wraparound
+
+        // segment 0
+        ring.enqueue(&dummy_trb()); // TRB 1
 
         // ring is full now, the new TRB could not be written
         // and test should panic
