@@ -481,6 +481,7 @@ struct BulkRequestIterator<'a> {
 
 impl<'a> BulkRequestIterator<'a> {
     fn new(bus: &'a Bus, offset: u64, slice: &[u8]) -> Self {
+        // SAFETY: slice.len() is usize, which always fits in u64 on all supported platforms
         Self {
             bus,
             request_start: offset,
@@ -498,11 +499,15 @@ impl<'a> Iterator for BulkRequestIterator<'a> {
 
         (self.cur_offset < self.request_end).then(|| {
             // The offset inside the data slice.
+            // SAFETY: cur_offset >= request_start is guaranteed by the assertion above,
+            // so the subtraction result is non-negative and fits in usize
             let data_offset: usize = (self.cur_offset - self.request_start).try_into().unwrap();
 
             // The amount of space in the data slice starting from data_offset.
             let remaining_data_size: usize =
+                // SAFETY: data_offset is usize, which always fits in u64 on all supported platforms
                 (self.request_end - self.request_start - u64::try_from(data_offset).unwrap())
+                    // SAFETY: The subtraction result is guaranteed to be non-negative and the result fits in usize
                     .try_into()
                     .unwrap();
             assert!(remaining_data_size > 0);
@@ -516,6 +521,7 @@ impl<'a> Iterator for BulkRequestIterator<'a> {
                 let device_offset = self.cur_offset - entry.range.start;
                 let chunk_size = usize::min(
                     remaining_data_size,
+                    // SAFETY: the subtraction is non-negative and fits in usize
                     (entry.range.end - entry.range.start - device_offset)
                         .try_into()
                         .unwrap(),
@@ -541,6 +547,7 @@ impl<'a> Iterator for BulkRequestIterator<'a> {
             let chunk_size = chunk.data_range.end - chunk.data_range.start;
             assert!(chunk_size > 0);
 
+            // SAFETY: chunk_size is usize, which always fits in u64 on all supported platforms
             self.cur_offset += u64::try_from(chunk_size).unwrap();
             chunk
         })
