@@ -284,6 +284,10 @@ impl<const SIZE: usize> RegisterSet<SIZE> {
         let le_bytes = val.to_le_bytes();
 
         for (req, &byte) in req.iter_bytes().zip(&le_bytes) {
+            // FIXME: This unwrap assumes req.addr fits in usize and is within [0, SIZE).
+            // Checked bus.rs: Request.addr is defined as plain u64 with no constraints.
+            // No bounds checking before array access. Need to either add validation
+            // here or clarify architectural contract for address validity.
             let off: usize = req.addr.try_into().unwrap();
 
             self.data[off] = byte;
@@ -322,6 +326,10 @@ impl<const SIZE: usize> RegisterSet<SIZE> {
     #[must_use]
     pub fn read(&self, req: Request) -> u64 {
         fold_iter_le(req.iter_bytes().map(|r| -> u8 {
+            // FIXME: This unwrap assumes r.addr fits in usize and is within [0, SIZE).
+            // iter_bytes() splits req into individual byte requests but doesn't validate addresses.
+            // Checked bus.rs: Request.addr is plain u64. Each r.addr could overflow platform
+            // conversion or exceed array bounds, especially with large initial req.addr.
             let off: usize = r.addr.try_into().unwrap();
             self.data[off]
         }))
@@ -338,6 +346,7 @@ impl<const SIZE: usize> SingleThreadedBusDevice for RegisterSet<SIZE> {
         let le_bytes = val.to_le_bytes();
 
         for (req, &byte) in req.iter_bytes().zip(&le_bytes) {
+            // FIXME: Same issue as write_direct() above
             let off: usize = req.addr.try_into().unwrap();
 
             // Set writable bits to zero.
