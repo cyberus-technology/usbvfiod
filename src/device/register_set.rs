@@ -330,6 +330,7 @@ impl<const SIZE: usize> RegisterSet<SIZE> {
 
 impl<const SIZE: usize> SingleThreadedBusDevice for RegisterSet<SIZE> {
     fn size(&self) -> u64 {
+        // SAFETY: usize always fits in u64
         SIZE.try_into().unwrap()
     }
 
