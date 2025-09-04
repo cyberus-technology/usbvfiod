@@ -295,6 +295,9 @@ impl ServerBackend for XhciBackend {
                 flags.try_into().expect("Failed to convert flags"),
             )?;
 
+            // FIXME: This unwrap assumes guest provides non-overlapping DMA regions.
+            // Should we handle address conflicts gracefully or is panicking acceptable here?
+            // Current project scope may not require complex conflict resolution logic.
             self.dma_bus.add(address, Arc::new(mseg)).unwrap();
         } else {
             todo!("Memory region without file descriptor");
