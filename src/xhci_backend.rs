@@ -233,11 +233,13 @@ impl ServerBackend for XhciBackend {
                 match data.len() {
                     1 => data[0].into(),
                     2 => {
+                        // SAFETY:: this branch is only taken if data.len() == 2
                         let val: [u8; 2] = data.try_into().unwrap();
                         u16::from_le_bytes(val).into()
                     }
 
                     4 => {
+                        // SAFETY:: this branch is only taken if data.len() == 4
                         let val: [u8; 4] = data.try_into().unwrap();
                         u32::from_le_bytes(val).into()
                     }
@@ -255,11 +257,13 @@ impl ServerBackend for XhciBackend {
                 match data.len() {
                     1 => data[0].into(),
                     2 => {
+                        // SAFETY:: this branch is only taken if data.len() == 2
                         let val: [u8; 2] = data.try_into().unwrap();
                         u16::from_le_bytes(val).into()
                     }
 
                     4 => {
+                        // SAFETY:: this branch is only taken if data.len() == 4
                         let val: [u8; 4] = data.try_into().unwrap();
                         u32::from_le_bytes(val).into()
                     }
