@@ -98,6 +98,7 @@ impl ConfigSpaceBuilder {
             // If you change the initial value, be sure to check whether we still set the `STATUS`
             // bit correctly when we finalize the Configuration Space.
             next_capability_offset: INITIAL_CAPABILITY_OFFSET,
+            // SAFETY: PCI standard offset 0x34 fits in u8
             last_capability_pointer: offset::CAPABILITIES_POINTER.try_into().unwrap(),
 
             has_custom_registers: false,
@@ -457,6 +458,7 @@ impl ConfigSpace {
     pub fn iter_capability_offsets(&self) -> impl Iterator<Item = u8> + '_ {
         CapabilityIterator {
             config_space: self,
+            // SAFETY: PCI standard offset 0x34 fits in u8
             cap_offset: config_space::offset::CAPABILITIES_POINTER
                 .try_into()
                 .unwrap(),
