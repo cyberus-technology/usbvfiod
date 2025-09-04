@@ -33,6 +33,7 @@ impl Debug for NusbDeviceWrapper {
 
 impl NusbDeviceWrapper {
     pub fn new(device: nusb::Device) -> Self {
+        // Program requires USB interface 0 to function, panic if unavailable
         let interface = device.detach_and_claim_interface(0).wait().unwrap();
         Self {
             device,
@@ -119,7 +120,9 @@ impl RealDevice for NusbDeviceWrapper {
             trb
         );
 
+        // transfer_out requires endpoint 4 to be enabled, panic if not
         let ep_out = self.ep_out.as_mut().unwrap();
+        // SAFETY: assert above guarantees TRB is Normal variant
         let normal_data = extract_normal_trb_data(trb).unwrap();
 
         let mut data = vec![0; normal_data.transfer_length as usize];
@@ -145,6 +148,7 @@ impl RealDevice for NusbDeviceWrapper {
         let buffer_size = determine_buffer_size(transfer_length, ep_in.max_packet_size());
         let buffer = Buffer::new(buffer_size);
         ep_in.submit(buffer);
+        // Core USB virtualization requires successful transfer, abort if device fails
         let buffer = ep_in
             .wait_next_complete(Duration::from_millis(400))
             .unwrap();
@@ -191,6 +195,7 @@ impl RealDevice for NusbDeviceWrapper {
                 if self.ep_in.is_some() {
                     return;
                 }
+                // Program requires USB bulk in endpoint 0x81
                 self.ep_in = Some(self.interface.endpoint::<Bulk, In>(0x81).unwrap());
                 debug!("enabled EP3 on real device");
             }
@@ -198,6 +203,7 @@ impl RealDevice for NusbDeviceWrapper {
                 if self.ep_out.is_some() {
                     return;
                 }
+                // Program requires USB bulk out endpoint 0x2
                 self.ep_out = Some(self.interface.endpoint::<Bulk, Out>(0x2).unwrap());
                 debug!("enabled EP4 on real device");
             }
