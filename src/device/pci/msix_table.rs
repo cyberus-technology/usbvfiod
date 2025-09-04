@@ -80,9 +80,11 @@ impl<const SIZE_BYTES: usize> MsixTable<SIZE_BYTES> {
     pub fn vector(&self, vector: u16) -> Option<MsiMessage> {
         assert!(vector < Self::vector_count());
 
+        // SAFETY: MSI-X entry size 16 always fits in u64
         let entry_offset = u64::from(vector) * u64::try_from(MSIX_ENTRY_SIZE).unwrap();
 
         let field_read = |foffset: usize, size: RequestSize| {
+            // SAFETY: MSI-X table entry field offsets (0-12) always fit in u64
             self.registers.read(Request::new(
                 entry_offset + u64::try_from(foffset).unwrap(),
                 size,
@@ -97,7 +99,7 @@ impl<const SIZE_BYTES: usize> MsixTable<SIZE_BYTES> {
                 field_read(offset::MESSAGE_ADDRESS, RequestSize::Size8),
                 field_read(offset::MESSAGE_DATA, RequestSize::Size2)
                     .try_into()
-                    // This unwrap is safe, because we explicitly read a 16-bit value.
+                    // SAFETY: This unwrap is safe, because we explicitly read a 16-bit value.
                     .unwrap(),
             )
         })
