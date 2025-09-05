@@ -42,8 +42,8 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
   "ansi",
   "tracing-log",
 ] }
-vfio-bindings = { version = "0.5.0", default-features = false }
-vfio_user = { version = "0.1.0" }
+vfio-bindings = { version = "0.6.0", default-features = false }
+vfio_user = { version = "0.1.1" }
 
 [dev-dependencies]
 proptest = "1.6.0"
