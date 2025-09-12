@@ -70,8 +70,11 @@ pub struct XhciController {
     /// The interrupt line triggered to signal device events.
     interrupt_line: Arc<dyn InterruptLine>,
 
-    /// State of the USB3 PORTSC register
+    /// State of the USB3 PORTSC register (port 1)
     portsc_usb3: PortscRegister,
+
+    /// State of the USB3 PORTSC register (port 2)
+    portsc_usb3_port2: PortscRegister,
 
     /// State of the USB2 PORTSC register
     portsc_usb2: PortscRegister,
@@ -110,6 +113,7 @@ impl XhciController {
             portsc_usb3: PortscRegister::new(
                 portsc::CCS | portsc::PED | portsc::PP | portsc::CSC | portsc::PEC | portsc::PRC,
             ),
+            portsc_usb3_port2: PortscRegister::new(portsc::PP),
             portsc_usb2: PortscRegister::new(portsc::PP),
         }
     }
@@ -184,6 +188,16 @@ impl XhciController {
         debug!("Ding Dong!");
         while let Some(cmd) = self.command_ring.next_command_trb() {
             self.handle_command(cmd);
+        }
+    }
+
+    const fn describe_portsc_status(&self, value: u64) -> &'static str {
+        if value & portsc::CCS != 0 {
+            "device connected"
+        } else if value & portsc::PP != 0 {
+            "empty port"
+        } else {
+            "port powered off"
         }
     }
 
@@ -442,6 +456,7 @@ impl PciDevice for Mutex<XhciController> {
         self.lock().unwrap().config_space.read(req)
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn write_io(&self, region: u32, req: Request, value: u64) {
         // The XHCI Controller has a single MMIO BAR.
         assert_eq!(region, 0);
@@ -457,8 +472,24 @@ impl PciDevice for Mutex<XhciController> {
             offset::CONFIG => self.lock().unwrap().enable_slots(value),
             // USBSTS writes occur but we can ignore them (to get a device enumerated)
             offset::USBSTS => {}
-            offset::PORTSC_USB3 => self.lock().unwrap().portsc_usb3.write(value),
-            offset::PORTSC_USB2 => self.lock().unwrap().portsc_usb2.write(value),
+            offset::PORTSC_USB3 => {
+                self.lock().unwrap().portsc_usb3.write(value);
+                let new_value = self.lock().unwrap().portsc_usb3.read();
+                let status = self.lock().unwrap().describe_portsc_status(new_value);
+                debug!("USB3 Port 1 now {}", status);
+            }
+            offset::PORTSC_USB3_PORT2 => {
+                self.lock().unwrap().portsc_usb3_port2.write(value);
+                let new_value = self.lock().unwrap().portsc_usb3_port2.read();
+                let status = self.lock().unwrap().describe_portsc_status(new_value);
+                debug!("USB3 Port 2 now {}", status);
+            }
+            offset::PORTSC_USB2 => {
+                self.lock().unwrap().portsc_usb2.write(value);
+                let new_value = self.lock().unwrap().portsc_usb2.read();
+                let status = self.lock().unwrap().describe_portsc_status(new_value);
+                debug!("USB2 Port 1 now {}", status);
+            }
 
             // xHC Runtime Registers
             offset::IMAN => self.lock().unwrap().interrupt_management = value,
@@ -518,6 +549,8 @@ impl PciDevice for Mutex<XhciController> {
 
             offset::PORTSC_USB3 => self.lock().unwrap().portsc_usb3.read(),
             offset::PORTLI_USB3 => 0,
+            offset::PORTSC_USB3_PORT2 => self.lock().unwrap().portsc_usb3_port2.read(),
+            offset::PORTLI_USB3_PORT2 => 0,
             offset::PORTSC_USB2 => self.lock().unwrap().portsc_usb2.read(),
             offset::PORTLI_USB2 => 0,
 
