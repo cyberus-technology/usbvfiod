@@ -86,6 +86,21 @@ impl DeviceSlotManager {
         available_slot_id
     }
 
+    /// Release a previously allocated slot.
+    ///
+    /// This function removes the slot from the used slots list, making it
+    /// available for future allocation.
+    ///
+    /// # Parameters
+    ///
+    /// - slot_id: the slot ID to free.
+    pub fn free_slot(&mut self, slot_id: u64) {
+        if let Some(pos) = self.used_slots.iter().position(|&x| x == slot_id) {
+            self.used_slots.remove(pos);
+            debug!("Freed slot ID {}", slot_id);
+        }
+    }
+
     /// Retrieve a device context abstraction.
     ///
     /// Device context are referenced by the DCBAA and indexed by the slot ID.
