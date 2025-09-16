@@ -78,6 +78,9 @@ pub struct XhciController {
 
     /// State of the USB2 PORTSC register
     portsc_usb2: PortscRegister,
+
+    /// Which port is currently connected to the device (0=none, 1=usb3_port1, 2=usb3_port2, 3=usb2)
+    device_connected_port: u8,
 }
 
 impl XhciController {
@@ -110,19 +113,41 @@ impl XhciController {
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
-            portsc_usb3: PortscRegister::new(
-                portsc::CCS | portsc::PED | portsc::PP | portsc::CSC | portsc::PEC | portsc::PRC,
-            ),
-            // portsc_usb3_port2: PortscRegister::new(portsc::PP),
-            portsc_usb3_port2: PortscRegister::new(
-                portsc::CCS | portsc::PED | portsc::PP | portsc::CSC | portsc::PEC | portsc::PRC,
-            ),
-            portsc_usb2: PortscRegister::new(portsc::PP),
+            portsc_usb3: PortscRegister::new(portsc::PP), // Port powered, no device initially
+            portsc_usb3_port2: PortscRegister::new(portsc::PP), // Port powered, no device initially
+            portsc_usb2: PortscRegister::new(portsc::PP), // Port powered, no device initially
+            device_connected_port: 0,                     // No device connected initially
         }
     }
 
     pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
         self.real_device = Some(device);
+        // When device is set via --device option, connect it to USB3 Port 1 by default
+        self.device_connected_port = 1;
+        self.portsc_usb3 = PortscRegister::new(
+            portsc::CCS | portsc::PED | portsc::PP | portsc::CSC | portsc::PEC | portsc::PRC,
+        );
+        debug!("Device connected to USB3 Port 1 via --device option");
+        self.log_port_status();
+    }
+
+    /// Log the current status of all ports
+    #[allow(clippy::cognitive_complexity)]
+    fn log_port_status(&self) {
+        debug!("=== Port Status Summary ===");
+        debug!(
+            "USB3 Port 1: {}",
+            self.describe_portsc_status(self.portsc_usb3.read())
+        );
+        debug!(
+            "USB3 Port 2: {}",
+            self.describe_portsc_status(self.portsc_usb3_port2.read())
+        );
+        debug!(
+            "USB2 Port:   {}",
+            self.describe_portsc_status(self.portsc_usb2.read())
+        );
+        debug!("=========================");
     }
 
     /// Configure the interrupt line for the controller.
