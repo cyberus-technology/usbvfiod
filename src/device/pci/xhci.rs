@@ -39,8 +39,8 @@ use super::{
 /// The emulation of a XHCI controller.
 #[derive(Debug)]
 pub struct XhciController {
-    /// real USB devices
-    real_device: Option<Box<dyn RealDevice>>,
+    /// real USB devices (indexed by slot_id - 1)
+    real_devices: Vec<Option<Box<dyn RealDevice>>>,
 
     /// A reference to the VM memory to perform DMA on.
     #[allow(unused)]
@@ -94,7 +94,13 @@ impl XhciController {
         let dma_bus_for_device_slot_manager = dma_bus.clone();
 
         Self {
-            real_device: None,
+            real_devices: {
+                let mut vec = Vec::new();
+                for _ in 0..MAX_SLOTS {
+                    vec.push(None);
+                }
+                vec
+            },
             dma_bus,
             config_space: ConfigSpaceBuilder::new(vendor::REDHAT, device::REDHAT_XHCI)
                 .class(class::SERIAL, subclass::SERIAL_USB, progif::USB_XHCI)
@@ -122,7 +128,13 @@ impl XhciController {
     }
 
     pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
-        self.real_device = Some(device);
+        for slot in &mut self.real_devices {
+            if slot.is_none() {
+                *slot = Some(device);
+                return;
+            }
+        }
+        warn!("All device slots are occupied, cannot add device");
     }
 
     /// Configure the interrupt line for the controller.
@@ -324,8 +336,13 @@ impl XhciController {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         // Program requires real USB device for all XHCI operations (pattern used throughout file)
-        for i in enabled_endpoints {
-            self.real_device.as_mut().unwrap().enable_endpoint(i);
+        if (data.slot_id as usize) <= self.real_devices.len() {
+            let device_index = data.slot_id as usize - 1;
+            if let Some(device) = self.real_devices[device_index].as_mut() {
+                for i in enabled_endpoints {
+                    device.enable_endpoint(i);
+                }
+            }
         }
     }
 
@@ -380,9 +397,12 @@ impl XhciController {
             request.length,
             request.data
         );
-        // forward request to device
-        if let Some(device) = self.real_device.as_ref() {
-            device.control_transfer(&request, &self.dma_bus);
+        // forward request to device based on slot_id
+        if (slot as usize) <= self.real_devices.len() {
+            let device_index = slot as usize - 1;
+            if let Some(device) = self.real_devices[device_index].as_ref() {
+                device.control_transfer(&request, &self.dma_bus);
+            }
         }
 
         // send transfer event
@@ -407,8 +427,8 @@ impl XhciController {
 
         while let Some(trb) = transfer_ring.next_transfer_trb() {
             debug!("TRB on endpoint {} (OUT): {:?}", ep, trb);
-            let (completion_code, residual_bytes) = self
-                .real_device
+            let device_index = slot as usize - 1;
+            let (completion_code, residual_bytes) = self.real_devices[device_index]
                 .as_mut()
                 .unwrap()
                 .transfer_out(&trb, &self.dma_bus);
@@ -435,8 +455,8 @@ impl XhciController {
 
         while let Some(trb) = transfer_ring.next_transfer_trb() {
             debug!("TRB on endpoint {} (IN): {:?}", ep, trb);
-            let (completion_code, residual_bytes) = self
-                .real_device
+            let device_index = slot as usize - 1;
+            let (completion_code, residual_bytes) = self.real_devices[device_index]
                 .as_mut()
                 .unwrap()
                 .transfer_in(&trb, &self.dma_bus);
