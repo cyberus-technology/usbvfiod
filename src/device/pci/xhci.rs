@@ -75,9 +75,6 @@ pub struct XhciController {
 
     /// State of the USB2 PORTSC register
     portsc_usb2: PortscRegister,
-
-    /// Which port is currently connected to the device (0=none, 1=usb3_port1, 2=usb3_port2, 3=usb2)
-    device_connected_port: u8,
 }
 
 impl XhciController {
@@ -111,20 +108,37 @@ impl XhciController {
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
             portsc_usb3: vec![PortscRegister::new(portsc::PP); NUM_USB3_PORTS as usize],
-            portsc_usb2: PortscRegister::new(portsc::PP), // Port powered, no device initially
-            device_connected_port: 0,                     // No device connected initially
+            portsc_usb2: PortscRegister::new(portsc::PP),
         }
     }
 
     pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
         self.real_device = Some(device);
-        // When device is set via --device option, connect it to USB3 Port 1 by default
-        self.device_connected_port = 1;
-        self.portsc_usb3[0] = PortscRegister::new(
+
+        // Find first available USB3 port
+        let port_idx = self
+            .find_available_usb3_port()
+            .expect("No available USB3 ports - all ports are occupied");
+
+        self.portsc_usb3[port_idx] = PortscRegister::new(
             portsc::CCS | portsc::PED | portsc::PP | portsc::CSC | portsc::PEC | portsc::PRC,
         );
-        debug!("Device connected to USB3 Port 1 via --device option");
+        debug!(
+            "Device connected to USB3 Port {} via --device option",
+            port_idx + 1
+        );
         self.log_port_status();
+    }
+
+    /// Find the first available USB3 port (not currently connected)
+    fn find_available_usb3_port(&self) -> Option<usize> {
+        for (idx, port) in self.portsc_usb3.iter().enumerate() {
+            // Port is available if it doesn't have CCS (Current Connect Status) bit set
+            if port.read() & portsc::CCS == 0 {
+                return Some(idx);
+            }
+        }
+        None
     }
 
     /// Log the current status of all ports
