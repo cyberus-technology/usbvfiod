@@ -287,7 +287,6 @@ pub mod xhci {
         /// Relevant doorbell registers
         pub const DOORBELL_CONTROLLER: u64 = 0x2000;
         pub const DOORBELL_DEVICE: u64 = 0x2004;
-        pub const DOORBELL_DEVICE_SLOT2: u64 = 0x2008;
     }
 
     /// Constants for the capability register.

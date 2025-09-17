@@ -141,6 +141,23 @@ impl XhciController {
         None
     }
 
+    /// Check if address is a device doorbell register
+    const fn is_doorbell_device_addr(&self, addr: u64) -> bool {
+        const DOORBELL_DEVICE_BASE: u64 = offset::DOORBELL_DEVICE;
+        const DOORBELL_SLOT_SIZE: u64 = 0x4;
+
+        addr >= DOORBELL_DEVICE_BASE
+            && addr < DOORBELL_DEVICE_BASE + (MAX_SLOTS * DOORBELL_SLOT_SIZE)
+    }
+
+    /// Get slot ID from doorbell device address
+    const fn get_slot_from_doorbell_addr(&self, addr: u64) -> u8 {
+        const DOORBELL_DEVICE_BASE: u64 = offset::DOORBELL_DEVICE;
+        const DOORBELL_SLOT_SIZE: u64 = 0x4;
+
+        ((addr - DOORBELL_DEVICE_BASE) / DOORBELL_SLOT_SIZE + 1) as u8
+    }
+
     /// Log the current status of all ports
     #[allow(clippy::cognitive_complexity)]
     fn log_port_status(&self) {
@@ -589,8 +606,10 @@ impl PciDevice for Mutex<XhciController> {
                 .update_dequeue_pointer(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::DOORBELL_CONTROLLER => self.lock().unwrap().doorbell_controller(),
-            offset::DOORBELL_DEVICE => self.lock().unwrap().doorbell_device(1, value as u32),
-            offset::DOORBELL_DEVICE_SLOT2 => self.lock().unwrap().doorbell_device(2, value as u32),
+            addr if self.lock().unwrap().is_doorbell_device_addr(addr) => {
+                let slot_id = self.lock().unwrap().get_slot_from_doorbell_addr(addr);
+                self.lock().unwrap().doorbell_device(slot_id, value as u32);
+            }
             addr => {
                 todo!("unknown write {}", addr);
             }
@@ -647,8 +666,7 @@ impl PciDevice for Mutex<XhciController> {
             offset::ERDP => self.lock().unwrap().event_ring.read_dequeue_pointer(),
             offset::ERDP_HI => 0,
             offset::DOORBELL_CONTROLLER => 0, // kernel reads the doorbell after write
-            offset::DOORBELL_DEVICE => 0,
-            offset::DOORBELL_DEVICE_SLOT2 => 0,
+            addr if self.lock().unwrap().is_doorbell_device_addr(addr) => 0,
 
             // Everything else is Reserved Zero
             addr => {
