@@ -1,11 +1,13 @@
-use nusb::transfer::{Buffer, Bulk, ControlIn, ControlOut, ControlType, In, Out, Recipient};
+use nusb::transfer::{
+    Buffer, Bulk, ControlIn, ControlOut, ControlType, In, Interrupt, Out, Recipient,
+};
 use nusb::MaybeFuture;
 use tracing::{debug, warn};
 
 use crate::device::bus::BusDeviceRef;
 use crate::device::pci::trb::CompletionCode;
 
-use super::realdevice::Speed;
+use super::realdevice::{EndpointType, Speed};
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
@@ -18,6 +20,7 @@ use std::{
 enum EndpointWrapper {
     BulkIn(nusb::Endpoint<Bulk, In>),
     BulkOut(nusb::Endpoint<Bulk, Out>),
+    InterruptIn(nusb::Endpoint<Interrupt, In>),
 }
 
 pub struct NusbDeviceWrapper {
@@ -228,20 +231,13 @@ impl RealDevice for NusbDeviceWrapper {
         (CompletionCode::Success, 0)
     }
 
-    fn enable_endpoint(&mut self, endpoint_id: u8) {
-        if endpoint_id == 1 {
-            // id of the control endpoint
-            //
-            // nusb allows us to perform control requests directly on the
-            // interface, so there is no need for us to open/track this
-            // endpoint.
-            return;
-        }
+    fn enable_endpoint(&mut self, endpoint_id: u8, endpoint_type: EndpointType) {
         assert!(
-            (2..=31).contains(&endpoint_id),
+            (1..=31).contains(&endpoint_id),
             "request to enable invalid endpoint id on nusb device. endpoint_id = {}",
             endpoint_id
         );
+
         if self.endpoints[endpoint_id as usize - 2].is_some() {
             // endpoint is already enabled.
             //
@@ -251,22 +247,49 @@ impl RealDevice for NusbDeviceWrapper {
             return;
         }
 
-        let endpoint_index = endpoint_id / 2;
-        let is_out_endpoint = endpoint_id % 2 == 0;
-        let endpoint = match is_out_endpoint {
-            true => EndpointWrapper::BulkOut(
-                self.interface
-                    .endpoint::<Bulk, Out>(endpoint_index)
-                    .unwrap(),
-            ),
-            false => EndpointWrapper::BulkIn(
-                self.interface
-                    .endpoint::<Bulk, In>(0x80 | endpoint_index)
-                    .unwrap(),
-            ),
+        let endpoint = match endpoint_type {
+            EndpointType::Control => {
+                assert_eq!(endpoint_id, 1);
+
+                // nusb allows us to perform control requests directly on the
+                // interface, so there is no need for us to open/track this
+                // endpoint.
+                return;
+            }
+            EndpointType::BulkIn => {
+                assert!(endpoint_id % 2 == 1);
+
+                EndpointWrapper::BulkIn(
+                    self.interface
+                        .endpoint::<Bulk, In>(0x80 | (endpoint_id / 2))
+                        .unwrap(),
+                )
+            }
+            EndpointType::BulkOut => {
+                assert!(endpoint_id % 2 == 0);
+
+                EndpointWrapper::BulkOut(
+                    self.interface
+                        .endpoint::<Bulk, Out>(endpoint_id / 2)
+                        .unwrap(),
+                )
+            }
+            EndpointType::InterruptIn => {
+                assert!(endpoint_id % 2 == 1);
+
+                EndpointWrapper::InterruptIn(
+                    self.interface
+                        .endpoint::<Interrupt, In>(endpoint_id / 2)
+                        .unwrap(),
+                )
+            }
         };
+
         self.endpoints[endpoint_id as usize - 2] = Some(endpoint);
-        debug!("enabled EP{} on real device", endpoint_id);
+        debug!(
+            "enabled EP{} ({:?}) on real device",
+            endpoint_id, endpoint_type
+        );
     }
 }
 
