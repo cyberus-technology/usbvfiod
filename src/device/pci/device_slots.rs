@@ -9,7 +9,9 @@ use crate::device::{
     pci::constants::xhci::device_slots::{endpoint_state, slot_state},
 };
 
-use super::{constants::xhci::device_slots::endpoint_state::*, rings::TransferRing};
+use super::{
+    constants::xhci::device_slots::endpoint_state::*, realdevice::EndpointType, rings::TransferRing,
+};
 
 /// Abstraction for Device Slots.
 ///
@@ -198,7 +200,7 @@ impl DeviceContext {
     ///
     /// - addr_input_context: address of the input context used for
     ///   initialization.
-    pub fn configure_endpoints(&self, addr_input_context: u64) -> Vec<u8> {
+    pub fn configure_endpoints(&self, addr_input_context: u64) -> Vec<(u8, EndpointType)> {
         let drop_flags = self
             .dma_bus
             .read(Request::new(addr_input_context, RequestSize::Size4));
@@ -236,15 +238,26 @@ impl DeviceContext {
             if add_flags & (1 << i) == 0 {
                 continue;
             }
-            enabled_endpoints.push(i as u8);
-
-            debug!("Configure Endpoint: A{} is set", i);
 
             let ep_context_offset = i * 32;
+
             input_context[ep_context_offset] = 1;
             self.dma_bus.write_bulk(
                 self.address.wrapping_add(ep_context_offset as u64),
                 &input_context[ep_context_offset..ep_context_offset + 32],
+            );
+
+            let ep_type = match (input_context[ep_context_offset + 4] >> 3) & 0x7 {
+                2 => EndpointType::BulkOut,
+                6 => EndpointType::BulkIn,
+                4 => EndpointType::Control,
+                7 => EndpointType::InterruptIn,
+                val => todo!("encountered unsupported endpoint type: {}", val),
+            };
+            enabled_endpoints.push((i as u8, ep_type));
+            debug!(
+                "Configure Endpoint: A{} is set. Configured as {:?} endpoint",
+                i, ep_type
             );
         }
 
