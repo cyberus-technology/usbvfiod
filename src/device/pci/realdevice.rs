@@ -52,3 +52,11 @@ pub trait RealDevice: Debug {
         dma_bus: &BusDeviceRef,
     ) -> (CompletionCode, u32);
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointType {
+    Control,
+    BulkIn,
+    BulkOut,
+    InterruptIn,
+}
