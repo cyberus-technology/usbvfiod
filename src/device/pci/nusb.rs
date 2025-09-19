@@ -181,6 +181,9 @@ impl RealDevice for NusbDeviceWrapper {
         // transfer_in requires targeted endpoint to be enabled, panic if not
         let ep_in = match self.endpoints[endpoint_id as usize - 2].as_mut() {
             Some(EndpointWrapper::BulkIn(ep)) => ep,
+            Some(EndpointWrapper::InterruptIn(_)) => {
+                // do nothing for interrupt in, simulating that the device never sends anything
+            }
             None => panic!("transfer_in for uninitialized endpoint (EP{})", endpoint_id),
             _ => unreachable!(),
         };
