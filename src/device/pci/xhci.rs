@@ -318,7 +318,7 @@ impl XhciController {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         // Program requires real USB device for all XHCI operations (pattern used throughout file)
-        for i in enabled_endpoints {
+        for (i, _ep_type) in enabled_endpoints {
             self.real_device.as_mut().unwrap().enable_endpoint(i);
         }
     }
