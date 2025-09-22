@@ -5,7 +5,7 @@ use tracing::{debug, warn};
 use crate::device::bus::BusDeviceRef;
 use crate::device::pci::trb::CompletionCode;
 
-use super::realdevice::{EndpointType, Speed};
+use super::realdevice::{EndpointType, EndpointWorkerInfo, Speed};
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
@@ -267,15 +267,8 @@ impl RealDevice for NusbDeviceWrapper {
         (CompletionCode::Success, 0)
     }
 
-    fn enable_endpoint(&mut self, endpoint_id: u8, _endpoint_type: EndpointType) {
-        if endpoint_id == 1 {
-            // id of the control endpoint
-            //
-            // nusb allows us to perform control requests directly on the
-            // interface, so there is no need for us to open/track this
-            // endpoint.
-            return;
-        }
+    fn enable_endpoint(&mut self, worker_info: EndpointWorkerInfo, _endpoint_type: EndpointType) {
+        let endpoint_id = worker_info.endpoint_id;
         assert!(
             (2..=31).contains(&endpoint_id),
             "request to enable invalid endpoint id on nusb device. endpoint_id = {}",

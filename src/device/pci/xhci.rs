@@ -27,7 +27,7 @@ use super::{
     config_space::BarInfo,
     constants::xhci::{device_slots::endpoint_state, operational::usbsts},
     device_slots::DeviceSlotManager,
-    realdevice::RealDevice,
+    realdevice::{EndpointWorkerInfo, RealDevice},
     registers::PortscRegister,
     rings::{CommandRing, EventRing},
     trb::{
@@ -461,8 +461,16 @@ impl XhciController {
         if (data.slot_id as usize) <= self.real_devices.len() {
             let device_index = data.slot_id as usize - 1;
             if let Some(device) = self.real_devices[device_index].as_mut() {
-                for (i, endpoint_type) in enabled_endpoints {
-                    device.enable_endpoint(i, endpoint_type);
+                for (i, ep_type) in enabled_endpoints {
+                    let worker_info = EndpointWorkerInfo {
+                        slot_id: data.slot_id,
+                        endpoint_id: i,
+                        transfer_ring: device_context.get_transfer_ring(i as u64),
+                        dma_bus: self.dma_bus.clone(),
+                        event_ring: self.event_ring.clone(),
+                        interrupt_line: self.interrupt_line.clone(),
+                    };
+                    device.enable_endpoint(worker_info, ep_type);
                 }
             }
         }
