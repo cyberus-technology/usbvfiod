@@ -5,12 +5,15 @@ use nusb::MaybeFuture;
 use tracing::{debug, warn};
 
 use crate::device::bus::BusDeviceRef;
+use crate::device::interrupt_line::InterruptLine;
 use crate::device::pci::trb::CompletionCode;
 
 use super::realdevice::{EndpointType, Speed};
+use super::rings::EventRing;
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
+use std::sync::{Arc, Mutex};
 use std::{
     fmt::Debug,
     sync::atomic::{fence, Ordering},
@@ -235,7 +238,14 @@ impl RealDevice for NusbDeviceWrapper {
         (CompletionCode::Success, 0)
     }
 
-    fn enable_endpoint(&mut self, endpoint_id: u8, endpoint_type: EndpointType) {
+    fn enable_endpoint(
+        &mut self,
+        endpoint_id: u8,
+        endpoint_type: EndpointType,
+        dma_bus: BusDeviceRef,
+        interrupt_line: Arc<dyn InterruptLine>,
+        event_ring: Arc<Mutex<EventRing>>,
+    ) {
         assert!(
             (1..=31).contains(&endpoint_id),
             "request to enable invalid endpoint id on nusb device. endpoint_id = {}",
