@@ -409,14 +409,14 @@ impl XhciController {
         device_context.set_endpoint_state(data.endpoint_id, endpoint_state::STOPPED);
     }
 
-    fn doorbell_device(&mut self, value: u32) {
-        debug!("Ding Dong Device with value {}!", value);
+    fn doorbell_device(&mut self, slot_id: u8, value: u32) {
+        debug!("Ding Dong Device Slot {} with value {}!", slot_id, value);
 
         match value {
             ep if ep == 0 || ep > 31 => panic!("invalid value {} on doorbell write", ep),
-            1 => self.check_control_endpoint(1),
-            ep if ep % 2 == 0 => self.check_out_endpoint(1, ep as u8),
-            ep => self.check_in_endpoint(1, ep as u8),
+            1 => self.check_control_endpoint(slot_id),
+            ep if ep % 2 == 0 => self.check_out_endpoint(slot_id, ep as u8),
+            ep => self.check_in_endpoint(slot_id, ep as u8),
         };
     }
 
@@ -580,7 +580,7 @@ impl PciDevice for Mutex<XhciController> {
                 .update_dequeue_pointer(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::DOORBELL_CONTROLLER => self.lock().unwrap().doorbell_controller(),
-            offset::DOORBELL_DEVICE => self.lock().unwrap().doorbell_device(value as u32),
+            offset::DOORBELL_DEVICE => self.lock().unwrap().doorbell_device(1, value as u32),
             addr => {
                 todo!("unknown write {}", addr);
             }
