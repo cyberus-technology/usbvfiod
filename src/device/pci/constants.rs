@@ -212,7 +212,7 @@ pub mod xhci {
     /// Runtime register base offset.
     pub const RUN_BASE: u64 = 0x3000;
     /// Number of USB 3 ports that we use
-    pub const NUM_USB3_PORTS: u64 = 1;
+    pub const NUM_USB3_PORTS: u64 = 2;
     /// Number of USB 2 ports that we use
     pub const NUM_USB2_PORTS: u64 = 1;
     /// Maximum number of supported ports.
@@ -260,12 +260,15 @@ pub mod xhci {
         pub const CONFIG: u64 = super::OP_BASE + 0x38;
 
         /// Per Port Operational Register Offsets
+        /// USB3 Port 1 base address - each port uses 0x10 bytes: PORTSC(+0x0), PORTPMSC(+0x4), PORTLI(+0x8)
         pub const PORTSC_USB3: u64 = super::OP_BASE + 0x400; /* +(0x10 * (portnr-1)) */
         pub const PORTPMSC_USB3: u64 = super::OP_BASE + 0x404;
         pub const PORTLI_USB3: u64 = super::OP_BASE + 0x408;
-        pub const PORTSC_USB2: u64 = super::OP_BASE + 0x410;
-        pub const PORTPMSC_USB2: u64 = super::OP_BASE + 0x414;
-        pub const PORTLI_USB2: u64 = super::OP_BASE + 0x418;
+
+        /// USB2 port comes after all USB3 ports (NUM_USB3_PORTS * 0x10 bytes later)
+        pub const PORTSC_USB2: u64 = super::OP_BASE + 0x400 + (super::NUM_USB3_PORTS * 0x10);
+        pub const PORTPMSC_USB2: u64 = PORTSC_USB2 + 0x4;
+        pub const PORTLI_USB2: u64 = PORTSC_USB2 + 0x8;
 
         /// Runtime Register Offsets
         pub const MFINDEX: u64 = super::RUN_BASE;
