@@ -15,8 +15,8 @@ use crate::device::{
     pci::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
         constants::xhci::{
-            capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS, OP_BASE,
-            RUN_BASE,
+            capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS, NUM_USB3_PORTS,
+            OP_BASE, RUN_BASE,
         },
         traits::PciDevice,
         trb::{CommandTrbVariant, CompletionCode, EventTrb},
@@ -70,8 +70,8 @@ pub struct XhciController {
     /// The interrupt line triggered to signal device events.
     interrupt_line: Arc<dyn InterruptLine>,
 
-    /// State of the USB3 PORTSC register
-    portsc_usb3: PortscRegister,
+    /// USB3 PORTSC registers array
+    portsc_usb3: Vec<PortscRegister>,
 
     /// State of the USB2 PORTSC register
     portsc_usb2: PortscRegister,
@@ -107,7 +107,7 @@ impl XhciController {
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
-            portsc_usb3: PortscRegister::new(portsc::PP),
+            portsc_usb3: vec![PortscRegister::new(portsc::PP); NUM_USB3_PORTS as usize],
             portsc_usb2: PortscRegister::new(portsc::PP),
         }
     }
@@ -128,7 +128,7 @@ impl XhciController {
             if speed.is_usb2_speed() {
                 self.portsc_usb2 = portsc;
             } else {
-                self.portsc_usb3 = portsc;
+                self.portsc_usb3[0] = portsc;
             }
 
             info!("Attached {} device", speed);
@@ -474,7 +474,7 @@ impl PciDevice for Mutex<XhciController> {
             offset::CONFIG => self.lock().unwrap().enable_slots(value),
             // USBSTS writes occur but we can ignore them (to get a device enumerated)
             offset::USBSTS => {}
-            offset::PORTSC_USB3 => self.lock().unwrap().portsc_usb3.write(value),
+            offset::PORTSC_USB3 => self.lock().unwrap().portsc_usb3[0].write(value),
             offset::PORTSC_USB2 => self.lock().unwrap().portsc_usb2.write(value),
 
             // xHC Runtime Registers
@@ -533,7 +533,7 @@ impl PciDevice for Mutex<XhciController> {
             offset::PAGESIZE => 0x1, /* 4k Pages */
             offset::CONFIG => self.lock().unwrap().config(),
 
-            offset::PORTSC_USB3 => self.lock().unwrap().portsc_usb3.read(),
+            offset::PORTSC_USB3 => self.lock().unwrap().portsc_usb3[0].read(),
             offset::PORTLI_USB3 => 0,
             offset::PORTSC_USB2 => self.lock().unwrap().portsc_usb2.read(),
             offset::PORTLI_USB2 => 0,
