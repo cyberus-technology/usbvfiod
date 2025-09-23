@@ -128,14 +128,85 @@ impl XhciController {
             if speed.is_usb2_speed() {
                 self.portsc_usb2 = portsc;
             } else {
-                self.portsc_usb3[0] = portsc;
+                // Find first available USB3 port
+                let port_idx = self
+                    .find_available_usb3_port()
+                    .expect("No available USB3 ports - all ports are occupied");
+
+                self.portsc_usb3[port_idx] = portsc;
             }
 
             info!("Attached {} device", speed);
         } else {
             warn!("Failed to attach device: Unable to determine speed");
-            // portsc::CCS | portsc::PED | portsc::PP | portsc::CSC | portsc::PEC | portsc::PRC,
         }
+    }
+
+    /// Find the first available USB3 port (not currently connected)
+    fn find_available_usb3_port(&self) -> Option<usize> {
+        for (idx, port) in self.portsc_usb3.iter().enumerate() {
+            // Port is available if it doesn't have CCS (Current Connect Status) bit set
+            if port.read() & portsc::CCS == 0 {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// Get USB3 port index from MMIO offset, returns None for non-USB3 ports
+    const fn get_usb3_port_index(&self, addr: u64) -> Option<usize> {
+        // USB3 ports start at PORTSC_USB3_BASE and each port uses 0x10 bytes
+        const PORTSC_USB3_BASE: u64 = offset::PORTSC_USB3;
+        const PORT_REGISTER_SIZE: u64 = 0x10;
+
+        if addr >= PORTSC_USB3_BASE
+            && addr < PORTSC_USB3_BASE + (NUM_USB3_PORTS * PORT_REGISTER_SIZE)
+        {
+            // Check if this is a PORTSC register (offset 0x0 within the port's 0x10 byte range)
+            if (addr - PORTSC_USB3_BASE) % PORT_REGISTER_SIZE == 0 {
+                Some(((addr - PORTSC_USB3_BASE) / PORT_REGISTER_SIZE) as usize)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Get USB3 PORTLI port index from MMIO offset, returns None for non-PORTLI registers
+    const fn get_usb3_portli_index(&self, addr: u64) -> Option<usize> {
+        const PORTSC_USB3_BASE: u64 = offset::PORTSC_USB3;
+        const PORT_REGISTER_SIZE: u64 = 0x10;
+        const PORTLI_OFFSET: u64 = 0x8;
+
+        if addr >= PORTSC_USB3_BASE
+            && addr < PORTSC_USB3_BASE + (NUM_USB3_PORTS * PORT_REGISTER_SIZE)
+        {
+            // Check if this is a PORTLI register (offset 0x8 within the port's 0x10 byte range)
+            if (addr - PORTSC_USB3_BASE) % PORT_REGISTER_SIZE == PORTLI_OFFSET {
+                Some(((addr - PORTSC_USB3_BASE) / PORT_REGISTER_SIZE) as usize)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Write to USB3 PORTSC register and log status change
+    fn write_usb3_portsc(&mut self, port_idx: usize, value: u64) {
+        self.portsc_usb3[port_idx].write(value);
+        let new_value = self.portsc_usb3[port_idx].read();
+        let status = self.describe_portsc_status(new_value);
+        debug!("USB3 Port {} now {}", port_idx + 1, status);
+    }
+
+    /// Write to USB2 PORTSC register and log status change
+    fn write_usb2_portsc(&mut self, value: u64) {
+        self.portsc_usb2.write(value);
+        let new_value = self.portsc_usb2.read();
+        let status = self.describe_portsc_status(new_value);
+        debug!("USB2 Port 1 now {}", status);
     }
 
     /// Configure the interrupt line for the controller.
@@ -204,6 +275,16 @@ impl XhciController {
         debug!("Ding Dong!");
         while let Some(cmd) = self.command_ring.next_command_trb() {
             self.handle_command(cmd);
+        }
+    }
+
+    const fn describe_portsc_status(&self, value: u64) -> &'static str {
+        if value & portsc::CCS != 0 {
+            "device connected"
+        } else if value & portsc::PP != 0 {
+            "empty port"
+        } else {
+            "port powered off"
         }
     }
 
@@ -459,6 +540,7 @@ impl PciDevice for Mutex<XhciController> {
         self.lock().unwrap().config_space.read(req)
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn write_io(&self, region: u32, req: Request, value: u64) {
         // The XHCI Controller has a single MMIO BAR.
         assert_eq!(region, 0);
@@ -474,8 +556,13 @@ impl PciDevice for Mutex<XhciController> {
             offset::CONFIG => self.lock().unwrap().enable_slots(value),
             // USBSTS writes occur but we can ignore them (to get a device enumerated)
             offset::USBSTS => {}
-            offset::PORTSC_USB3 => self.lock().unwrap().portsc_usb3[0].write(value),
-            offset::PORTSC_USB2 => self.lock().unwrap().portsc_usb2.write(value),
+            addr if self.lock().unwrap().get_usb3_port_index(addr).is_some() => {
+                let port_idx = self.lock().unwrap().get_usb3_port_index(addr).unwrap();
+                self.lock().unwrap().write_usb3_portsc(port_idx, value);
+            }
+            offset::PORTSC_USB2 => {
+                self.lock().unwrap().write_usb2_portsc(value);
+            }
 
             // xHC Runtime Registers
             offset::IMAN => self.lock().unwrap().interrupt_management = value,
@@ -533,8 +620,11 @@ impl PciDevice for Mutex<XhciController> {
             offset::PAGESIZE => 0x1, /* 4k Pages */
             offset::CONFIG => self.lock().unwrap().config(),
 
-            offset::PORTSC_USB3 => self.lock().unwrap().portsc_usb3[0].read(),
-            offset::PORTLI_USB3 => 0,
+            addr if self.lock().unwrap().get_usb3_port_index(addr).is_some() => {
+                let port_idx = self.lock().unwrap().get_usb3_port_index(addr).unwrap();
+                self.lock().unwrap().portsc_usb3[port_idx].read()
+            }
+            addr if self.lock().unwrap().get_usb3_portli_index(addr).is_some() => 0,
             offset::PORTSC_USB2 => self.lock().unwrap().portsc_usb2.read(),
             offset::PORTLI_USB2 => 0,
 
