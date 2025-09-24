@@ -435,23 +435,24 @@ impl XhciController {
 
         while let Some(trb) = transfer_ring.next_transfer_trb() {
             debug!("TRB on endpoint {} (IN): {:?}", ep, trb);
-            let (completion_code, residual_bytes) =
-                self.real_device
-                    .as_mut()
-                    .unwrap()
-                    .transfer_in(ep, &trb, &self.dma_bus);
+            self.real_device
+                .as_mut()
+                .unwrap()
+                .transfer_in(ep, slot, trb);
+            // the worker treads now does all of the following
+            //
             // send transfer event
-            let transfer_event = EventTrb::new_transfer_event_trb(
-                trb.address,
-                residual_bytes,
-                completion_code,
-                false,
-                ep,
-                slot,
-            );
-            self.event_ring.lock().unwrap().enqueue(&transfer_event);
-            self.interrupt_line.interrupt();
-            debug!("sent Transfer Event and signaled interrupt");
+            //let transfer_event = EventTrb::new_transfer_event_trb(
+            //    trb.address,
+            //    residual_bytes,
+            //    completion_code,
+            //    false,
+            //    ep,
+            //    slot,
+            //);
+            //self.event_ring.lock().unwrap().enqueue(&transfer_event);
+            //self.interrupt_line.interrupt();
+            //debug!("sent Transfer Event and signaled interrupt");
         }
     }
 }
