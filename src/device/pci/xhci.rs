@@ -7,7 +7,7 @@ use std::sync::{
     atomic::{fence, Ordering},
     Arc, Mutex,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::device::{
     bus::{BusDeviceRef, Request, SingleThreadedBusDevice},
@@ -15,8 +15,8 @@ use crate::device::{
     pci::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
         constants::xhci::{
-            capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS, NUM_USB3_PORTS,
-            OP_BASE, RUN_BASE,
+            capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS, NUM_USB2_PORTS,
+            NUM_USB3_PORTS, OP_BASE, RUN_BASE,
         },
         traits::PciDevice,
         trb::{CommandTrbVariant, CompletionCode, EventTrb},
@@ -73,8 +73,8 @@ pub struct XhciController {
     /// USB3 PORTSC registers array
     portsc_usb3: Vec<PortscRegister>,
 
-    /// State of the USB2 PORTSC register
-    portsc_usb2: PortscRegister,
+    /// USB2 PORTSC registers array
+    portsc_usb2: Vec<PortscRegister>,
 }
 
 impl XhciController {
@@ -108,10 +108,14 @@ impl XhciController {
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
             portsc_usb3: vec![PortscRegister::new(portsc::PP); NUM_USB3_PORTS as usize],
-            portsc_usb2: PortscRegister::new(portsc::PP),
+            portsc_usb2: vec![PortscRegister::new(portsc::PP); NUM_USB2_PORTS as usize],
         }
     }
 
+    // TODO: Replace the panic (expect) with logic that does nothing if there is no space
+    // and indicates with the return value that the attachment failed. There is no good reason
+    // for us to crash here, we can continue running as before, it is up to the caller to
+    // decide how to handle the failed attachment attempt.
     pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
         if let Some(speed) = device.speed() {
             self.real_device = Some(device);
@@ -126,7 +130,12 @@ impl XhciController {
                     | (speed as u64) << 10,
             );
             if speed.is_usb2_speed() {
-                self.portsc_usb2 = portsc;
+                // Find first available USB2 port
+                let port_idx = self
+                    .find_available_usb2_port()
+                    .expect("No available USB2 ports - all ports are occupied");
+
+                self.portsc_usb2[port_idx] = portsc;
             } else {
                 // Find first available USB3 port
                 let port_idx = self
@@ -142,9 +151,12 @@ impl XhciController {
         }
     }
 
-    /// Find the first available USB3 port (not currently connected)
-    fn find_available_usb3_port(&self) -> Option<usize> {
-        for (idx, port) in self.portsc_usb3.iter().enumerate() {
+    // Helper function to find available port in any port array
+    // TODO: This portsc-lookup-approach is the only one viable right now, but as soon as we have
+    // multiple devices, we need to track the "port<-->real device" mapping and looking up the
+    // empty ports there will be a nicer implementation (portsc lookup is more indirect)
+    fn find_available_port_in_array(ports: &[PortscRegister]) -> Option<usize> {
+        for (idx, port) in ports.iter().enumerate() {
             // Port is available if it doesn't have CCS (Current Connect Status) bit set
             if port.read() & portsc::CCS == 0 {
                 return Some(idx);
@@ -153,18 +165,27 @@ impl XhciController {
         None
     }
 
-    /// Get USB3 port index from MMIO offset, returns None for non-USB3 ports
-    const fn get_usb3_port_index(&self, addr: u64) -> Option<usize> {
-        // USB3 ports start at PORTSC_USB3_BASE and each port uses 0x10 bytes
-        const PORTSC_USB3_BASE: u64 = offset::PORTSC_USB3;
-        const PORT_REGISTER_SIZE: u64 = 0x10;
+    // Find the first available USB3 port (not currently connected)
+    fn find_available_usb3_port(&self) -> Option<usize> {
+        Self::find_available_port_in_array(&self.portsc_usb3)
+    }
 
-        if addr >= PORTSC_USB3_BASE
-            && addr < PORTSC_USB3_BASE + (NUM_USB3_PORTS * PORT_REGISTER_SIZE)
-        {
-            // Check if this is a PORTSC register (offset 0x0 within the port's 0x10 byte range)
-            if (addr - PORTSC_USB3_BASE) % PORT_REGISTER_SIZE == 0 {
-                Some(((addr - PORTSC_USB3_BASE) / PORT_REGISTER_SIZE) as usize)
+    // Find the first available USB2 port (not currently connected)
+    fn find_available_usb2_port(&self) -> Option<usize> {
+        Self::find_available_port_in_array(&self.portsc_usb2)
+    }
+
+    // Helper function to get port index from MMIO address
+    const fn get_port_index_from_addr(
+        addr: u64,
+        base_addr: u64,
+        port_count: u64,
+        register_offset: u64,
+    ) -> Option<usize> {
+        if addr >= base_addr && addr < base_addr + (port_count * offset::PORT_STRIDE) {
+            // Check if this is the correct register within the port's PORT_STRIDE byte range
+            if (addr - base_addr) % offset::PORT_STRIDE == register_offset {
+                Some(((addr - base_addr) / offset::PORT_STRIDE) as usize)
             } else {
                 None
             }
@@ -173,40 +194,47 @@ impl XhciController {
         }
     }
 
-    /// Get USB3 PORTLI port index from MMIO offset, returns None for non-PORTLI registers
+    // Get USB3 port index from MMIO offset, returns None for non-USB3 ports
+    const fn get_usb3_portsc_index(&self, addr: u64) -> Option<usize> {
+        Self::get_port_index_from_addr(addr, offset::PORTSC_USB3, NUM_USB3_PORTS, 0)
+    }
+
+    // Get USB3 PORTLI port index from MMIO offset, returns None for non-PORTLI registers
     const fn get_usb3_portli_index(&self, addr: u64) -> Option<usize> {
-        const PORTSC_USB3_BASE: u64 = offset::PORTSC_USB3;
-        const PORT_REGISTER_SIZE: u64 = 0x10;
-        const PORTLI_OFFSET: u64 = 0x8;
-
-        if addr >= PORTSC_USB3_BASE
-            && addr < PORTSC_USB3_BASE + (NUM_USB3_PORTS * PORT_REGISTER_SIZE)
-        {
-            // Check if this is a PORTLI register (offset 0x8 within the port's 0x10 byte range)
-            if (addr - PORTSC_USB3_BASE) % PORT_REGISTER_SIZE == PORTLI_OFFSET {
-                Some(((addr - PORTSC_USB3_BASE) / PORT_REGISTER_SIZE) as usize)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+        Self::get_port_index_from_addr(addr, offset::PORTSC_USB3, NUM_USB3_PORTS, 0x8)
     }
 
-    /// Write to USB3 PORTSC register and log status change
+    // Get USB2 port index from MMIO offset, returns None for non-USB2 ports
+    const fn get_usb2_portsc_index(&self, addr: u64) -> Option<usize> {
+        Self::get_port_index_from_addr(addr, offset::PORTSC_USB2, NUM_USB2_PORTS, 0)
+    }
+
+    // Get USB2 PORTLI port index from MMIO offset, returns None for non-PORTLI registers
+    const fn get_usb2_portli_index(&self, addr: u64) -> Option<usize> {
+        Self::get_port_index_from_addr(addr, offset::PORTSC_USB2, NUM_USB2_PORTS, 0x8)
+    }
+
+    // Write to USB3 PORTSC register and log status change
     fn write_usb3_portsc(&mut self, port_idx: usize, value: u64) {
-        self.portsc_usb3[port_idx].write(value);
-        let new_value = self.portsc_usb3[port_idx].read();
-        let status = self.describe_portsc_status(new_value);
-        debug!("USB3 Port {} now {}", port_idx + 1, status);
+        Self::write_portsc_generic(&mut self.portsc_usb3, port_idx, value, "USB3");
     }
 
-    /// Write to USB2 PORTSC register and log status change
-    fn write_usb2_portsc(&mut self, value: u64) {
-        self.portsc_usb2.write(value);
-        let new_value = self.portsc_usb2.read();
-        let status = self.describe_portsc_status(new_value);
-        debug!("USB2 Port 1 now {}", status);
+    // Write to USB2 PORTSC register and log status change
+    fn write_usb2_portsc(&mut self, port_idx: usize, value: u64) {
+        Self::write_portsc_generic(&mut self.portsc_usb2, port_idx, value, "USB2");
+    }
+
+    // Generic helper to write to any PORTSC register
+    fn write_portsc_generic(
+        ports: &mut [PortscRegister],
+        port_idx: usize,
+        value: u64,
+        usb_type: &str,
+    ) {
+        ports[port_idx].write(value);
+        let new_value = ports[port_idx].read();
+        let status = Self::describe_portsc_status(new_value);
+        trace!("{} Port {} now {}", usb_type, port_idx + 1, status);
     }
 
     /// Configure the interrupt line for the controller.
@@ -278,7 +306,7 @@ impl XhciController {
         }
     }
 
-    const fn describe_portsc_status(&self, value: u64) -> &'static str {
+    const fn describe_portsc_status(value: u64) -> &'static str {
         if value & portsc::CCS != 0 {
             "device connected"
         } else if value & portsc::PP != 0 {
@@ -556,12 +584,19 @@ impl PciDevice for Mutex<XhciController> {
             offset::CONFIG => self.lock().unwrap().enable_slots(value),
             // USBSTS writes occur but we can ignore them (to get a device enumerated)
             offset::USBSTS => {}
-            addr if self.lock().unwrap().get_usb3_port_index(addr).is_some() => {
-                let port_idx = self.lock().unwrap().get_usb3_port_index(addr).unwrap();
-                self.lock().unwrap().write_usb3_portsc(port_idx, value);
+            // USB 3.0 Port Status and Control Register (PORTSC_USB3)
+            addr if self.lock().unwrap().get_usb3_portsc_index(addr).is_some() => {
+                let mut guard = self.lock().unwrap();
+                // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
+                let port_idx = guard.get_usb3_portsc_index(addr).unwrap();
+                guard.write_usb3_portsc(port_idx, value);
             }
-            offset::PORTSC_USB2 => {
-                self.lock().unwrap().write_usb2_portsc(value);
+            // USB 2.0 Port Status and Control Register (PORTSC_USB2)
+            addr if self.lock().unwrap().get_usb2_portsc_index(addr).is_some() => {
+                let mut guard = self.lock().unwrap();
+                // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
+                let port_idx = guard.get_usb2_portsc_index(addr).unwrap();
+                guard.write_usb2_portsc(port_idx, value);
             }
 
             // xHC Runtime Registers
@@ -620,13 +655,24 @@ impl PciDevice for Mutex<XhciController> {
             offset::PAGESIZE => 0x1, /* 4k Pages */
             offset::CONFIG => self.lock().unwrap().config(),
 
-            addr if self.lock().unwrap().get_usb3_port_index(addr).is_some() => {
-                let port_idx = self.lock().unwrap().get_usb3_port_index(addr).unwrap();
-                self.lock().unwrap().portsc_usb3[port_idx].read()
+            // USB 3.0 Port Status and Control Register (PORTSC_USB3)
+            addr if self.lock().unwrap().get_usb3_portsc_index(addr).is_some() => {
+                let guard = self.lock().unwrap();
+                // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
+                let port_idx = guard.get_usb3_portsc_index(addr).unwrap();
+                guard.portsc_usb3[port_idx].read()
             }
+            // USB 3.0 Port Link Info Register (PORTLI_USB3)
             addr if self.lock().unwrap().get_usb3_portli_index(addr).is_some() => 0,
-            offset::PORTSC_USB2 => self.lock().unwrap().portsc_usb2.read(),
-            offset::PORTLI_USB2 => 0,
+            // USB 2.0 Port Status and Control Register (PORTSC_USB2)
+            addr if self.lock().unwrap().get_usb2_portsc_index(addr).is_some() => {
+                let guard = self.lock().unwrap();
+                // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
+                let port_idx = guard.get_usb2_portsc_index(addr).unwrap();
+                guard.portsc_usb2[port_idx].read()
+            }
+            // USB 2.0 Port Link Info Register (PORTLI_USB2)
+            addr if self.lock().unwrap().get_usb2_portli_index(addr).is_some() => 0,
 
             // xHC Runtime Registers
             offset::IMAN => self.lock().unwrap().interrupt_management,
