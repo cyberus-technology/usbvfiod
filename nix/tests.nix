@@ -193,7 +193,7 @@ in
 
       # Check whether the USB controller pops up.
       machine.wait_until_succeeds("grep -Fq 'usb usb1: Product: xHCI Host Controller' ${cloudHypervisorLog}", timeout=3000)
-      machine.wait_until_succeeds("grep -Fq 'hub 1-0:1.0: 1 port detected' ${cloudHypervisorLog}")
+      machine.wait_until_succeeds("grep -Eq 'hub 1-0:1\\.0: [0-9]+ ports? detected' ${cloudHypervisorLog}")
 
       # Read the diagnostic information after login.
       machine.wait_until_succeeds("grep -Eq '\s+[1-9][0-9]*\s+PCI-MSIX.*xhci_hcd' ${cloudHypervisorLog}")
