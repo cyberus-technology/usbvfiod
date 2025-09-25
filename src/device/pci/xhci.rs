@@ -319,9 +319,12 @@ impl XhciController {
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         // Program requires real USB device for all XHCI operations (pattern used throughout file)
         for (i, ep_type) in enabled_endpoints {
+            let transfer_ring = device_context.get_transfer_ring(i as u64);
             self.real_device.as_mut().unwrap().enable_endpoint(
+                data.slot_id,
                 i,
                 ep_type,
+                transfer_ring,
                 self.dma_bus.clone(),
                 self.interrupt_line.clone(),
                 self.event_ring.clone(),
@@ -433,27 +436,7 @@ impl XhciController {
             .get_device_context(slot)
             .get_transfer_ring(ep as u64);
 
-        while let Some(trb) = transfer_ring.next_transfer_trb() {
-            debug!("TRB on endpoint {} (IN): {:?}", ep, trb);
-            self.real_device
-                .as_mut()
-                .unwrap()
-                .transfer_in(ep, slot, trb);
-            // the worker treads now does all of the following
-            //
-            // send transfer event
-            //let transfer_event = EventTrb::new_transfer_event_trb(
-            //    trb.address,
-            //    residual_bytes,
-            //    completion_code,
-            //    false,
-            //    ep,
-            //    slot,
-            //);
-            //self.event_ring.lock().unwrap().enqueue(&transfer_event);
-            //self.interrupt_line.interrupt();
-            //debug!("sent Transfer Event and signaled interrupt");
-        }
+        self.real_device.as_mut().unwrap().transfer_in(ep);
     }
 }
 

@@ -9,7 +9,7 @@ use crate::device::interrupt_line::InterruptLine;
 use crate::device::pci::trb::{CompletionCode, EventTrb};
 
 use super::realdevice::{EndpointType, Speed};
-use super::rings::EventRing;
+use super::rings::{EventRing, TransferRing};
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
@@ -23,7 +23,7 @@ use std::{
 };
 
 enum EndpointWrapper {
-    BulkIn(Sender<TransferTrb>),
+    BulkIn(Sender<()>),
     BulkOut(nusb::Endpoint<Bulk, Out>),
     InterruptIn(nusb::Endpoint<Interrupt, In>),
 }
@@ -171,16 +171,10 @@ impl RealDevice for NusbDeviceWrapper {
         (CompletionCode::Success, 0)
     }
 
-    fn transfer_in(&mut self, endpoint_id: u8, slot_id: u8, trb: TransferTrb) {
-        assert!(
-            matches!(trb.variant, TransferTrbVariant::Normal(_)),
-            "Expected Normal TRB but got {:?}",
-            trb
-        );
-
+    fn transfer_in(&mut self, endpoint_id: u8) {
         // transfer_in requires targeted endpoint to be enabled, panic if not
         let ep_in = match self.endpoints[endpoint_id as usize - 2].as_mut() {
-            Some(EndpointWrapper::BulkIn(sender)) => sender.send(trb),
+            Some(EndpointWrapper::BulkIn(sender)) => sender.send(()),
             Some(EndpointWrapper::InterruptIn(_)) => {
                 // do nothing for interrupt in, simulating that the device never sends anything
                 panic!();
@@ -192,8 +186,10 @@ impl RealDevice for NusbDeviceWrapper {
 
     fn enable_endpoint(
         &mut self,
+        slot_id: u8,
         endpoint_id: u8,
         endpoint_type: EndpointType,
+        transfer_ring: TransferRing,
         dma_bus: BusDeviceRef,
         interrupt_line: Arc<dyn InterruptLine>,
         event_ring: Arc<Mutex<EventRing>>,
@@ -234,8 +230,10 @@ impl RealDevice for NusbDeviceWrapper {
 
                 thread::spawn(move || {
                     bulk_in_worker(
+                        slot_id,
                         endpoint_id,
                         endpoint,
+                        transfer_ring,
                         dma_bus,
                         interrupt_line,
                         event_ring,
@@ -274,15 +272,23 @@ impl RealDevice for NusbDeviceWrapper {
 }
 
 fn bulk_in_worker(
+    slot_id: u8,
     endpoint_id: u8,
     mut endpoint: nusb::Endpoint<Bulk, In>,
+    transfer_ring: TransferRing,
     dma_bus: BusDeviceRef,
     interrupt_line: Arc<dyn InterruptLine>,
     event_ring: Arc<Mutex<EventRing>>,
-    trb_receiver: Receiver<TransferTrb>,
+    wakeup: Receiver<()>,
 ) {
-    let slot = 1;
-    while let Ok(trb) = trb_receiver.recv() {
+    loop {
+        let trb = match transfer_ring.next_transfer_trb() {
+            Some(trb) => trb,
+            None => {
+                wakeup.recv().unwrap();
+                continue;
+            }
+        };
         assert!(
             matches!(trb.variant, TransferTrbVariant::Normal(_)),
             "Expected Normal TRB but got {:?}",
@@ -290,6 +296,10 @@ fn bulk_in_worker(
         );
 
         let normal_data = extract_normal_trb_data(&trb).unwrap();
+        debug!(
+            "NORMAL DATA chain {} ioc {}",
+            normal_data.chain, normal_data.interrupt_on_completion
+        );
         let transfer_length = normal_data.transfer_length as usize;
 
         let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
@@ -341,13 +351,12 @@ fn bulk_in_worker(
             completion_code,
             false,
             endpoint_id,
-            slot,
+            slot_id,
         );
         event_ring.lock().unwrap().enqueue(&transfer_event);
         interrupt_line.interrupt();
         debug!("sent Transfer Event and signaled interrupt");
     }
-    debug!("Endpoint worker (bulk IN) stopping");
 }
 
 const fn extract_normal_trb_data(trb: &TransferTrb) -> Option<&NormalTrbData> {

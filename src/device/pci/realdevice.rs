@@ -1,7 +1,7 @@
 use crate::device::{bus::BusDeviceRef, interrupt_line::InterruptLine};
 
 use super::{
-    rings::EventRing,
+    rings::{EventRing, TransferRing},
     trb::{CompletionCode, TransferTrb},
     usbrequest::UsbRequest,
 };
@@ -44,8 +44,10 @@ pub trait RealDevice: Debug {
     fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef);
     fn enable_endpoint(
         &mut self,
+        slot_id: u8,
         endpoint_id: u8,
         endpoint_type: EndpointType,
+        transfer_ring: TransferRing,
         dma_bus: BusDeviceRef,
         interrupt_line: Arc<dyn InterruptLine>,
         event_ring: Arc<Mutex<EventRing>>,
@@ -56,7 +58,7 @@ pub trait RealDevice: Debug {
         trb: &TransferTrb,
         dma_bus: &BusDeviceRef,
     ) -> (CompletionCode, u32);
-    fn transfer_in(&mut self, endpoint_id: u8, slot_id: u8, trb: TransferTrb);
+    fn transfer_in(&mut self, endpoint_id: u8);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
