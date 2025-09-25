@@ -5,7 +5,7 @@ use tracing::{debug, warn};
 use crate::device::bus::BusDeviceRef;
 use crate::device::pci::trb::CompletionCode;
 
-use super::realdevice::Speed;
+use super::realdevice::{EndpointType, Speed};
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
@@ -228,7 +228,7 @@ impl RealDevice for NusbDeviceWrapper {
         (CompletionCode::Success, 0)
     }
 
-    fn enable_endpoint(&mut self, endpoint_id: u8) {
+    fn enable_endpoint(&mut self, endpoint_id: u8, _endpoint_type: EndpointType) {
         if endpoint_id == 1 {
             // id of the control endpoint
             //
