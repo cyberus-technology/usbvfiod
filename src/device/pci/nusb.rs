@@ -343,6 +343,10 @@ fn bulk_in_worker(
             }
         };
         dma_bus.write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
+        if !normal_data.interrupt_on_completion {
+            continue;
+        }
+
         let (completion_code, residual_bytes) = (CompletionCode::Success, 0);
 
         let transfer_event = EventTrb::new_transfer_event_trb(
