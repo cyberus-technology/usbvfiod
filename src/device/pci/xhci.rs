@@ -56,7 +56,7 @@ pub struct XhciController {
     command_ring: CommandRing,
 
     /// The Event Ring of the single Interrupt Register Set.
-    event_ring: EventRing,
+    event_ring: Arc<Mutex<EventRing>>,
 
     /// Device Slot Management
     device_slot_manager: DeviceSlotManager,
@@ -102,7 +102,7 @@ impl XhciController {
                 .config_space(),
             running: false,
             command_ring: CommandRing::new(dma_bus_for_command_ring),
-            event_ring: EventRing::new(dma_bus_for_event_ring),
+            event_ring: Arc::new(Mutex::new(EventRing::new(dma_bus_for_event_ring))),
             device_slot_manager: DeviceSlotManager::new(MAX_SLOTS, dma_bus_for_device_slot_manager),
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
@@ -289,7 +289,7 @@ impl XhciController {
             // Send a port status change event, which signals the driver to
             // inspect the PORTSC status register.
             let trb = EventTrb::new_port_status_change_event_trb(0);
-            self.event_ring.enqueue(&trb);
+            self.event_ring.lock().unwrap().enqueue(&trb);
 
             // XXX: This is just a test to see if we can generate interrupts.
             // This will be removed once we generate interrupts in the right
@@ -398,7 +398,7 @@ impl XhciController {
         // missing a fence where it is needed, we choose to place a release
         // barrier before every event enqueue.
         fence(Ordering::Release);
-        self.event_ring.enqueue(&completion_event);
+        self.event_ring.lock().unwrap().enqueue(&completion_event);
         self.interrupt_line.interrupt();
     }
 
@@ -429,8 +429,11 @@ impl XhciController {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         // Program requires real USB device for all XHCI operations (pattern used throughout file)
-        for i in enabled_endpoints {
-            self.real_device.as_mut().unwrap().enable_endpoint(i);
+        for (i, ep_type) in enabled_endpoints {
+            self.real_device
+                .as_mut()
+                .unwrap()
+                .enable_endpoint(i, ep_type);
         }
     }
 
@@ -450,7 +453,7 @@ impl XhciController {
         };
     }
 
-    fn check_control_endpoint(&mut self, slot: u8) {
+    fn check_control_endpoint(&self, slot: u8) {
         // check request available
         let transfer_ring = self
             .device_slot_manager
@@ -499,7 +502,7 @@ impl XhciController {
             1,
             slot,
         );
-        self.event_ring.enqueue(&trb);
+        self.event_ring.lock().unwrap().enqueue(&trb);
         self.interrupt_line.interrupt();
         debug!("sent Transfer Event and signaled interrupt");
     }
@@ -526,7 +529,7 @@ impl XhciController {
                 ep,
                 slot,
             );
-            self.event_ring.enqueue(&trb);
+            self.event_ring.lock().unwrap().enqueue(&trb);
             self.interrupt_line.interrupt();
             debug!("sent Transfer Event and signaled interrupt");
         }
@@ -554,7 +557,7 @@ impl XhciController {
                 ep,
                 slot,
             );
-            self.event_ring.enqueue(&transfer_event);
+            self.event_ring.lock().unwrap().enqueue(&transfer_event);
             self.interrupt_line.interrupt();
             debug!("sent Transfer Event and signaled interrupt");
         }
@@ -592,11 +595,15 @@ impl PciDevice for Mutex<XhciController> {
             offset::IMOD => guard.interrupt_moderation_interval = value,
             offset::ERSTSZ => {
                 let sz = (value as u32) & 0xFFFF;
-                guard.event_ring.set_erst_size(sz);
+                guard.event_ring.lock().unwrap().set_erst_size(sz);
             }
-            offset::ERSTBA => guard.event_ring.configure(value),
+            offset::ERSTBA => guard.event_ring.lock().unwrap().configure(value),
             offset::ERSTBA_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
-            offset::ERDP => guard.event_ring.update_dequeue_pointer(value),
+            offset::ERDP => guard
+                .event_ring
+                .lock()
+                .unwrap()
+                .update_dequeue_pointer(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::DOORBELL_CONTROLLER => guard.doorbell_controller(),
             offset::DOORBELL_DEVICE => guard.doorbell_device(1, value as u32),
@@ -655,13 +662,13 @@ impl PciDevice for Mutex<XhciController> {
             offset::PAGESIZE => 0x1, /* 4k Pages */
             offset::CONFIG => guard.config(),
 
-            // xHC Runtime Registers (moved up for performance)
+            // xHC Runtime Registers
             offset::IMAN => guard.interrupt_management,
             offset::IMOD => guard.interrupt_moderation_interval,
-            offset::ERSTSZ => guard.event_ring.read_erst_size(),
-            offset::ERSTBA => guard.event_ring.read_base_address(),
+            offset::ERSTSZ => guard.event_ring.lock().unwrap().read_erst_size(),
+            offset::ERSTBA => guard.event_ring.lock().unwrap().read_base_address(),
             offset::ERSTBA_HI => 0,
-            offset::ERDP => guard.event_ring.read_dequeue_pointer(),
+            offset::ERDP => guard.event_ring.lock().unwrap().read_dequeue_pointer(),
             offset::ERDP_HI => 0,
             offset::DOORBELL_CONTROLLER => 0, // kernel reads the doorbell after write
             offset::DOORBELL_DEVICE => 0,

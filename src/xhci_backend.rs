@@ -91,12 +91,21 @@ impl XhciBackend {
     /// Add a USB device via its path in `/dev/bus/usb`.
     pub fn add_device_from_path(&self, path: impl AsRef<Path>) -> Result<()> {
         let path: &Path = path.as_ref();
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
-            .with_context(|| format!("Failed to open USB device file: {}", path.display()))?;
+        let open_file = |err_msg| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .with_context(|| format!("{}: {}", err_msg, path.display()))
+        };
 
+        let file = open_file("Failed to open USB device file")?;
+        let device = nusb::Device::from_fd(file.into()).wait()?;
+        device.reset().wait()?;
+
+        // After the reset, the device instance is no longer usable and we need
+        // to reopen.
+        let file = open_file("Failed to open USB device file after device reset")?;
         self.add_device(nusb::Device::from_fd(file.into()).wait()?)
     }
 }
