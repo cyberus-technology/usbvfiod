@@ -85,9 +85,9 @@ let
   productId = "0001";
 
   # Provide a raw file as usb stick test image.
-  usbDiskImage = pkgs.writeText "usb-stick-image.raw" ''
-    This is an uninitialized drive.
-  '';
+  blockDeviceFile = "/tmp/image.img";
+  blockDeviceBlockSize = "512";
+  blockDeviceBlockCount = "16384";
 
   # Report for target device path and access permissions
   usbDeviceInfoScript = pkgs.writeShellScript "usb-device-info" ''
@@ -173,7 +173,8 @@ in
           # A virtual USB XHCI controller in the host ...
           "-device qemu-xhci,id=host-xhci,addr=10"
           # ... with an attached usb stick.
-          "-drive if=none,id=usbstick,format=raw,snapshot=on,file=${usbDiskImage}"
+          "-drive if=none,id=usbstick,format=raw,file=${blockDeviceFile}"
+          "-usb"
           "-device usb-storage,bus=host-xhci.0,drive=usbstick"
         ];
       };
@@ -182,6 +183,10 @@ in
     # The nested CI runs are really slow.
     globalTimeout = 3600;
     testScript = ''
+      import os
+      print("Creating file image at ${blockDeviceFile}")
+      os.system("dd bs=${blockDeviceBlockSize} count=${blockDeviceBlockCount} if=/dev/urandom of=${blockDeviceFile}")
+
       start_all()
 
       # Display device path and access permissions
