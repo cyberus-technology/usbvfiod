@@ -25,7 +25,7 @@ use std::{
 enum EndpointWrapper {
     BulkIn(Sender<()>),
     BulkOut(nusb::Endpoint<Bulk, Out>),
-    InterruptIn(nusb::Endpoint<Interrupt, In>),
+    InterruptIn(Sender<()>),
 }
 
 pub struct NusbDeviceWrapper {
@@ -175,10 +175,7 @@ impl RealDevice for NusbDeviceWrapper {
         // transfer_in requires targeted endpoint to be enabled, panic if not
         let ep_in = match self.endpoints[endpoint_id as usize - 2].as_mut() {
             Some(EndpointWrapper::BulkIn(sender)) => sender.send(()),
-            Some(EndpointWrapper::InterruptIn(_)) => {
-                // do nothing for interrupt in, simulating that the device never sends anything
-                panic!();
-            }
+            Some(EndpointWrapper::InterruptIn(sender)) => sender.send(()),
             None => panic!("transfer_in for uninitialized endpoint (EP{})", endpoint_id),
             _ => unreachable!(),
         };
@@ -255,11 +252,27 @@ impl RealDevice for NusbDeviceWrapper {
             EndpointType::InterruptIn => {
                 assert!(endpoint_id % 2 == 1);
 
-                EndpointWrapper::InterruptIn(
-                    self.interface
-                        .endpoint::<Interrupt, In>(0x80 | (endpoint_id / 2))
-                        .unwrap(),
-                )
+                let endpoint = self
+                    .interface
+                    .endpoint::<Interrupt, In>(0x80 | (endpoint_id / 2))
+                    .unwrap();
+
+                let (sender, receiver) = channel();
+
+                thread::spawn(move || {
+                    interrupt_in_worker(
+                        slot_id,
+                        endpoint_id,
+                        endpoint,
+                        transfer_ring,
+                        dma_bus,
+                        interrupt_line,
+                        event_ring,
+                        receiver,
+                    )
+                });
+
+                EndpointWrapper::InterruptIn(sender)
             }
         };
 
@@ -308,6 +321,98 @@ fn bulk_in_worker(
         // Timeout indicates device unresponsive - no reasonable recovery possible
         let buffer = endpoint
             .wait_next_complete(Duration::from_millis(800))
+            .unwrap();
+        let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
+            Greater => {
+                // Got more data than requested. We must not write more data than
+                // the guest driver requested with the transfer length, otherwise
+                // we might write out of the buffer.
+                //
+                // Why does this case happen? Sometimes the driver asks for, e.g.,
+                // 36 bytes. We have to request max_packet_size (e.g., 1024 bytes).
+                // The real device then provides 1024 bytes of data (looks like
+                // zero padding).
+                transfer_length
+            }
+            Less => {
+                // Got less data than requested. That case happens for example when
+                // the driver sends a Mode Sense(6) SCSI command. The response size
+                // is variable, so the driver asks for 192 bytes but is also fine
+                // with less.
+                //
+                // We copy all the data over that we got.
+                // TODO: currently, we just report success and 0 residual bytes,
+                // even though we probably should report something like short
+                // packet and the difference between requested and actual byte
+                // count. We get away with the simplified handling for now.
+                // The Mode Sense(6) response encodes the size of the response in
+                // the first byte, so the driver is not unhappy that we reported
+                // 192 bytes but only deliver, e.g., 36 bytes.
+                buffer.actual_len
+            }
+            Equal => {
+                // We got exactly the right amount of bytes.
+                transfer_length
+            }
+        };
+        dma_bus.write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
+        if !normal_data.interrupt_on_completion {
+            continue;
+        }
+
+        let (completion_code, residual_bytes) = (CompletionCode::Success, 0);
+
+        let transfer_event = EventTrb::new_transfer_event_trb(
+            trb.address,
+            residual_bytes,
+            completion_code,
+            false,
+            endpoint_id,
+            slot_id,
+        );
+        event_ring.lock().unwrap().enqueue(&transfer_event);
+        interrupt_line.interrupt();
+        debug!("sent Transfer Event and signaled interrupt");
+    }
+}
+
+fn interrupt_in_worker(
+    slot_id: u8,
+    endpoint_id: u8,
+    mut endpoint: nusb::Endpoint<Interrupt, In>,
+    transfer_ring: TransferRing,
+    dma_bus: BusDeviceRef,
+    interrupt_line: Arc<dyn InterruptLine>,
+    event_ring: Arc<Mutex<EventRing>>,
+    wakeup: Receiver<()>,
+) {
+    loop {
+        let trb = match transfer_ring.next_transfer_trb() {
+            Some(trb) => trb,
+            None => {
+                wakeup.recv().unwrap();
+                continue;
+            }
+        };
+        assert!(
+            matches!(trb.variant, TransferTrbVariant::Normal(_)),
+            "Expected Normal TRB but got {:?}",
+            trb
+        );
+
+        let normal_data = extract_normal_trb_data(&trb).unwrap();
+        debug!(
+            "NORMAL DATA chain {} ioc {}",
+            normal_data.chain, normal_data.interrupt_on_completion
+        );
+        let transfer_length = normal_data.transfer_length as usize;
+
+        let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
+        let buffer = Buffer::new(buffer_size);
+        endpoint.submit(buffer);
+        // Timeout indicates device unresponsive - no reasonable recovery possible
+        let buffer = endpoint
+            .wait_next_complete(Duration::from_secs(80000))
             .unwrap();
         let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
             Greater => {
