@@ -407,14 +407,16 @@ mod tests {
 
     #[test]
     fn device_slot_reservation() {
-        // we test with only one device slot, because that case is currently
-        // what we run with
-        let mut device_slot_manager = DeviceSlotManager::new(1, Arc::new(TestBusDevice::default()));
+        // we test with two device slots, which is our current configuration
+        let mut device_slot_manager = DeviceSlotManager::new(2, Arc::new(TestBusDevice::default()));
 
-        // reserve the only slot
+        // reserve the first slot
         assert_eq!(device_slot_manager.reserve_slot(), Some(1));
 
-        // reserving another slot should fail
+        // reserve the second slot
+        assert_eq!(device_slot_manager.reserve_slot(), Some(2));
+
+        // reserving a third slot should fail
         assert_eq!(device_slot_manager.reserve_slot(), None);
     }
 }
