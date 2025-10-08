@@ -244,7 +244,12 @@ impl XhciController {
                 )
             }
             CommandTrbVariant::EvaluateContext => todo!(),
-            CommandTrbVariant::ResetEndpoint => todo!(),
+            CommandTrbVariant::ResetEndpoint => EventTrb::new_command_completion_event_trb(
+                cmd.address,
+                0,
+                CompletionCode::Success,
+                1,
+            ),
             CommandTrbVariant::StopEndpoint(data) => {
                 self.handle_stop_endpoint(&data);
                 EventTrb::new_command_completion_event_trb(
