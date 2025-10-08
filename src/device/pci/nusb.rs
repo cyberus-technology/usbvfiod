@@ -24,7 +24,7 @@ use std::{
 
 enum EndpointWrapper {
     BulkIn(Sender<()>),
-    BulkOut(nusb::Endpoint<Bulk, Out>),
+    BulkOut(Sender<()>),
     InterruptIn(Sender<()>),
 }
 
@@ -169,33 +169,13 @@ impl RealDevice for NusbDeviceWrapper {
         }
     }
 
-    fn transfer_out(
-        &mut self,
-        endpoint_id: u8,
-        trb: &TransferTrb,
-        dma_bus: &BusDeviceRef,
-    ) -> (CompletionCode, u32) {
-        assert!(
-            matches!(trb.variant, TransferTrbVariant::Normal(_)),
-            "Expected Normal TRB but got {:?}",
-            trb
-        );
-
-        let ep_out = match self.endpoints[endpoint_id as usize - 2].as_mut() {
-            Some(EndpointWrapper::BulkOut(ep)) => ep,
+    fn transfer_out(&mut self, endpoint_id: u8) {
+        // transfer_in requires targeted endpoint to be enabled, panic if not
+        let ep_in = match self.endpoints[endpoint_id as usize - 2].as_mut() {
+            Some(EndpointWrapper::BulkOut(sender)) => sender.send(()),
             None => panic!("transfer_in for uninitialized endpoint (EP{})", endpoint_id),
             _ => unreachable!(),
         };
-        // SAFETY: assert above guarantees TRB is Normal variant
-        let normal_data = extract_normal_trb_data(trb).unwrap();
-
-        let mut data = vec![0; normal_data.transfer_length as usize];
-        dma_bus.read_bulk(normal_data.data_pointer, &mut data);
-        ep_out.submit(data.into());
-        ep_out
-            .wait_next_complete(Duration::from_millis(400))
-            .unwrap();
-        (CompletionCode::Success, 0)
     }
 
     fn transfer_in(&mut self, endpoint_id: u8) {
@@ -271,13 +251,28 @@ impl RealDevice for NusbDeviceWrapper {
             EndpointType::BulkOut => {
                 assert!(endpoint_id % 2 == 0);
 
-                EndpointWrapper::BulkOut(
-                    self.interfaces[self
-                        .get_interface_number_containing_endpoint(endpoint_id / 2)
-                        .unwrap()]
-                    .endpoint::<Bulk, Out>(endpoint_id / 2)
-                    .unwrap(),
-                )
+                let endpoint = self.interfaces[self
+                    .get_interface_number_containing_endpoint(endpoint_id / 2)
+                    .unwrap()]
+                .endpoint::<Bulk, Out>(endpoint_id / 2)
+                .unwrap();
+
+                let (sender, receiver) = channel();
+
+                thread::spawn(move || {
+                    bulk_out_worker(
+                        slot_id,
+                        endpoint_id,
+                        endpoint,
+                        transfer_ring,
+                        dma_bus,
+                        interrupt_line,
+                        event_ring,
+                        receiver,
+                    )
+                });
+
+                EndpointWrapper::BulkOut(sender)
             }
             EndpointType::InterruptIn => {
                 assert!(endpoint_id % 2 == 1);
@@ -387,6 +382,63 @@ fn bulk_in_worker(
             }
         };
         dma_bus.write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
+        if !normal_data.interrupt_on_completion {
+            continue;
+        }
+
+        let (completion_code, residual_bytes) = (CompletionCode::Success, 0);
+
+        let transfer_event = EventTrb::new_transfer_event_trb(
+            trb.address,
+            residual_bytes,
+            completion_code,
+            false,
+            endpoint_id,
+            slot_id,
+        );
+        event_ring.lock().unwrap().enqueue(&transfer_event);
+        interrupt_line.interrupt();
+        debug!("sent Transfer Event and signaled interrupt");
+    }
+}
+
+fn bulk_out_worker(
+    slot_id: u8,
+    endpoint_id: u8,
+    mut endpoint: nusb::Endpoint<Bulk, Out>,
+    transfer_ring: TransferRing,
+    dma_bus: BusDeviceRef,
+    interrupt_line: Arc<dyn InterruptLine>,
+    event_ring: Arc<Mutex<EventRing>>,
+    wakeup: Receiver<()>,
+) {
+    loop {
+        let trb = match transfer_ring.next_transfer_trb() {
+            Some(trb) => trb,
+            None => {
+                wakeup.recv().unwrap();
+                continue;
+            }
+        };
+        assert!(
+            matches!(trb.variant, TransferTrbVariant::Normal(_)),
+            "Expected Normal TRB but got {:?}",
+            trb
+        );
+
+        let normal_data = extract_normal_trb_data(&trb).unwrap();
+        debug!(
+            "NORMAL DATA chain {} ioc {}",
+            normal_data.chain, normal_data.interrupt_on_completion
+        );
+
+        let mut data = vec![0; normal_data.transfer_length as usize];
+        dma_bus.read_bulk(normal_data.data_pointer, &mut data);
+        endpoint.submit(data.into());
+        endpoint
+            .wait_next_complete(Duration::from_millis(400))
+            .unwrap();
+
         if !normal_data.interrupt_on_completion {
             continue;
         }

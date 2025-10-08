@@ -52,12 +52,7 @@ pub trait RealDevice: Debug {
         interrupt_line: Arc<dyn InterruptLine>,
         event_ring: Arc<Mutex<EventRing>>,
     );
-    fn transfer_out(
-        &mut self,
-        endpoint_id: u8,
-        trb: &TransferTrb,
-        dma_bus: &BusDeviceRef,
-    ) -> (CompletionCode, u32);
+    fn transfer_out(&mut self, endpoint_id: u8);
     fn transfer_in(&mut self, endpoint_id: u8);
 }
 
