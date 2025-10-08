@@ -126,6 +126,17 @@ impl NusbDeviceWrapper {
             Err(error) => warn!("control out request failed: {:?}", error),
         }
     }
+
+    fn get_interface_number_containing_endpoint(&self, endpoint_id: u8) -> Option<usize> {
+        self.interfaces.iter().position(|interface| {
+            interface
+                .descriptor()
+                .unwrap()
+                .endpoints()
+                .find(|ep| ep.address() == endpoint_id)
+                .is_some()
+        })
+    }
 }
 
 impl From<nusb::Speed> for Speed {
@@ -230,9 +241,11 @@ impl RealDevice for NusbDeviceWrapper {
             EndpointType::BulkIn => {
                 assert!(endpoint_id % 2 == 1);
 
-                let endpoint = self.interfaces[0]
-                    .endpoint::<Bulk, In>(0x80 | (endpoint_id / 2))
-                    .unwrap();
+                let endpoint = self.interfaces[self
+                    .get_interface_number_containing_endpoint(0x80 | (endpoint_id / 2))
+                    .unwrap()]
+                .endpoint::<Bulk, In>(0x80 | (endpoint_id / 2))
+                .unwrap();
 
                 let (sender, receiver) = channel();
 
@@ -255,17 +268,21 @@ impl RealDevice for NusbDeviceWrapper {
                 assert!(endpoint_id % 2 == 0);
 
                 EndpointWrapper::BulkOut(
-                    self.interfaces[0]
-                        .endpoint::<Bulk, Out>(endpoint_id / 2)
-                        .unwrap(),
+                    self.interfaces[self
+                        .get_interface_number_containing_endpoint(endpoint_id / 2)
+                        .unwrap()]
+                    .endpoint::<Bulk, Out>(endpoint_id / 2)
+                    .unwrap(),
                 )
             }
             EndpointType::InterruptIn => {
                 assert!(endpoint_id % 2 == 1);
 
-                let endpoint = self.interfaces[0]
-                    .endpoint::<Interrupt, In>(0x80 | (endpoint_id / 2))
-                    .unwrap();
+                let endpoint = self.interfaces[self
+                    .get_interface_number_containing_endpoint(0x80 | (endpoint_id / 2))
+                    .unwrap()]
+                .endpoint::<Interrupt, In>(0x80 | (endpoint_id / 2))
+                .unwrap();
 
                 let (sender, receiver) = channel();
 
