@@ -606,7 +606,13 @@ impl PciDevice for Mutex<XhciController> {
                 .update_dequeue_pointer(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::DOORBELL_CONTROLLER => guard.doorbell_controller(),
-            offset::DOORBELL_DEVICE => guard.doorbell_device(1, value as u32),
+            // Device Doorbell Registers (DOORBELL_DEVICE)
+            addr if (offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE + MAX_SLOTS * 4)
+                .contains(&addr) =>
+            {
+                let slot_id = ((addr - offset::DOORBELL_DEVICE) / 4 + 1) as u8;
+                guard.doorbell_device(slot_id, value as u32);
+            }
 
             // USB 3.0 Port Status and Control Register (PORTSC_USB3)
             addr if guard.get_usb3_portsc_index(addr).is_some() => {
@@ -671,7 +677,12 @@ impl PciDevice for Mutex<XhciController> {
             offset::ERDP => guard.event_ring.lock().unwrap().read_dequeue_pointer(),
             offset::ERDP_HI => 0,
             offset::DOORBELL_CONTROLLER => 0, // kernel reads the doorbell after write
-            offset::DOORBELL_DEVICE => 0,
+            // Device Doorbell Registers (DOORBELL_DEVICE)
+            addr if (offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE + MAX_SLOTS * 4)
+                .contains(&addr) =>
+            {
+                0
+            }
 
             // USB 3.0 Port Status and Control Register (PORTSC_USB3)
             addr if guard.get_usb3_portsc_index(addr).is_some() => {
