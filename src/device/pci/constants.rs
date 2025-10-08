@@ -220,7 +220,7 @@ pub mod xhci {
     /// Maximum number of supported interrupter register sets.
     pub const MAX_INTRS: u64 = 1;
     /// Maximum number of supported device slots.
-    pub const MAX_SLOTS: u64 = 1;
+    pub const MAX_SLOTS: u64 = 2;
     /// Maximum Event Ring Segment Table size as an exponent.
     ///
     /// The actual maximum number of segments is 2^MAX_ERST_SIZE_EXP.
