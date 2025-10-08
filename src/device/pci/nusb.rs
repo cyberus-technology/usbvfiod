@@ -30,7 +30,7 @@ enum EndpointWrapper {
 
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
-    interface: nusb::Interface,
+    interfaces: Vec<nusb::Interface>,
     endpoints: [Option<EndpointWrapper>; 30],
 }
 
@@ -46,11 +46,23 @@ impl Debug for NusbDeviceWrapper {
 
 impl NusbDeviceWrapper {
     pub fn new(device: nusb::Device) -> Self {
-        // Program requires USB interface 0 to function, panic if unavailable
-        let interface = device.detach_and_claim_interface(0).wait().unwrap();
+        // Claim all interfaces
+        let mut interfaces = vec![];
+        let desc = device.active_configuration().unwrap();
+        for interface in desc.interfaces() {
+            let interface_number = interface.interface_number();
+            debug!("Enabling interface {}", interface_number);
+            interfaces.push(
+                device
+                    .detach_and_claim_interface(interface_number)
+                    .wait()
+                    .unwrap(),
+            );
+        }
+
         Self {
             device,
-            interface,
+            interfaces,
             endpoints: std::array::from_fn(|_| None),
         }
     }
@@ -218,8 +230,7 @@ impl RealDevice for NusbDeviceWrapper {
             EndpointType::BulkIn => {
                 assert!(endpoint_id % 2 == 1);
 
-                let endpoint = self
-                    .interface
+                let endpoint = self.interfaces[0]
                     .endpoint::<Bulk, In>(0x80 | (endpoint_id / 2))
                     .unwrap();
 
@@ -244,7 +255,7 @@ impl RealDevice for NusbDeviceWrapper {
                 assert!(endpoint_id % 2 == 0);
 
                 EndpointWrapper::BulkOut(
-                    self.interface
+                    self.interfaces[0]
                         .endpoint::<Bulk, Out>(endpoint_id / 2)
                         .unwrap(),
                 )
@@ -252,8 +263,7 @@ impl RealDevice for NusbDeviceWrapper {
             EndpointType::InterruptIn => {
                 assert!(endpoint_id % 2 == 1);
 
-                let endpoint = self
-                    .interface
+                let endpoint = self.interfaces[0]
                     .endpoint::<Interrupt, In>(0x80 | (endpoint_id / 2))
                     .unwrap();
 
