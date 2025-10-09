@@ -283,6 +283,6 @@ fn determine_buffer_size(guest_transfer_length: usize, max_packet_size: usize) -
     } else if guest_transfer_length % max_packet_size == 0 {
         guest_transfer_length
     } else {
-        panic!("unexpected IN transfer length {}", guest_transfer_length);
+        (guest_transfer_length / max_packet_size + 1) * max_packet_size
     }
 }
