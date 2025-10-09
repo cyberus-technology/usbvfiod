@@ -43,13 +43,23 @@ let
                 cat /proc/interrupts
                 echo
                 ${pkgs.usbutils}/bin/lsusb
-                echo
                 ${pkgs.util-linux}/bin/fdisk -l
                 echo
-                cat /dev/sda
+                /run/wrappers/bin/sudo ${pkgs.parted}/bin/parted --script /dev/sda mklabel gpt
+                ${pkgs.util-linux}/bin/fdisk -l /dev/sda
                 echo
-                echo -n "You are" > /dev/sda
-                cat /dev/sda
+                /run/wrappers/bin/sudo ${pkgs.parted}/bin/parted --script --align=optimal /dev/sda mkpart primary ext4 0 100%
+                ${pkgs.util-linux}/bin/fdisk -l /dev/sda
+                echo
+                /run/wrappers/bin/sudo ${pkgs.e2fsprogs}/bin/mkfs.ext4 /dev/sda1 && echo "Successfully created a new ext4 filesystem on the blockdevice."
+                echo
+                /run/wrappers/bin/sudo ${pkgs.coreutils}/bin/mkdir -p /mnt
+                /run/wrappers/bin/sudo ${pkgs.util-linux}/bin/mount /dev/sda1 /mnt
+                /run/wrappers/bin/sudo ${pkgs.coreutils}/bin/chown --recursive nixos:users /mnt
+                /run/wrappers/bin/sudo ${pkgs.coreutils}/bin/chmod --recursive 755 /mnt
+                echo
+                echo "This is a new partition with ext4 filesystem." > /mnt/file.txt
+                cat /mnt/file.txt
               '';
               StandardOutput = "journal+console";
               StandardError = "journal+console";
@@ -204,8 +214,14 @@ in
       machine.wait_until_succeeds("grep -Eq '\s+[1-9][0-9]*\s+PCI-MSIX.*xhci_hcd' ${cloudHypervisorLog}")
       machine.wait_until_succeeds("grep -q 'ID ${vendorId}:${productId} QEMU QEMU USB HARDDRIVE' ${cloudHypervisorLog}")
       machine.wait_until_succeeds("grep -q 'Disk /dev/sda:' ${cloudHypervisorLog}")
-      machine.wait_until_succeeds("grep -q 'This is an uninitialized drive.' ${cloudHypervisorLog}")
-      machine.wait_until_succeeds("grep -q 'You are an uninitialized drive.' ${cloudHypervisorLog}")
+
+      # Confirm the partition creation was successful.
+      machine.wait_until_succeeds("grep -q 'Disklabel type: gpt' ${cloudHypervisorLog}")
+      machine.wait_until_succeeds("grep -Eq '/dev/sda1 .* Linux filesystem' ${cloudHypervisorLog}")
+
+      # Confirm the filesystem is functional.
+      machine.wait_until_succeeds("grep -q 'Successfully created a new ext4 filesystem on the blockdevice.' ${cloudHypervisorLog}")
+      machine.wait_until_succeeds("grep -q 'This is a new partition with ext4 filesystem.' ${cloudHypervisorLog}")
     '';
   };
 }
