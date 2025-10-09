@@ -406,18 +406,28 @@ impl XhciController {
                 .as_mut()
                 .unwrap()
                 .transfer_out(ep, &trb, &self.dma_bus);
-            // send transfer event
-            let trb = EventTrb::new_transfer_event_trb(
-                trb.address,
-                residual_bytes,
-                completion_code,
-                false,
-                ep,
-                slot,
-            );
-            self.event_ring.enqueue(&trb);
-            self.interrupt_line.interrupt();
-            debug!("sent Transfer Event and signaled interrupt");
+
+            // respect the interrupt_on_completion value before sending an interrupt
+            let normal_data = match trb.variant {
+                crate::device::pci::trb::TransferTrbVariant::Normal(data) => data,
+                _ => {
+                    unreachable!()
+                }
+            };
+            if normal_data.interrupt_on_completion == true {
+                // send transfer event
+                let transfer_event = EventTrb::new_transfer_event_trb(
+                    trb.address,
+                    residual_bytes,
+                    completion_code,
+                    false,
+                    ep,
+                    slot,
+                );
+                self.event_ring.enqueue(&transfer_event);
+                self.interrupt_line.interrupt();
+                debug!("sent Transfer Event and signaled interrupt");
+            }
         }
     }
 
@@ -434,18 +444,28 @@ impl XhciController {
                     .as_mut()
                     .unwrap()
                     .transfer_in(ep, &trb, &self.dma_bus);
-            // send transfer event
-            let transfer_event = EventTrb::new_transfer_event_trb(
-                trb.address,
-                residual_bytes,
-                completion_code,
-                false,
-                ep,
-                slot,
-            );
-            self.event_ring.enqueue(&transfer_event);
-            self.interrupt_line.interrupt();
-            debug!("sent Transfer Event and signaled interrupt");
+
+            // respect the interrupt_on_completion value before sending an interrupt
+            let normal_data = match trb.variant {
+                crate::device::pci::trb::TransferTrbVariant::Normal(data) => data,
+                _ => {
+                    unreachable!()
+                }
+            };
+            if normal_data.interrupt_on_completion == true {
+                // send transfer event
+                let transfer_event = EventTrb::new_transfer_event_trb(
+                    trb.address,
+                    residual_bytes,
+                    completion_code,
+                    false,
+                    ep,
+                    slot,
+                );
+                self.event_ring.enqueue(&transfer_event);
+                self.interrupt_line.interrupt();
+                debug!("sent Transfer Event and signaled interrupt");
+            }
         }
     }
 }
