@@ -57,6 +57,34 @@ let
           };
         };
 
+        # network configuration for interactive debugging
+        networking.interfaces."ens1" = {
+          ipv4.addresses = [
+            {
+              address = "192.168.100.2";
+              prefixLength = 24;
+            }
+          ];
+          ipv4.routes = [
+            {
+              address = "0.0.0.0";
+              prefixLength = 0;
+              via = "192.168.100.1";
+            }
+          ];
+          useDHCP = false;
+        };
+
+        # ssh access for interactive debugging
+        services.openssh = {
+          enable = true;
+          settings = {
+            PermitRootLogin = "yes";
+            PermitEmptyPasswords = "yes";
+          };
+        };
+        security.pam.services.sshd.allowNullPassword = true;
+
         # Silence the useless stateVersion warning. We have no state to keep.
         system.stateVersion = config.system.nixos.release;
       })
@@ -160,11 +188,25 @@ in
                 --kernel ${netboot.kernel} \
                 --cmdline ${lib.escapeShellArg netboot.cmdline} \
                 --initramfs ${netboot.initrd} \
-                --user-device socket=${usbvfiodSocket}
+                --user-device socket=${usbvfiodSocket} \
+                --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
             '';
           };
         };
       };
+
+      # interactive debugging
+      services.openssh = {
+        enable = true;
+        settings = {
+          PermitRootLogin = "yes";
+          PermitEmptyPasswords = "yes";
+        };
+      };
+      security.pam.services.sshd.allowNullPassword = true;
+      virtualisation.forwardPorts = [
+        { from = "host"; host.port = 2000; guest.port = 22; }
+      ];
 
       virtualisation = {
         cores = 2;

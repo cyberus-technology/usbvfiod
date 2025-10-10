@@ -11,3 +11,4 @@ professional support.
 
 - [Architecture Overview](./developers/architecture.md)
 - [Code Guidelines](./developers/guidelines.md)
+- [Interactive VM-Test Debugging](./developers/vmTest.md)
