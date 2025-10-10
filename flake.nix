@@ -128,6 +128,9 @@
         } // (import ./nix/tests.nix {
           inherit lib pkgs;
           usbvfiod = self.packages.${system}.default;
+        }) // (import ./nix/tests_interactive.nix {
+          inherit lib pkgs;
+          usbvfiod = self.packages.${system}.default;
         });
 
         packages = {

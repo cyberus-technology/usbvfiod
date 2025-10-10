@@ -267,6 +267,7 @@ impl XhciController {
                 // Currently, we just acknowledge to not crash usbvfiod when
                 // testing with unsupported devices.
                 warn!("device reset! the driver probably didn't like it.");
+                panic!();
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
