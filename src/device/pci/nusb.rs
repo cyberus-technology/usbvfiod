@@ -19,7 +19,7 @@ use std::{
 
 enum EndpointWrapper {
     BulkIn(Sender<()>),
-    BulkOut(nusb::Endpoint<Bulk, Out>),
+    BulkOut(Sender<()>),
 }
 
 pub struct NusbDeviceWrapper {
@@ -165,36 +165,15 @@ impl RealDevice for NusbDeviceWrapper {
         }
     }
 
-    fn transfer_out(
-        &mut self,
-        endpoint_id: u8,
-        trb: &TransferTrb,
-        dma_bus: &BusDeviceRef,
-    ) -> (CompletionCode, u32) {
-        assert!(
-            matches!(trb.variant, TransferTrbVariant::Normal(_)),
-            "Expected Normal TRB but got {:?}",
-            trb
-        );
-
-        let ep_out = match self.endpoints[endpoint_id as usize - 2].as_mut() {
-            Some(EndpointWrapper::BulkOut(ep)) => ep,
+    fn transfer_out(&mut self, endpoint_id: u8) {
+        // transfer_out requires targeted endpoint to be enabled, panic if not
+        match self.endpoints[endpoint_id as usize - 2].as_mut() {
+            Some(EndpointWrapper::BulkOut(sender)) => {
+                let _ = sender.send(());
+            }
             None => panic!("transfer_in for uninitialized endpoint (EP{})", endpoint_id),
             _ => unreachable!(),
         };
-        // SAFETY: assert above guarantees TRB is Normal variant
-        let normal_data = extract_normal_trb_data(trb).unwrap();
-
-        let mut data = vec![0; normal_data.transfer_length as usize];
-        dma_bus.read_bulk(normal_data.data_pointer, &mut data);
-        ep_out.submit(data.into());
-        match ep_out.wait_next_complete(Duration::from_millis(400)) {
-            Some(_) => (CompletionCode::Success, 0),
-            None => {
-                warn!("OUT endpoint transfer timeout or failed");
-                (CompletionCode::StallError, 0)
-            }
-        }
     }
 
     fn transfer_in(&mut self, endpoint_id: u8) {
@@ -237,11 +216,12 @@ impl RealDevice for NusbDeviceWrapper {
                 let interface_of_endpoint = &self.interfaces[self
                     .get_interface_number_containing_endpoint(endpoint_index)
                     .unwrap()];
-                EndpointWrapper::BulkOut(
-                    interface_of_endpoint
-                        .endpoint::<Bulk, Out>(endpoint_index)
-                        .unwrap(),
-                )
+                let endpoint = interface_of_endpoint
+                    .endpoint::<Bulk, Out>(endpoint_index)
+                    .unwrap();
+                let (sender, receiver) = mpsc::channel();
+                thread::spawn(move || transfer_out_worker(endpoint, worker_info, receiver));
+                EndpointWrapper::BulkOut(sender)
             }
             false => {
                 let endpoint_index = 0x80 | endpoint_index;

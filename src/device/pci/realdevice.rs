@@ -2,7 +2,6 @@ use crate::device::{bus::BusDeviceRef, interrupt_line::InterruptLine};
 
 use super::{
     rings::{EventRing, TransferRing},
-    trb::{CompletionCode, TransferTrb},
     usbrequest::UsbRequest,
 };
 use std::{
@@ -43,12 +42,7 @@ pub trait RealDevice: Debug {
     fn speed(&self) -> Option<Speed>;
     fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef);
     fn enable_endpoint(&mut self, worker_info: EndpointWorkerInfo, endpoint_type: EndpointType);
-    fn transfer_out(
-        &mut self,
-        endpoint_id: u8,
-        trb: &TransferTrb,
-        dma_bus: &BusDeviceRef,
-    ) -> (CompletionCode, u32);
+    fn transfer_out(&mut self, endpoint_id: u8);
     fn transfer_in(&mut self, endpoint_id: u8);
 }
 
