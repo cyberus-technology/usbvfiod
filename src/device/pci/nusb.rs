@@ -160,23 +160,13 @@ impl RealDevice for NusbDeviceWrapper {
         }
     }
 
-    fn transfer_out(&mut self, endpoint_id: u8) {
-        // transfer_out requires targeted endpoint to be enabled, panic if not
+    fn transfer(&mut self, endpoint_id: u8) {
+        // transfer requires targeted endpoint to be enabled, panic if not
         match self.endpoints[endpoint_id as usize - 2].as_mut() {
             Some(sender) => {
                 let _ = sender.send(());
             }
-            None => panic!("transfer_in for uninitialized endpoint (EP{})", endpoint_id),
-        };
-    }
-
-    fn transfer_in(&mut self, endpoint_id: u8) {
-        // transfer_in requires targeted endpoint to be enabled, panic if not
-        match self.endpoints[endpoint_id as usize - 2].as_mut() {
-            Some(sender) => {
-                let _ = sender.send(());
-            }
-            None => panic!("transfer_in for uninitialized endpoint (EP{})", endpoint_id),
+            None => panic!("transfer for uninitialized endpoint (EP{})", endpoint_id),
         };
     }
 

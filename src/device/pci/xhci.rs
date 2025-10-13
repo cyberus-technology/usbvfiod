@@ -487,8 +487,7 @@ impl XhciController {
         match value {
             ep if ep == 0 || ep > 31 => panic!("invalid value {} on doorbell write", ep),
             1 => self.check_control_endpoint(slot_id),
-            ep if ep % 2 == 0 => self.check_out_endpoint(slot_id, ep as u8),
-            ep => self.check_in_endpoint(slot_id, ep as u8),
+            ep => self.real_device.as_mut().unwrap().transfer(ep as u8),
         };
     }
 
@@ -547,26 +546,6 @@ impl XhciController {
         self.event_ring.lock().unwrap().enqueue(&trb);
         self.interrupt_line.interrupt();
         debug!("sent Transfer Event and signaled interrupt");
-    }
-
-    fn check_out_endpoint(&mut self, slot: u8, ep: u8) {
-        // Support for multiple devices with the new worker-based async approach
-        if slot <= self.real_devices.len() as u8 {
-            let device_index = slot as usize - 1;
-            if let Some(Some(device)) = self.real_devices.get_mut(device_index) {
-                device.transfer_out(ep);
-            }
-        }
-    }
-
-    fn check_in_endpoint(&mut self, slot: u8, ep: u8) {
-        // Support for multiple devices with the new worker-based async approach
-        if slot <= self.real_devices.len() as u8 {
-            let device_index = slot as usize - 1;
-            if let Some(Some(device)) = self.real_devices.get_mut(device_index) {
-                device.transfer_in(ep);
-            }
-        }
     }
 }
 
