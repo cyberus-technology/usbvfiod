@@ -17,15 +17,10 @@ use std::{
     time::Duration,
 };
 
-enum EndpointWrapper {
-    BulkIn(Sender<()>),
-    BulkOut(Sender<()>),
-}
-
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
     interfaces: Vec<nusb::Interface>,
-    endpoints: [Option<EndpointWrapper>; 30],
+    endpoints: [Option<Sender<()>>; 30],
 }
 
 impl Debug for NusbDeviceWrapper {
@@ -168,22 +163,20 @@ impl RealDevice for NusbDeviceWrapper {
     fn transfer_out(&mut self, endpoint_id: u8) {
         // transfer_out requires targeted endpoint to be enabled, panic if not
         match self.endpoints[endpoint_id as usize - 2].as_mut() {
-            Some(EndpointWrapper::BulkOut(sender)) => {
+            Some(sender) => {
                 let _ = sender.send(());
             }
             None => panic!("transfer_in for uninitialized endpoint (EP{})", endpoint_id),
-            _ => unreachable!(),
         };
     }
 
     fn transfer_in(&mut self, endpoint_id: u8) {
         // transfer_in requires targeted endpoint to be enabled, panic if not
         match self.endpoints[endpoint_id as usize - 2].as_mut() {
-            Some(EndpointWrapper::BulkIn(sender)) => {
+            Some(sender) => {
                 let _ = sender.send(());
             }
             None => panic!("transfer_in for uninitialized endpoint (EP{})", endpoint_id),
-            _ => unreachable!(),
         };
     }
 
@@ -205,7 +198,7 @@ impl RealDevice for NusbDeviceWrapper {
 
         let endpoint_index = endpoint_id / 2;
         let is_out_endpoint = endpoint_id % 2 == 0;
-        let endpoint = match is_out_endpoint {
+        let endpoint_sender = match is_out_endpoint {
             true => {
                 // unwrap can fail when
                 // - driver asks for invalid endpoint (driver's fault)
@@ -221,7 +214,7 @@ impl RealDevice for NusbDeviceWrapper {
                     .unwrap();
                 let (sender, receiver) = mpsc::channel();
                 thread::spawn(move || transfer_out_worker(endpoint, worker_info, receiver));
-                EndpointWrapper::BulkOut(sender)
+                sender
             }
             false => {
                 let endpoint_index = 0x80 | endpoint_index;
@@ -239,10 +232,10 @@ impl RealDevice for NusbDeviceWrapper {
                     .unwrap();
                 let (sender, receiver) = mpsc::channel();
                 thread::spawn(move || transfer_in_worker(endpoint, worker_info, receiver));
-                EndpointWrapper::BulkIn(sender)
+                sender
             }
         };
-        self.endpoints[endpoint_id as usize - 2] = Some(endpoint);
+        self.endpoints[endpoint_id as usize - 2] = Some(endpoint_sender);
         debug!("enabled EP{} on real device", endpoint_id);
     }
 }
