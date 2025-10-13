@@ -350,14 +350,14 @@ pub struct CommandTrb {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommandTrbVariant {
     EnableSlot,
-    DisableSlot,
+    DisableSlot(DisableSlotCommandTrbData),
     AddressDevice(AddressDeviceCommandTrbData),
     ConfigureEndpoint(ConfigureEndpointCommandTrbData),
     EvaluateContext,
-    ResetEndpoint,
+    ResetEndpoint(ResetEndpointCommandTrbData),
     StopEndpoint(StopEndpointCommandTrbData),
-    SetTrDequeuePointer,
-    ResetDevice,
+    SetTrDequeuePointer(SetTrDequeuePointerCommandTrbData),
+    ResetDevice(ResetDeviceCommandTrbData),
     ForceHeader,
     NoOp,
     Link(LinkTrbData),
@@ -386,14 +386,14 @@ impl CommandTrbVariant {
             // type; thus, no further parsing is necessary and we can just
             // return the enum variant.
             trb_types::ENABLE_SLOT_COMMAND => Self::EnableSlot,
-            trb_types::DISABLE_SLOT_COMMAND => Self::DisableSlot,
+            trb_types::DISABLE_SLOT_COMMAND => parse(Self::DisableSlot, bytes),
             trb_types::ADDRESS_DEVICE_COMMAND => parse(Self::AddressDevice, bytes),
             trb_types::CONFIGURE_ENDPOINT_COMMAND => parse(Self::ConfigureEndpoint, bytes),
             trb_types::EVALUATE_CONTEXT_COMMAND => Self::EvaluateContext,
-            trb_types::RESET_ENDPOINT_COMMAND => Self::ResetEndpoint,
+            trb_types::RESET_ENDPOINT_COMMAND => parse(Self::ResetEndpoint, bytes),
             trb_types::STOP_ENDPOINT_COMMAND => parse(Self::StopEndpoint, bytes),
-            trb_types::SET_TR_DEQUEUE_POINTER_COMMAND => Self::SetTrDequeuePointer,
-            trb_types::RESET_DEVICE_COMMAND => Self::ResetDevice,
+            trb_types::SET_TR_DEQUEUE_POINTER_COMMAND => parse(Self::SetTrDequeuePointer, bytes),
+            trb_types::RESET_DEVICE_COMMAND => parse(Self::ResetDevice, bytes),
             trb_types::FORCE_EVENT_COMMAND => Self::Unrecognized(
                 bytes,
                 TrbParseError::UnsupportedOptionalCommand(18, "Force Event Command".to_string()),
@@ -576,6 +576,40 @@ impl TrbData for ConfigureEndpointCommandTrbData {
     }
 }
 
+/// Reset Endpoint Command TRB data structure.
+///
+/// See XHCI specification Section 6.4.3.7 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ResetEndpointCommandTrbData {
+    /// The endpoint to reset.
+    pub endpoint_id: u8,
+    /// The associated Slot ID.
+    pub slot_id: u8,
+}
+
+impl TrbData for ResetEndpointCommandTrbData {
+    /// Parse data of a Reset Endpoint Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::RESET_ENDPOINT_COMMAND,
+            trb_type,
+            "ResetEndpointCommandTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
+            trb_type
+        );
+
+        let endpoint_id = trb_bytes[14] & 0x1f;
+        let slot_id = trb_bytes[15];
+
+        Ok(Self {
+            endpoint_id,
+            slot_id,
+        })
+    }
+}
+
 /// Stop Endpoint Command TRB data structure.
 ///
 /// See XHCI specification Section 6.4.3.8 for detailed field descriptions.
@@ -612,6 +646,96 @@ impl TrbData for StopEndpointCommandTrbData {
             endpoint_id,
             slot_id,
         })
+    }
+}
+
+/// Set TR Dequeue Pointer Command TRB data structure.
+///
+/// See XHCI specification Section 6.4.3.9 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SetTrDequeuePointerCommandTrbData {
+    /// The endpoint to set the dequeue pointer for.
+    pub endpoint_id: u8,
+    /// The slot ID associated with this command.
+    pub slot_id: u8,
+}
+
+impl TrbData for SetTrDequeuePointerCommandTrbData {
+    /// Parse data of a Set TR Dequeue Pointer Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::SET_TR_DEQUEUE_POINTER_COMMAND,
+            trb_type,
+            "SetTrDequeuePointerCommandTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
+            trb_type
+        );
+
+        let endpoint_id = trb_bytes[14] & 0x1f;
+        let slot_id = trb_bytes[15];
+
+        Ok(Self {
+            endpoint_id,
+            slot_id,
+        })
+    }
+}
+
+/// Disable Slot Command TRB data structure.
+///
+/// See XHCI specification Section 6.4.3.2 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DisableSlotCommandTrbData {
+    /// The slot ID associated with this command.
+    pub slot_id: u8,
+}
+
+impl TrbData for DisableSlotCommandTrbData {
+    /// Parse data of a Disable Slot Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::DISABLE_SLOT_COMMAND,
+            trb_type,
+            "DisableSlotCommandTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
+            trb_type
+        );
+
+        let slot_id = trb_bytes[15];
+
+        Ok(Self { slot_id })
+    }
+}
+
+/// Reset Device Command TRB data structure.
+///
+/// See XHCI specification Section 6.4.3.10 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ResetDeviceCommandTrbData {
+    /// The slot ID associated with this command.
+    pub slot_id: u8,
+}
+
+impl TrbData for ResetDeviceCommandTrbData {
+    /// Parse data of a Reset Device Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::RESET_DEVICE_COMMAND,
+            trb_type,
+            "ResetDeviceCommandTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
+            trb_type
+        );
+
+        let slot_id = trb_bytes[15];
+
+        Ok(Self { slot_id })
     }
 }
 

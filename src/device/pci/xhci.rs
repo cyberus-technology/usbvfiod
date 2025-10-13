@@ -329,6 +329,7 @@ impl XhciController {
         }
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn handle_command(&mut self, cmd: CommandTrb) {
         debug!("handling command {:?} at {:#x}", cmd, cmd.address);
         let completion_event = match cmd.variant {
@@ -336,7 +337,7 @@ impl XhciController {
                 let (completion_code, slot_id) = self.handle_enable_slot();
                 EventTrb::new_command_completion_event_trb(cmd.address, 0, completion_code, slot_id)
             }
-            CommandTrbVariant::DisableSlot => {
+            CommandTrbVariant::DisableSlot(data) => {
                 // TODO this command probably requires more handling.
                 // Currently, we just acknowledge to not crash usbvfiod in the
                 // integration test.
@@ -344,7 +345,7 @@ impl XhciController {
                     cmd.address,
                     0,
                     CompletionCode::Success,
-                    1,
+                    data.slot_id,
                 )
             }
             CommandTrbVariant::AddressDevice(data) => {
@@ -366,7 +367,15 @@ impl XhciController {
                 )
             }
             CommandTrbVariant::EvaluateContext => todo!(),
-            CommandTrbVariant::ResetEndpoint => todo!(),
+            CommandTrbVariant::ResetEndpoint(data) => {
+                warn!("ResetEndpoint command received but not fully implemented.");
+                EventTrb::new_command_completion_event_trb(
+                    cmd.address,
+                    0,
+                    CompletionCode::Success,
+                    data.slot_id,
+                )
+            }
             CommandTrbVariant::StopEndpoint(data) => {
                 self.handle_stop_endpoint(&data);
                 EventTrb::new_command_completion_event_trb(
@@ -376,8 +385,17 @@ impl XhciController {
                     data.slot_id,
                 )
             }
-            CommandTrbVariant::SetTrDequeuePointer => todo!(),
-            CommandTrbVariant::ResetDevice => {
+            CommandTrbVariant::SetTrDequeuePointer(data) => {
+                warn!("SetTrDequeuePointer command received but not fully implemented");
+                // Use the slot_id extracted from the TRB
+                EventTrb::new_command_completion_event_trb(
+                    cmd.address,
+                    0,
+                    CompletionCode::Success,
+                    data.slot_id,
+                )
+            }
+            CommandTrbVariant::ResetDevice(data) => {
                 // TODO this command probably requires more handling. The guest
                 // driver will attempt resets when descriptors do not match what
                 // the virtual port announces.
@@ -388,7 +406,7 @@ impl XhciController {
                     cmd.address,
                     0,
                     CompletionCode::Success,
-                    1,
+                    data.slot_id,
                 )
             }
             CommandTrbVariant::ForceHeader => todo!(),

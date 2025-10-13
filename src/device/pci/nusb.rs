@@ -186,10 +186,13 @@ impl RealDevice for NusbDeviceWrapper {
         let mut data = vec![0; normal_data.transfer_length as usize];
         dma_bus.read_bulk(normal_data.data_pointer, &mut data);
         ep_out.submit(data.into());
-        ep_out
-            .wait_next_complete(Duration::from_millis(400))
-            .unwrap();
-        (CompletionCode::Success, 0)
+        match ep_out.wait_next_complete(Duration::from_millis(400)) {
+            Some(_) => (CompletionCode::Success, 0),
+            None => {
+                warn!("OUT endpoint transfer timeout or failed");
+                (CompletionCode::StallError, 0)
+            }
+        }
     }
 
     fn transfer_in(
@@ -217,9 +220,16 @@ impl RealDevice for NusbDeviceWrapper {
         let buffer = Buffer::new(buffer_size);
         ep_in.submit(buffer);
         // Timeout indicates device unresponsive - no reasonable recovery possible
-        let buffer = ep_in
-            .wait_next_complete(Duration::from_millis(400))
-            .unwrap();
+        let buffer = match ep_in.wait_next_complete(Duration::from_millis(400)) {
+            Some(buf) => buf,
+            None => {
+                warn!("IN endpoint transfer timeout or failed");
+                return (
+                    CompletionCode::StallError,
+                    transfer_length.try_into().unwrap(),
+                );
+            }
+        };
         let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
             Greater => {
                 // Got more data than requested. We must not write more data than
