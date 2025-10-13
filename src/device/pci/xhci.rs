@@ -578,30 +578,12 @@ impl XhciController {
     }
 
     fn check_in_endpoint(&mut self, slot: u8, ep: u8) {
-        let transfer_ring = self
-            .device_slot_manager
-            .get_device_context(slot)
-            .get_transfer_ring(ep as u64);
-
-        while let Some(trb) = transfer_ring.next_transfer_trb() {
-            debug!("TRB on endpoint {} (IN): {:?}", ep, trb);
+        // Support for multiple devices with the new worker-based async approach
+        if slot <= self.real_devices.len() as u8 {
             let device_index = slot as usize - 1;
-            let (completion_code, residual_bytes) = self.real_devices[device_index]
-                .as_mut()
-                .unwrap()
-                .transfer_in(ep, &trb, &self.dma_bus);
-            // send transfer event
-            let transfer_event = EventTrb::new_transfer_event_trb(
-                trb.address,
-                residual_bytes,
-                completion_code,
-                false,
-                ep,
-                slot,
-            );
-            self.event_ring.lock().unwrap().enqueue(&transfer_event);
-            self.interrupt_line.interrupt();
-            debug!("sent Transfer Event and signaled interrupt");
+            if let Some(Some(device)) = self.real_devices.get_mut(device_index) {
+                device.transfer_in(ep);
+            }
         }
     }
 }

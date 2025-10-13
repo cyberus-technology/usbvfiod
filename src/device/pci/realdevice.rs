@@ -49,12 +49,7 @@ pub trait RealDevice: Debug {
         trb: &TransferTrb,
         dma_bus: &BusDeviceRef,
     ) -> (CompletionCode, u32);
-    fn transfer_in(
-        &mut self,
-        endpoint_id: u8,
-        trb: &TransferTrb,
-        dma_bus: &BusDeviceRef,
-    ) -> (CompletionCode, u32);
+    fn transfer_in(&mut self, endpoint_id: u8);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

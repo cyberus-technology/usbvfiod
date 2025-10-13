@@ -9,7 +9,8 @@ use super::realdevice::{EndpointType, EndpointWorkerInfo, Speed};
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::{
     fmt::Debug,
     sync::atomic::{fence, Ordering},
@@ -17,7 +18,7 @@ use std::{
 };
 
 enum EndpointWrapper {
-    BulkIn(nusb::Endpoint<Bulk, In>),
+    BulkIn(Sender<()>),
     BulkOut(nusb::Endpoint<Bulk, Out>),
 }
 
@@ -196,76 +197,15 @@ impl RealDevice for NusbDeviceWrapper {
         }
     }
 
-    fn transfer_in(
-        &mut self,
-        endpoint_id: u8,
-        trb: &TransferTrb,
-        dma_bus: &BusDeviceRef,
-    ) -> (CompletionCode, u32) {
-        assert!(
-            matches!(trb.variant, TransferTrbVariant::Normal(_)),
-            "Expected Normal TRB but got {:?}",
-            trb
-        );
-
+    fn transfer_in(&mut self, endpoint_id: u8) {
         // transfer_in requires targeted endpoint to be enabled, panic if not
-        let ep_in = match self.endpoints[endpoint_id as usize - 2].as_mut() {
-            Some(EndpointWrapper::BulkIn(ep)) => ep,
+        match self.endpoints[endpoint_id as usize - 2].as_mut() {
+            Some(EndpointWrapper::BulkIn(sender)) => {
+                let _ = sender.send(());
+            }
             None => panic!("transfer_in for uninitialized endpoint (EP{})", endpoint_id),
             _ => unreachable!(),
         };
-        let normal_data = extract_normal_trb_data(trb).unwrap();
-        let transfer_length = normal_data.transfer_length as usize;
-
-        let buffer_size = determine_buffer_size(transfer_length, ep_in.max_packet_size());
-        let buffer = Buffer::new(buffer_size);
-        ep_in.submit(buffer);
-        // Timeout indicates device unresponsive - no reasonable recovery possible
-        let buffer = match ep_in.wait_next_complete(Duration::from_millis(400)) {
-            Some(buf) => buf,
-            None => {
-                warn!("IN endpoint transfer timeout or failed");
-                return (
-                    CompletionCode::StallError,
-                    transfer_length.try_into().unwrap(),
-                );
-            }
-        };
-        let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
-            Greater => {
-                // Got more data than requested. We must not write more data than
-                // the guest driver requested with the transfer length, otherwise
-                // we might write out of the buffer.
-                //
-                // Why does this case happen? Sometimes the driver asks for, e.g.,
-                // 36 bytes. We have to request max_packet_size (e.g., 1024 bytes).
-                // The real device then provides 1024 bytes of data (looks like
-                // zero padding).
-                transfer_length
-            }
-            Less => {
-                // Got less data than requested. That case happens for example when
-                // the driver sends a Mode Sense(6) SCSI command. The response size
-                // is variable, so the driver asks for 192 bytes but is also fine
-                // with less.
-                //
-                // We copy all the data over that we got.
-                // TODO: currently, we just report success and 0 residual bytes,
-                // even though we probably should report something like short
-                // packet and the difference between requested and actual byte
-                // count. We get away with the simplified handling for now.
-                // The Mode Sense(6) response encodes the size of the response in
-                // the first byte, so the driver is not unhappy that we reported
-                // 192 bytes but only deliver, e.g., 36 bytes.
-                buffer.actual_len
-            }
-            Equal => {
-                // We got exactly the right amount of bytes.
-                transfer_length
-            }
-        };
-        dma_bus.write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
-        (CompletionCode::Success, 0)
     }
 
     fn enable_endpoint(&mut self, worker_info: EndpointWorkerInfo, _endpoint_type: EndpointType) {
@@ -314,11 +254,12 @@ impl RealDevice for NusbDeviceWrapper {
                 let interface_of_endpoint = &self.interfaces[self
                     .get_interface_number_containing_endpoint(endpoint_index)
                     .unwrap()];
-                EndpointWrapper::BulkIn(
-                    interface_of_endpoint
-                        .endpoint::<Bulk, In>(endpoint_index)
-                        .unwrap(),
-                )
+                let endpoint = interface_of_endpoint
+                    .endpoint::<Bulk, In>(endpoint_index)
+                    .unwrap();
+                let (sender, receiver) = mpsc::channel();
+                thread::spawn(move || transfer_in_worker(endpoint, worker_info, receiver));
+                EndpointWrapper::BulkIn(sender)
             }
         };
         self.endpoints[endpoint_id as usize - 2] = Some(endpoint);
