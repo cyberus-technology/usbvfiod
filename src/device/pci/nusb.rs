@@ -357,6 +357,64 @@ fn transfer_in_worker(
     }
 }
 
+fn transfer_out_worker(
+    mut endpoint: nusb::Endpoint<Bulk, Out>,
+    worker_info: EndpointWorkerInfo,
+    wakeup: Receiver<()>,
+) {
+    loop {
+        let trb = match worker_info.transfer_ring.next_transfer_trb() {
+            Some(trb) => trb,
+            None => {
+                wakeup.recv().unwrap();
+                continue;
+            }
+        };
+        assert!(
+            matches!(trb.variant, TransferTrbVariant::Normal(_)),
+            "Expected Normal TRB but got {:?}",
+            trb
+        );
+
+        // The assertion above guarantees that the TRB is a normal TRB. A wrong
+        // TRB type is the only reason the unwrap can fail.
+        let normal_data = extract_normal_trb_data(&trb).unwrap();
+
+        let mut data = vec![0; normal_data.transfer_length as usize];
+        worker_info
+            .dma_bus
+            .read_bulk(normal_data.data_pointer, &mut data);
+        if normal_data.transfer_length == 31 {
+            debug!("OUT data: {:?}", data);
+        }
+        endpoint.submit(data.into());
+        // Timeout indicates device unresponsive - no reasonable recovery possible
+        endpoint
+            .wait_next_complete(Duration::from_millis(800))
+            .unwrap();
+
+        let (completion_code, residual_bytes) = (CompletionCode::Success, 0);
+
+        let transfer_event = EventTrb::new_transfer_event_trb(
+            trb.address,
+            residual_bytes,
+            completion_code,
+            false,
+            worker_info.endpoint_id,
+            worker_info.slot_id,
+        );
+        // Mutex lock unwrap fails only if other threads panicked while holding
+        // the lock. In that case it is reasonable we also panic.
+        worker_info
+            .event_ring
+            .lock()
+            .unwrap()
+            .enqueue(&transfer_event);
+        worker_info.interrupt_line.interrupt();
+        debug!("sent Transfer Event and signaled interrupt");
+    }
+}
+
 const fn extract_normal_trb_data(trb: &TransferTrb) -> Option<&NormalTrbData> {
     match &trb.variant {
         TransferTrbVariant::Normal(data) => Some(data),
