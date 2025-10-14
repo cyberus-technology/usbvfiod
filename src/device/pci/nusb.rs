@@ -258,9 +258,28 @@ fn transfer_in_worker(
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
         // Timeout indicates device unresponsive - no reasonable recovery possible
-        let buffer = endpoint
-            .wait_next_complete(Duration::from_millis(800))
-            .unwrap();
+        let buffer = match endpoint.wait_next_complete(Duration::from_millis(800)) {
+            Some(buf) => buf,
+            None => {
+                warn!("IN endpoint transfer timeout or failed");
+                // Send error event and continue processing
+                let transfer_event = EventTrb::new_transfer_event_trb(
+                    trb.address,
+                    transfer_length.try_into().unwrap_or(0),
+                    CompletionCode::StallError,
+                    false,
+                    worker_info.endpoint_id,
+                    worker_info.slot_id,
+                );
+                worker_info
+                    .event_ring
+                    .lock()
+                    .unwrap()
+                    .enqueue(&transfer_event);
+                worker_info.interrupt_line.interrupt();
+                continue; // Skip this TRB and continue with next
+            }
+        };
         let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
             Greater => {
                 // Got more data than requested. We must not write more data than
