@@ -487,7 +487,14 @@ impl XhciController {
         match value {
             ep if ep == 0 || ep > 31 => panic!("invalid value {} on doorbell write", ep),
             1 => self.check_control_endpoint(slot_id),
-            ep => self.real_device.as_mut().unwrap().transfer(ep as u8),
+            ep => {
+                if slot_id <= self.real_devices.len() as u8 {
+                    let device_index = slot_id as usize - 1;
+                    if let Some(Some(device)) = self.real_devices.get_mut(device_index) {
+                        device.transfer(ep as u8);
+                    }
+                }
+            }
         };
     }
 
