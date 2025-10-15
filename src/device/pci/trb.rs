@@ -357,7 +357,7 @@ pub enum CommandTrbVariant {
     ResetEndpoint,
     StopEndpoint(StopEndpointCommandTrbData),
     SetTrDequeuePointer,
-    ResetDevice,
+    ResetDevice(ResetDeviceCommandTrbData),
     ForceHeader,
     NoOp,
     Link(LinkTrbData),
@@ -393,7 +393,7 @@ impl CommandTrbVariant {
             trb_types::RESET_ENDPOINT_COMMAND => Self::ResetEndpoint,
             trb_types::STOP_ENDPOINT_COMMAND => parse(Self::StopEndpoint, bytes),
             trb_types::SET_TR_DEQUEUE_POINTER_COMMAND => Self::SetTrDequeuePointer,
-            trb_types::RESET_DEVICE_COMMAND => Self::ResetDevice,
+            trb_types::RESET_DEVICE_COMMAND => parse(Self::ResetDevice, bytes),
             trb_types::FORCE_EVENT_COMMAND => Self::Unrecognized(
                 bytes,
                 TrbParseError::UnsupportedOptionalCommand(18, "Force Event Command".to_string()),
@@ -612,6 +612,39 @@ impl TrbData for StopEndpointCommandTrbData {
             endpoint_id,
             slot_id,
         })
+    }
+}
+
+/// Reset Device Command TRB data structure.
+///
+/// See XHCI specification Section 6.4.3.10 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ResetDeviceCommandTrbData {
+    /// The slot ID associated with this command.
+    pub slot_id: u8,
+}
+
+impl TrbData for ResetDeviceCommandTrbData {
+    /// Parse data of a Reset Device Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects all RsvdZ
+    /// fields.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::RESET_DEVICE_COMMAND,
+            trb_type,
+            "ResetDeviceCommandTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
+            trb_type
+        );
+
+        let slot_id = trb_bytes[15];
+
+        Ok(Self { slot_id })
     }
 }
 
