@@ -435,21 +435,25 @@ impl XhciController {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         // Program requires real USB device for all XHCI operations (pattern used throughout file)
-        if (data.slot_id as usize) <= MAX_SLOTS as usize {
-            let device_index = data.slot_id as usize - 1;
-            if let Some(device) = self.device_slots[device_index].as_mut() {
-                for (i, ep_type) in enabled_endpoints {
-                    let worker_info = EndpointWorkerInfo {
-                        slot_id: data.slot_id,
-                        endpoint_id: i,
-                        transfer_ring: device_context.get_transfer_ring(i as u64),
-                        dma_bus: self.dma_bus.clone(),
-                        event_ring: self.event_ring.clone(),
-                        interrupt_line: self.interrupt_line.clone(),
-                    };
-                    device.enable_endpoint(worker_info, ep_type);
-                }
-            }
+        assert!(
+            (data.slot_id as usize) <= MAX_SLOTS as usize,
+            "invalid slot_id"
+        );
+        let device_index = data.slot_id as usize - 1;
+        let device = self.device_slots[device_index]
+            .as_mut()
+            .expect("No device in slot - cannot configure endpoints without a real device");
+
+        for (i, ep_type) in enabled_endpoints {
+            let worker_info = EndpointWorkerInfo {
+                slot_id: data.slot_id,
+                endpoint_id: i,
+                transfer_ring: device_context.get_transfer_ring(i as u64),
+                dma_bus: self.dma_bus.clone(),
+                event_ring: self.event_ring.clone(),
+                interrupt_line: self.interrupt_line.clone(),
+            };
+            device.enable_endpoint(worker_info, ep_type);
         }
     }
 
