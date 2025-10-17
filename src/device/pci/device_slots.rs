@@ -407,14 +407,14 @@ mod tests {
 
     #[test]
     fn device_slot_reservation() {
-        // we test with only one device slot, because that case is currently
-        // what we run with
-        let mut device_slot_manager = DeviceSlotManager::new(1, Arc::new(TestBusDevice::default()));
+        use crate::device::pci::constants::xhci::MAX_SLOTS;
 
-        // reserve the only slot
-        assert_eq!(device_slot_manager.reserve_slot(), Some(1));
+        let mut device_slot_manager =
+            DeviceSlotManager::new(MAX_SLOTS, Arc::new(TestBusDevice::default()));
 
-        // reserving another slot should fail
+        for expected_slot_id in 1..=MAX_SLOTS {
+            assert_eq!(device_slot_manager.reserve_slot(), Some(expected_slot_id));
+        }
         assert_eq!(device_slot_manager.reserve_slot(), None);
     }
 }

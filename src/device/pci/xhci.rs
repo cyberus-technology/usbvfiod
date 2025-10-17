@@ -40,7 +40,7 @@ use super::{
 #[derive(Debug)]
 pub struct XhciController {
     /// real USB devices
-    real_device: Option<Box<dyn RealDevice>>,
+    device_slots: [Option<Box<dyn RealDevice>>; MAX_SLOTS as usize],
 
     /// A reference to the VM memory to perform DMA on.
     #[allow(unused)]
@@ -91,7 +91,7 @@ impl XhciController {
         let dma_bus_for_device_slot_manager = dma_bus.clone();
 
         Self {
-            real_device: None,
+            device_slots: [const { None }; MAX_SLOTS as usize],
             dma_bus,
             config_space: ConfigSpaceBuilder::new(vendor::REDHAT, device::REDHAT_XHCI)
                 .class(class::SERIAL, subclass::SERIAL_USB, progif::USB_XHCI)
@@ -131,7 +131,13 @@ impl XhciController {
     // decide how to handle the failed attachment attempt.
     pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
         if let Some(speed) = device.speed() {
-            self.real_device = Some(device);
+            let slot_index = self
+                .device_slots
+                .iter()
+                .position(|slot| slot.is_none())
+                .expect("No available device slots - all slots are occupied");
+
+            self.device_slots[slot_index] = Some(device);
 
             let portsc = PortscRegister::new(
                 portsc::CCS
@@ -158,7 +164,7 @@ impl XhciController {
                 self.portsc_usb3[port_idx] = portsc;
             }
 
-            info!("Attached {} device", speed);
+            info!("Attached {} device to slot {}", speed, slot_index + 1);
         } else {
             warn!("Failed to attach device: Unable to determine speed");
         }
@@ -366,7 +372,7 @@ impl XhciController {
                 )
             }
             CommandTrbVariant::SetTrDequeuePointer => todo!(),
-            CommandTrbVariant::ResetDevice => {
+            CommandTrbVariant::ResetDevice(data) => {
                 // TODO this command probably requires more handling. The guest
                 // driver will attempt resets when descriptors do not match what
                 // the virtual port announces.
@@ -377,7 +383,7 @@ impl XhciController {
                     cmd.address,
                     0,
                     CompletionCode::Success,
-                    1,
+                    data.slot_id,
                 )
             }
             CommandTrbVariant::ForceHeader => todo!(),
@@ -429,6 +435,15 @@ impl XhciController {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         // Program requires real USB device for all XHCI operations (pattern used throughout file)
+        assert!(
+            (data.slot_id as usize) <= MAX_SLOTS as usize,
+            "invalid slot_id"
+        );
+        let device_index = data.slot_id as usize - 1;
+        let device = self.device_slots[device_index]
+            .as_mut()
+            .expect("No device in slot - cannot configure endpoints without a real device");
+
         for (i, ep_type) in enabled_endpoints {
             let worker_info = EndpointWorkerInfo {
                 slot_id: data.slot_id,
@@ -438,10 +453,7 @@ impl XhciController {
                 event_ring: self.event_ring.clone(),
                 interrupt_line: self.interrupt_line.clone(),
             };
-            self.real_device
-                .as_mut()
-                .unwrap()
-                .enable_endpoint(worker_info, ep_type);
+            device.enable_endpoint(worker_info, ep_type);
         }
     }
 
@@ -460,9 +472,14 @@ impl XhciController {
                 // When the driver rings the doorbell with a non-control
                 // endpoint id, a lot must have happened before (e.g., descriptor
                 // reads on the control endpoint), so we never reach this point
-                // when no device is available (expect for an invalid doorbell
+                // when no device is available (except for an invalid doorbell
                 // write, in which case panicking is the right thing to do.
-                self.real_device.as_mut().unwrap().transfer(ep as u8);
+                assert!(u64::from(slot_id) <= MAX_SLOTS, "invalid doorbell");
+                let device_index = slot_id as usize - 1;
+                let device = self.device_slots[device_index].as_mut().expect(
+                    "No device in slot - this should not happen for valid doorbell operations",
+                );
+                device.transfer(ep as u8);
             }
         };
     }
@@ -503,8 +520,14 @@ impl XhciController {
             request.data
         );
         // forward request to device
-        if let Some(device) = self.real_device.as_ref() {
-            device.control_transfer(&request, &self.dma_bus);
+        // TODO: We still generate port status change events even if no device is attached
+        // when the controller starts running, so we may hit this path with no actual device.
+        // The correct fix will happen later when we properly handle PORTSC status.
+        if u64::from(slot) <= MAX_SLOTS {
+            let device_index = slot as usize - 1;
+            if let Some(Some(device)) = self.device_slots.get(device_index) {
+                device.control_transfer(&request, &self.dma_bus);
+            }
         }
 
         // send transfer event
@@ -564,7 +587,11 @@ impl PciDevice for Mutex<XhciController> {
                 .update_dequeue_pointer(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::DOORBELL_CONTROLLER => guard.doorbell_controller(),
-            offset::DOORBELL_DEVICE => guard.doorbell_device(1, value as u32),
+            // Device Doorbell Registers (DOORBELL_DEVICE)
+            offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE_END => {
+                let slot_id = ((req.addr - offset::DOORBELL_CONTROLLER) / 4) as u8;
+                guard.doorbell_device(slot_id, value as u32);
+            }
 
             // USB 3.0 Port Status and Control Register (PORTSC_USB3)
             addr if guard.get_usb3_portsc_index(addr).is_some() => {
@@ -629,7 +656,8 @@ impl PciDevice for Mutex<XhciController> {
             offset::ERDP => guard.event_ring.lock().unwrap().read_dequeue_pointer(),
             offset::ERDP_HI => 0,
             offset::DOORBELL_CONTROLLER => 0, // kernel reads the doorbell after write
-            offset::DOORBELL_DEVICE => 0,
+            // Device Doorbell Registers (DOORBELL_DEVICE)
+            offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE_END => 0,
 
             // USB 3.0 Port Status and Control Register (PORTSC_USB3)
             addr if guard.get_usb3_portsc_index(addr).is_some() => {
