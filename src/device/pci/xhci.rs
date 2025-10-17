@@ -131,12 +131,13 @@ impl XhciController {
     // decide how to handle the failed attachment attempt.
     pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
         if let Some(speed) = device.speed() {
-            for slot in &mut self.device_slots {
-                if slot.is_none() {
-                    *slot = Some(device);
-                    break;
-                }
-            }
+            let slot_index = self
+                .device_slots
+                .iter()
+                .position(|slot| slot.is_none())
+                .expect("No available device slots - all slots are occupied");
+
+            self.device_slots[slot_index] = Some(device);
 
             let portsc = PortscRegister::new(
                 portsc::CCS
@@ -434,7 +435,7 @@ impl XhciController {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         // Program requires real USB device for all XHCI operations (pattern used throughout file)
-        if (data.slot_id as usize) <= self.device_slots.len() {
+        if (data.slot_id as usize) <= MAX_SLOTS as usize {
             let device_index = data.slot_id as usize - 1;
             if let Some(device) = self.device_slots[device_index].as_mut() {
                 for (i, ep_type) in enabled_endpoints {
@@ -469,12 +470,12 @@ impl XhciController {
                 // reads on the control endpoint), so we never reach this point
                 // when no device is available (except for an invalid doorbell
                 // write, in which case panicking is the right thing to do.
-                if slot_id <= self.device_slots.len() as u8 {
-                    let device_index = slot_id as usize - 1;
-                    if let Some(Some(device)) = self.device_slots.get_mut(device_index) {
-                        device.transfer(ep as u8);
-                    }
-                }
+                assert!(u64::from(slot_id) <= MAX_SLOTS, "invalid doorbell");
+                let device_index = slot_id as usize - 1;
+                let device = self.device_slots[device_index].as_mut().expect(
+                    "No device in slot - this should not happen for valid doorbell operations",
+                );
+                device.transfer(ep as u8);
             }
         };
     }
@@ -515,7 +516,10 @@ impl XhciController {
             request.data
         );
         // forward request to device
-        if slot <= self.device_slots.len() as u8 {
+        // TODO: We still generate port status change events even if no device is attached
+        // when the controller starts running, so we may hit this path with no actual device.
+        // The correct fix will happen later when we properly handle PORTSC status.
+        if u64::from(slot) <= MAX_SLOTS {
             let device_index = slot as usize - 1;
             if let Some(Some(device)) = self.device_slots.get(device_index) {
                 device.control_transfer(&request, &self.dma_bus);
