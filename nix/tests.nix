@@ -259,4 +259,25 @@ in
       };
     };
   };
+  integration-smoke-usb-2 = pkgs.nixosTest {
+    name = "usbvfiod Smoke Test with emulated ehci (usb 2.0)";
+
+    inherit testScript globalTimeout;
+
+    nodes.machine = { ... }: {
+      imports = [ machineConfiguration ];
+
+      virtualisation = {
+        cores = 2;
+        memorySize = 4096;
+        qemu.options = [
+          # A virtual USB XHCI controller in the host ...
+          "-device usb-ehci,id=host-ehci,addr=10"
+          # ... with an attached usb stick.
+          "-drive if=none,id=usbstick,format=raw,file=${blockDeviceFile}"
+          "-device usb-storage,bus=host-ehci.0,drive=usbstick"
+        ];
+      };
+    };
+  };
 }
