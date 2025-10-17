@@ -164,7 +164,7 @@ impl XhciController {
                 self.portsc_usb3[port_idx] = portsc;
             }
 
-            info!("Attached {} device", speed);
+            info!("Attached {} device to slot {}", speed, slot_index + 1);
         } else {
             warn!("Failed to attach device: Unable to determine speed");
         }
