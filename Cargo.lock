@@ -694,6 +694,7 @@ dependencies = [
  "tracing-subscriber",
  "vfio-bindings",
  "vfio_user",
+ "vmm-sys-util",
 ]
 
 [[package]]
