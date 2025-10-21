@@ -206,6 +206,16 @@ impl XhciController {
                 "Attached {} device to {:?} port {}",
                 speed, version, port_id
             );
+
+            if self.running {
+                let trb = EventTrb::new_port_status_change_event_trb(available_port_index as u8);
+                self.event_ring.lock().unwrap().enqueue(&trb);
+
+                self.interrupt_line.interrupt();
+                debug!("informed the driver about the port change");
+            } else {
+                debug!("controller is not running, not notifying about the port status change");
+            }
         } else {
             warn!("Failed to attach device: Unable to determine speed");
         }
