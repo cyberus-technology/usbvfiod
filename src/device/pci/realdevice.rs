@@ -38,7 +38,7 @@ impl fmt::Display for Speed {
     }
 }
 
-pub trait RealDevice: Debug {
+pub trait RealDevice: Debug + Send {
     fn speed(&self) -> Option<Speed>;
     fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef);
     fn enable_endpoint(&mut self, worker_info: EndpointWorkerInfo, endpoint_type: EndpointType);
