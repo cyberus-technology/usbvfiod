@@ -17,12 +17,17 @@ mod dynamic_bus;
 mod memory_segment;
 mod xhci_backend;
 
+use std::{os::unix::net::UnixListener, thread};
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::Cli;
+use device::pci::nusb::NusbDeviceWrapper;
+use nusb::MaybeFuture;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 use vfio_user::Server;
+use vmm_sys_util::sock_ctrl_msg::ScmSocket;
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -50,6 +55,24 @@ fn main() -> Result<()> {
     } else {
         unimplemented!("Using a file descriptor as vfio-user connection is not implemented")
     };
+
+    // listen on socket for hot-attach fds
+    let controller = backend.get_controller();
+    let socket = UnixListener::bind("/tmp/usbvfiod-hot-attach").unwrap();
+    thread::Builder::new()
+        .name("hot-attach-socket listener".to_string())
+        .spawn(move || {
+            let mut buf = [0u8; 1];
+            loop {
+                let (stream, _addr) = socket.accept().unwrap();
+                let (_byte_count, file) = stream.recv_with_fd(&mut buf).unwrap();
+                let fd = file.unwrap();
+                let device = nusb::Device::from_fd(fd.into()).wait().unwrap();
+                let wrapped_device = Box::new(NusbDeviceWrapper::new(device));
+                controller.lock().unwrap().set_device(wrapped_device);
+            }
+        })
+        .unwrap();
 
     info!("We're up!");
 
