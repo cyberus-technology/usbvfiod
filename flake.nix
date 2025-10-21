@@ -2,6 +2,7 @@
   description = "USB Pass-Through vfio-user Tools";
 
   inputs = {
+    dried-nix-flakes.url = "github:cyberus-technology/dried-nix-flakes";
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
     crane.url = "github:ipetkov/crane";
@@ -12,12 +13,6 @@
       inputs.rust-analyzer-src.follows = "";
     };
 
-    # Expand this to default-linux later.
-    systems.url = "github:nix-systems/x86_64-linux";
-
-    flake-utils.url = "github:numtide/flake-utils";
-    flake-utils.inputs.systems.follows = "systems";
-
     advisory-db = {
       url = "github:rustsec/advisory-db";
       flake = false;
@@ -27,10 +22,18 @@
     git-hooks.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, crane, fenix, flake-utils, advisory-db, git-hooks, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    inputs:
+    let
+      inherit (inputs.dried-nix-flakes.for inputs)
+        exportOutputs
+        ;
+    in
+    exportOutputs (
+      { self, nixpkgs, crane, fenix, advisory-db, git-hooks, currentSystem, ... }:
+
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = nixpkgs.legacyPackages;
 
         inherit (nixpkgs) lib;
 
@@ -44,7 +47,7 @@
         };
 
         craneLibLLvmTools = craneLib.overrideToolchain
-          (fenix.packages.${system}.complete.withComponents [
+          (fenix.packages.complete.withComponents [
             "cargo"
             "llvm-tools"
             "rustc"
@@ -66,7 +69,7 @@
       in
       {
         checks = {
-          pre-commit-check = git-hooks.lib.${system}.run {
+          pre-commit-check = git-hooks.lib.${currentSystem}.run {
             src = ./.;
             hooks = {
               nixpkgs-fmt.enable = true;
@@ -127,7 +130,7 @@
           });
         } // (import ./nix/tests.nix {
           inherit lib pkgs;
-          usbvfiod = self.packages.${system}.default;
+          usbvfiod = self.packages.default;
         });
 
         packages = {
@@ -138,15 +141,18 @@
           });
         };
 
-        apps.default = flake-utils.lib.mkApp {
-          drv = usbvfiod;
+        apps.default = {
+          type = "app";
+          program = "${usbvfiod}/bin/usbvfiod";
         };
 
         devShells.default = craneLib.devShell {
           # Inherit inputs from checks.
-          checks = self.checks.${system};
+          inherit (self)
+            checks
+            ;
 
-          inherit (self.checks.${system}.pre-commit-check) shellHook;
+          inherit (self.checks.pre-commit-check) shellHook;
 
           # Additional dev-shell environment variables can be set directly
           # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
@@ -156,5 +162,6 @@
             # pkgs.ripgrep
           ];
         };
-      });
+      }
+    );
 }
