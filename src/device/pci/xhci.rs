@@ -206,6 +206,19 @@ impl XhciController {
                 "Attached {} device to {:?} port {}",
                 speed, version, port_id
             );
+
+            if self.running {
+                // We organize the ports in an array, so we started with index 0.
+                // For the guest driver, the first port is Port 1, so we need to offset our index.
+                let trb =
+                    EventTrb::new_port_status_change_event_trb(available_port_index as u8 + 1);
+                self.event_ring.lock().unwrap().enqueue(&trb);
+
+                self.interrupt_line.interrupt();
+                debug!("informed the driver about the port change");
+            } else {
+                debug!("controller is not running, not notifying about the port status change");
+            }
         } else {
             warn!("Failed to attach device: Unable to determine speed");
         }
