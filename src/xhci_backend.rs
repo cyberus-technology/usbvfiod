@@ -33,7 +33,7 @@ use crate::{dynamic_bus::DynamicBus, memory_segment::MemorySegment};
 #[derive(Debug)]
 pub struct XhciBackend {
     dma_bus: Arc<DynamicBus>,
-    controller: Mutex<XhciController>,
+    controller: Arc<Mutex<XhciController>>,
 }
 
 #[derive(Debug)]
@@ -72,7 +72,7 @@ impl XhciBackend {
         let dma_bus = Arc::new(DynamicBus::new());
 
         let backend = Self {
-            controller: Mutex::new(XhciController::new(dma_bus.clone())),
+            controller: Arc::new(Mutex::new(XhciController::new(dma_bus.clone()))),
             dma_bus,
         };
 
@@ -85,6 +85,13 @@ impl XhciBackend {
         }
 
         Ok(backend)
+    }
+
+    /// Get access to the XhciController.
+    ///
+    /// This function is intended to hot-attach USB devices.
+    pub fn get_controller(&self) -> Arc<Mutex<XhciController>> {
+        self.controller.clone()
     }
 
     /// Add a USB device via its path in `/dev/bus/usb`.
