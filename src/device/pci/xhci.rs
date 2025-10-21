@@ -25,7 +25,7 @@ use crate::device::{
 
 use super::{
     config_space::BarInfo,
-    constants::xhci::{device_slots::endpoint_state, operational::usbsts},
+    constants::xhci::{device_slots::endpoint_state, operational::usbsts, MAX_PORTS},
     device_slots::DeviceSlotManager,
     realdevice::{EndpointWorkerInfo, RealDevice},
     registers::PortscRegister,
@@ -40,7 +40,7 @@ use super::{
 #[derive(Debug)]
 pub struct XhciController {
     /// real USB devices
-    device_slots: [Option<Box<dyn RealDevice>>; MAX_SLOTS as usize],
+    device_slots: [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
 
     /// A reference to the VM memory to perform DMA on.
     #[allow(unused)]
@@ -91,7 +91,7 @@ impl XhciController {
         let dma_bus_for_device_slot_manager = dma_bus.clone();
 
         Self {
-            device_slots: [const { None }; MAX_SLOTS as usize],
+            device_slots: [const { None }; MAX_PORTS as usize],
             dma_bus,
             config_space: ConfigSpaceBuilder::new(vendor::REDHAT, device::REDHAT_XHCI)
                 .class(class::SERIAL, subclass::SERIAL_USB, progif::USB_XHCI)
