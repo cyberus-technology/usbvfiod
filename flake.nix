@@ -25,7 +25,12 @@
   outputs =
     inputs:
     let
-      inherit (inputs.dried-nix-flakes.for inputs)
+      dnf = (inputs.dried-nix-flakes.for inputs).override {
+        # Expose only platforms that cloud-hypervisor supports.
+        # The `x86_64-linux` attribute is used arbitrarily to access the derivation's attributes.
+        systems = inputs.nixpkgs.legacyPackages.x86_64-linux.cloud-hypervisor.meta.platforms;
+      };
+      inherit (dnf)
         exportOutputs
         ;
     in
