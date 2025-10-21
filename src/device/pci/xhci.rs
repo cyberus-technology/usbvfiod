@@ -142,13 +142,14 @@ impl XhciController {
                     | portsc::PRC
                     | (speed as u64) << 10,
             );
-            if speed.is_usb2_speed() {
+            let port = if speed.is_usb2_speed() {
                 // Find first available USB2 port
                 let port_idx = self
                     .find_available_usb2_port()
                     .expect("No available USB2 ports - all ports are occupied");
 
                 self.portsc_usb2[port_idx] = portsc;
+                port_idx as u64 + NUM_USB3_PORTS + 1
             } else {
                 // Find first available USB3 port
                 let port_idx = self
@@ -156,9 +157,21 @@ impl XhciController {
                     .expect("No available USB3 ports - all ports are occupied");
 
                 self.portsc_usb3[port_idx] = portsc;
-            }
+
+                port_idx as u64 + 1
+            };
 
             info!("Attached {} device", speed);
+
+            if self.running {
+                let trb = EventTrb::new_port_status_change_event_trb(port as u8);
+                self.event_ring.lock().unwrap().enqueue(&trb);
+
+                self.interrupt_line.interrupt();
+                debug!("informed the driver about the port change");
+            } else {
+                debug!("controller is not running, not notifying about the port status change");
+            }
         } else {
             warn!("Failed to attach device: Unable to determine speed");
         }
