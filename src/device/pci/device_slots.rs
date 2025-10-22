@@ -163,7 +163,11 @@ impl DeviceContext {
     ///
     /// - addr_input_context: address of the input context used for
     ///   initialization.
-    pub fn initialize(&self, addr_input_context: u64) {
+    ///
+    /// # Return value
+    ///
+    /// The root hub port number as reported in the slot context.
+    pub fn initialize(&self, addr_input_context: u64) -> u8 {
         let add_drop_flags = self
             .dma_bus
             .read(Request::new(addr_input_context, RequestSize::Size8));
@@ -183,6 +187,9 @@ impl DeviceContext {
         // fill slot context and ep0 context (as indicated by flags A0 and A1)
         self.dma_bus
             .write_bulk(self.address, &input_context[32..96]);
+
+        let root_hub_port_number = input_context[32 + 6];
+        root_hub_port_number
     }
 
     /// Update the device context with an input context.
