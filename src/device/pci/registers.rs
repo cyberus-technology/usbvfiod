@@ -4,7 +4,7 @@
 /// later react to 1-to-clear writes (RW1C) to get a device to show up.
 /// Perhaps later we need more fine-grained access to the bits or state
 /// handling, but we can use the simplistic implementation for now.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct PortscRegister {
     value: u64,
     bitmask_rw1c: u64,

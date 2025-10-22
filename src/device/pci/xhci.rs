@@ -15,8 +15,8 @@ use crate::device::{
     pci::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
         constants::xhci::{
-            capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS, NUM_USB2_PORTS,
-            NUM_USB3_PORTS, OP_BASE, RUN_BASE,
+            capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS, NUM_USB3_PORTS,
+            OP_BASE, RUN_BASE,
         },
         traits::PciDevice,
         trb::{CommandTrbVariant, CompletionCode, EventTrb},
@@ -27,7 +27,7 @@ use super::{
     config_space::BarInfo,
     constants::xhci::{device_slots::endpoint_state, operational::usbsts, MAX_PORTS},
     device_slots::DeviceSlotManager,
-    realdevice::{EndpointWorkerInfo, RealDevice},
+    realdevice::{EndpointWorkerInfo, RealDevice, Speed},
     registers::PortscRegister,
     rings::{CommandRing, EventRing},
     trb::{
@@ -35,6 +35,24 @@ use super::{
         StopEndpointCommandTrbData,
     },
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UsbVersion {
+    USB2,
+    USB3,
+}
+
+impl UsbVersion {
+    fn from_speed(speed: Speed) -> UsbVersion {
+        match speed {
+            Speed::Full => UsbVersion::USB2,
+            Speed::Low => UsbVersion::USB2,
+            Speed::High => UsbVersion::USB2,
+            Speed::Super => UsbVersion::USB3,
+            Speed::SuperPlus => UsbVersion::USB3,
+        }
+    }
+}
 
 /// The emulation of a XHCI controller.
 #[derive(Debug)]
@@ -70,11 +88,8 @@ pub struct XhciController {
     /// The interrupt line triggered to signal device events.
     interrupt_line: Arc<dyn InterruptLine>,
 
-    /// USB3 PORTSC registers array
-    portsc_usb3: Vec<PortscRegister>,
-
-    /// USB2 PORTSC registers array
-    portsc_usb2: Vec<PortscRegister>,
+    /// PORTSC registers array
+    portsc: [PortscRegister; MAX_PORTS as usize],
 }
 
 impl XhciController {
@@ -107,8 +122,7 @@ impl XhciController {
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
-            portsc_usb3: vec![PortscRegister::new(portsc::PP); NUM_USB3_PORTS as usize],
-            portsc_usb2: vec![PortscRegister::new(portsc::PP); NUM_USB2_PORTS as usize],
+            portsc: [PortscRegister::new(portsc::PP); MAX_PORTS as usize],
         }
     }
 
@@ -131,15 +145,16 @@ impl XhciController {
     // decide how to handle the failed attachment attempt.
     pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
         if let Some(speed) = device.speed() {
-            let slot_index = self
-                .devices
-                .iter()
-                .position(|slot| slot.is_none())
-                .expect("No available device slots - all slots are occupied");
+            let version = UsbVersion::from_speed(speed);
+            let available_port_index = (0..MAX_PORTS as usize)
+                .find(|&i| {
+                    self.devices[i].is_none()
+                        && matches!(Self::port_index_to_id(i), Some((v, _)) if v == version)
+                }) // filter USB2/3
+                .unwrap(); // crash if there is no free suitable port
 
-            self.devices[slot_index] = Some(device);
-
-            let portsc = PortscRegister::new(
+            self.devices[available_port_index] = Some(device);
+            self.portsc[available_port_index] = PortscRegister::new(
                 portsc::CCS
                     | portsc::PED
                     | portsc::PP
@@ -148,50 +163,24 @@ impl XhciController {
                     | portsc::PRC
                     | (speed as u64) << 10,
             );
-            if speed.is_usb2_speed() {
-                // Find first available USB2 port
-                let port_idx = self
-                    .find_available_usb2_port()
-                    .expect("No available USB2 ports - all ports are occupied");
 
-                self.portsc_usb2[port_idx] = portsc;
-            } else {
-                // Find first available USB3 port
-                let port_idx = self
-                    .find_available_usb3_port()
-                    .expect("No available USB3 ports - all ports are occupied");
-
-                self.portsc_usb3[port_idx] = portsc;
-            }
-
-            info!("Attached {} device to slot {}", speed, slot_index + 1);
+            // Safety: the call for the same index succeeded before in the filter.
+            let port_id = Self::port_index_to_id(available_port_index).unwrap().1;
+            info!(
+                "Attached {} device to {:?} port {}",
+                speed, version, port_id
+            );
         } else {
             warn!("Failed to attach device: Unable to determine speed");
         }
     }
 
-    // Helper function to find available port in any port array
-    // TODO: This portsc-lookup-approach is the only one viable right now, but as soon as we have
-    // multiple devices, we need to track the "port<-->real device" mapping and looking up the
-    // empty ports there will be a nicer implementation (portsc lookup is more indirect)
-    fn find_available_port_in_array(ports: &[PortscRegister]) -> Option<usize> {
-        for (idx, port) in ports.iter().enumerate() {
-            // Port is available if it doesn't have CCS (Current Connect Status) bit set
-            if port.read() & portsc::CCS == 0 {
-                return Some(idx);
-            }
+    const fn port_index_to_id(index: usize) -> Option<(UsbVersion, usize)> {
+        match index as u64 {
+            i if i < NUM_USB3_PORTS => Some((UsbVersion::USB3, index + 1)),
+            i if i < MAX_PORTS => Some((UsbVersion::USB2, index - NUM_USB3_PORTS as usize + 1)),
+            _ => None,
         }
-        None
-    }
-
-    // Find the first available USB3 port (not currently connected)
-    fn find_available_usb3_port(&self) -> Option<usize> {
-        Self::find_available_port_in_array(&self.portsc_usb3)
-    }
-
-    // Find the first available USB2 port (not currently connected)
-    fn find_available_usb2_port(&self) -> Option<usize> {
-        Self::find_available_port_in_array(&self.portsc_usb2)
     }
 
     // Helper function to get port index from MMIO address
@@ -213,36 +202,19 @@ impl XhciController {
         }
     }
 
-    // Get USB3 port index from MMIO offset, returns None for non-USB3 ports
-    const fn get_usb3_portsc_index(&self, addr: u64) -> Option<usize> {
-        Self::get_port_index_from_addr(addr, offset::PORTSC_USB3, NUM_USB3_PORTS, 0)
+    const fn get_portsc_index(&self, addr: u64) -> Option<usize> {
+        Self::get_port_index_from_addr(addr, offset::PORTSC_USB3, MAX_PORTS, 0)
     }
 
-    // Get USB3 PORTLI port index from MMIO offset, returns None for non-PORTLI registers
-    const fn get_usb3_portli_index(&self, addr: u64) -> Option<usize> {
-        Self::get_port_index_from_addr(addr, offset::PORTSC_USB3, NUM_USB3_PORTS, 0x8)
+    const fn get_portli_index(&self, addr: u64) -> Option<usize> {
+        Self::get_port_index_from_addr(addr, offset::PORTSC_USB3, MAX_PORTS, 0x8)
     }
 
-    // Get USB2 port index from MMIO offset, returns None for non-USB2 ports
-    const fn get_usb2_portsc_index(&self, addr: u64) -> Option<usize> {
-        Self::get_port_index_from_addr(addr, offset::PORTSC_USB2, NUM_USB2_PORTS, 0)
-    }
-
-    // Get USB2 PORTLI port index from MMIO offset, returns None for non-PORTLI registers
-    const fn get_usb2_portli_index(&self, addr: u64) -> Option<usize> {
-        Self::get_port_index_from_addr(addr, offset::PORTSC_USB2, NUM_USB2_PORTS, 0x8)
-    }
-
-    fn write_usb3_portsc(&mut self, port_idx: usize, value: u64) {
-        self.portsc_usb3[port_idx].write(value);
+    fn write_portsc(&mut self, port_index: usize, value: u64) {
+        self.portsc[port_index].write(value);
         let status = Self::describe_portsc_status(value);
-        trace!("USB3 Port idx {} status: {}", port_idx, status);
-    }
-
-    fn write_usb2_portsc(&mut self, port_idx: usize, value: u64) {
-        self.portsc_usb2[port_idx].write(value);
-        let status = Self::describe_portsc_status(value);
-        trace!("USB2 Port idx {} status: {}", port_idx, status);
+        let (version, id) = Self::port_index_to_id(port_index).unwrap();
+        trace!("{:?} port {} status: {}", version, id, status);
     }
 
     /// Configure the interrupt line for the controller.
@@ -592,17 +564,10 @@ impl PciDevice for Mutex<XhciController> {
                 guard.doorbell_device(slot_id, value as u32);
             }
 
-            // USB 3.0 Port Status and Control Register (PORTSC_USB3)
-            addr if guard.get_usb3_portsc_index(addr).is_some() => {
+            addr if guard.get_portsc_index(addr).is_some() => {
                 // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
-                let port_idx = guard.get_usb3_portsc_index(addr).unwrap();
-                guard.write_usb3_portsc(port_idx, value);
-            }
-            // USB 2.0 Port Status and Control Register (PORTSC_USB2)
-            addr if guard.get_usb2_portsc_index(addr).is_some() => {
-                // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
-                let port_idx = guard.get_usb2_portsc_index(addr).unwrap();
-                guard.write_usb2_portsc(port_idx, value);
+                let port_idx = guard.get_portsc_index(addr).unwrap();
+                guard.write_portsc(port_idx, value);
             }
             addr => {
                 todo!("unknown write {}", addr);
@@ -658,22 +623,14 @@ impl PciDevice for Mutex<XhciController> {
             // Device Doorbell Registers (DOORBELL_DEVICE)
             offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE_END => 0,
 
-            // USB 3.0 Port Status and Control Register (PORTSC_USB3)
-            addr if guard.get_usb3_portsc_index(addr).is_some() => {
+            // Port Status and Control Register (PORTSC)
+            addr if guard.get_portsc_index(addr).is_some() => {
                 // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
-                let port_idx = guard.get_usb3_portsc_index(addr).unwrap();
-                guard.portsc_usb3[port_idx].read()
+                let port_idx = guard.get_portsc_index(addr).unwrap();
+                guard.portsc[port_idx].read()
             }
-            // USB 3.0 Port Link Info Register (PORTLI_USB3)
-            addr if guard.get_usb3_portli_index(addr).is_some() => 0,
-            // USB 2.0 Port Status and Control Register (PORTSC_USB2)
-            addr if guard.get_usb2_portsc_index(addr).is_some() => {
-                // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
-                let port_idx = guard.get_usb2_portsc_index(addr).unwrap();
-                guard.portsc_usb2[port_idx].read()
-            }
-            // USB 2.0 Port Link Info Register (PORTLI_USB2)
-            addr if guard.get_usb2_portli_index(addr).is_some() => 0,
+            // Port Link Info Register (PORTLI_USB3)
+            addr if guard.get_portli_index(addr).is_some() => 0,
 
             // Everything else is Reserved Zero
             addr => {
