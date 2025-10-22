@@ -40,7 +40,7 @@ use super::{
 #[derive(Debug)]
 pub struct XhciController {
     /// real USB devices
-    device_slots: [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
+    devices: [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
 
     /// A reference to the VM memory to perform DMA on.
     #[allow(unused)]
@@ -91,7 +91,7 @@ impl XhciController {
         let dma_bus_for_device_slot_manager = dma_bus.clone();
 
         Self {
-            device_slots: [const { None }; MAX_PORTS as usize],
+            devices: [const { None }; MAX_PORTS as usize],
             dma_bus,
             config_space: ConfigSpaceBuilder::new(vendor::REDHAT, device::REDHAT_XHCI)
                 .class(class::SERIAL, subclass::SERIAL_USB, progif::USB_XHCI)
@@ -132,12 +132,12 @@ impl XhciController {
     pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
         if let Some(speed) = device.speed() {
             let slot_index = self
-                .device_slots
+                .devices
                 .iter()
                 .position(|slot| slot.is_none())
                 .expect("No available device slots - all slots are occupied");
 
-            self.device_slots[slot_index] = Some(device);
+            self.devices[slot_index] = Some(device);
 
             let portsc = PortscRegister::new(
                 portsc::CCS
@@ -436,7 +436,7 @@ impl XhciController {
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         // Program requires real USB device for all XHCI operations (pattern used throughout file)
         let device_index = data.slot_id as usize - 1;
-        let device = self.device_slots[device_index]
+        let device = self.devices[device_index]
             .as_mut()
             .unwrap_or_else(|| panic!("No device in slot {} (index {}) - cannot configure endpoints without a real device", data.slot_id, device_index));
 
@@ -476,7 +476,7 @@ impl XhciController {
                     slot_id
                 );
                 let device_index = slot_id as usize - 1;
-                let device = self.device_slots[device_index]
+                let device = self.devices[device_index]
                     .as_mut()
                     .unwrap_or_else(|| panic!("No device in slot {} (index {}) - this should not happen for valid doorbell operations", slot_id, device_index));
                 device.transfer(ep as u8);
@@ -524,7 +524,7 @@ impl XhciController {
         // If no device is found, the driver won't start device initialization. Therefore,
         // when we reach this control transfer path, we should assume a device is present.
         let device_index = slot as usize - 1;
-        let device = self.device_slots[device_index]
+        let device = self.devices[device_index]
             .as_ref()
             .unwrap_or_else(|| panic!("No device in slot {} (index {}) - this should not happen for valid control transfers", slot, device_index));
         device.control_transfer(&request, &self.dma_bus);
