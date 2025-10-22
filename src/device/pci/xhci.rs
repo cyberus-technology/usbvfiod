@@ -60,6 +60,9 @@ pub struct XhciController {
     /// real USB devices
     devices: [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
 
+    /// Slot-to-port mapping.
+    slot_to_port: [Option<usize>; MAX_SLOTS as usize],
+
     /// A reference to the VM memory to perform DMA on.
     #[allow(unused)]
     dma_bus: BusDeviceRef,
@@ -107,6 +110,7 @@ impl XhciController {
 
         Self {
             devices: [const { None }; MAX_PORTS as usize],
+            slot_to_port: [None; MAX_SLOTS as usize],
             dma_bus,
             config_space: ConfigSpaceBuilder::new(vendor::REDHAT, device::REDHAT_XHCI)
                 .class(class::SERIAL, subclass::SERIAL_USB, progif::USB_XHCI)
@@ -395,9 +399,17 @@ impl XhciController {
         )
     }
 
-    fn handle_address_device(&self, data: &AddressDeviceCommandTrbData) {
+    fn handle_address_device(&mut self, data: &AddressDeviceCommandTrbData) {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
-        device_context.initialize(data.input_context_pointer);
+        let root_hub_port_number = device_context.initialize(data.input_context_pointer);
+        if root_hub_port_number < 1 || root_hub_port_number as u64 > MAX_PORTS {
+            panic!(
+                "address device reported invalid root hub port number: {}",
+                root_hub_port_number
+            );
+        }
+        let port_index = root_hub_port_number as usize - 1;
+        self.slot_to_port[data.slot_id as usize] = Some(port_index);
     }
 
     fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) {
