@@ -3,7 +3,7 @@ use nusb::transfer::{
     Recipient,
 };
 use nusb::MaybeFuture;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::device::bus::BusDeviceRef;
 use crate::device::pci::trb::{CompletionCode, EventTrb};
@@ -354,6 +354,10 @@ fn transfer_in_worker<EpType: BulkOrInterrupt>(
                 transfer_length
             }
         };
+        info!(
+            "IN TRB, {} usbvfiod req, {} nusb req, {} response, {} DMAed, ({} reported)",
+            transfer_length, buffer_size, buffer.actual_len, byte_count_dma, transfer_length
+        );
         worker_info
             .dma_bus
             .write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
@@ -430,6 +434,10 @@ fn transfer_out_worker(
         endpoint.submit(data.into());
         // Timeout indicates device unresponsive - no reasonable recovery possible
         endpoint.wait_next_complete(Duration::MAX).unwrap();
+        info!(
+            "OUT TRB, {} bytes req/sent/DMAed",
+            normal_data.transfer_length
+        );
 
         if !normal_data.interrupt_on_completion {
             trace!("Processed TRB without IOC flag; sending no transfer event");
