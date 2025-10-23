@@ -130,6 +130,40 @@ impl XhciController {
         }
     }
 
+    fn device_by_slot(&self, slot_id: u8) -> Option<&Box<dyn RealDevice>> {
+        self.slot_to_port
+            .get(slot_id as usize - 1)
+            .and_then(|slot_id| *slot_id)
+            .and_then(|port_index| self.devices[port_index].as_ref())
+    }
+
+    fn device_by_slot_expect(&self, slot_id: u8) -> &Box<dyn RealDevice> {
+        self.device_by_slot(slot_id).unwrap_or_else(|| {
+            panic!("Trying to access device with slot id {slot_id}, but there is no such device.")
+        })
+    }
+
+    fn device_by_slot_mut<'a, 'b>(
+        slot_to_port: &'a [Option<usize>; MAX_SLOTS as usize],
+        devices: &'b mut [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
+        slot_id: u8,
+    ) -> Option<&'b mut Box<dyn RealDevice>> {
+        slot_to_port
+            .get(slot_id as usize - 1)
+            .and_then(|slot_id| *slot_id)
+            .and_then(|port_index| devices[port_index].as_mut())
+    }
+
+    fn device_by_slot_mut_expect<'a, 'b>(
+        slot_to_port: &'a [Option<usize>; MAX_SLOTS as usize],
+        devices: &'b mut [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
+        slot_id: u8,
+    ) -> &'b mut Box<dyn RealDevice> {
+        Self::device_by_slot_mut(slot_to_port, devices, slot_id).unwrap_or_else(|| {
+            panic!("Trying to access device with slot id {slot_id}, but there is no such device.")
+        })
+    }
+
     /// Attach a real USB device to the controller.
     ///
     /// The device is connected to the first available USB port and becomes available
@@ -409,7 +443,7 @@ impl XhciController {
             );
         }
         let port_index = root_hub_port_number as usize - 1;
-        self.slot_to_port[data.slot_id as usize] = Some(port_index);
+        self.slot_to_port[data.slot_id as usize - 1] = Some(port_index);
     }
 
     fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) {
@@ -419,10 +453,8 @@ impl XhciController {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         // Program requires real USB device for all XHCI operations (pattern used throughout file)
-        let device_index = data.slot_id as usize - 1;
-        let device = self.devices[device_index]
-            .as_mut()
-            .unwrap_or_else(|| panic!("No device in slot {} (index {}) - cannot configure endpoints without a real device", data.slot_id, device_index));
+        let device =
+            Self::device_by_slot_mut_expect(&self.slot_to_port, &mut self.devices, data.slot_id);
 
         for (i, ep_type) in enabled_endpoints {
             let worker_info = EndpointWorkerInfo {
@@ -459,10 +491,8 @@ impl XhciController {
                     "invalid slot_id {} in doorbell",
                     slot_id
                 );
-                let device_index = slot_id as usize - 1;
-                let device = self.devices[device_index]
-                    .as_mut()
-                    .unwrap_or_else(|| panic!("No device in slot {} (index {}) - this should not happen for valid doorbell operations", slot_id, device_index));
+                let device =
+                    Self::device_by_slot_mut_expect(&self.slot_to_port, &mut self.devices, slot_id);
                 device.transfer(ep as u8);
             }
         };
@@ -507,10 +537,7 @@ impl XhciController {
         // Port status change events are suggestions for the driver to check portsc registers.
         // If no device is found, the driver won't start device initialization. Therefore,
         // when we reach this control transfer path, we should assume a device is present.
-        let device_index = slot as usize - 1;
-        let device = self.devices[device_index]
-            .as_ref()
-            .unwrap_or_else(|| panic!("No device in slot {} (index {}) - this should not happen for valid control transfers", slot, device_index));
+        let device = self.device_by_slot_expect(slot);
         device.control_transfer(&request, &self.dma_bus);
 
         // send transfer event
