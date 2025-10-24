@@ -82,82 +82,90 @@ let
   blockDeviceSize = "8M";
 
 
-  testMachineConfig.basicMachineConfig = {
-    environment.systemPackages = with pkgs; [
-      jq
-      usbutils
-    ];
+  # prepared node config snippets that can be individually imported in test nodes
+  testMachineConfig = {
+    # basic utils, user and group creation
+    # you probably always want this
+    basicMachineConfig = {
+      environment.systemPackages = with pkgs; [
+        jq
+        usbutils
+      ];
 
-    users.groups.usbaccess = { };
+      users.groups.usbaccess = { };
 
-    users.users.usbaccess = {
-      isSystemUser = true;
-      group = "usbaccess";
-    };
-
-    boot.kernelModules = [ "kvm" ];
-  };
-  testMachineConfig.interactiveDebugging = {
-    # interactive debugging
-    services.openssh = {
-      enable = true;
-      settings = {
-        PermitRootLogin = "yes";
-        PermitEmptyPasswords = "yes";
+      users.users.usbaccess = {
+        isSystemUser = true;
+        group = "usbaccess";
       };
-    };
-    security.pam.services.sshd.allowNullPassword = true;
-    virtualisation.forwardPorts = [
-      { from = "host"; host.port = 2000; guest.port = 22; }
-    ];
-  };
-  testMachineConfig.sytemdServices = {
-    systemd.services = {
-      usbvfiod = {
-        enable = true;
-        wantedBy = [ "multi-user.target" ];
 
-        serviceConfig = {
-          User = "usbaccess";
-          Group = "usbaccess";
-          ExecStart = ''
-            ${lib.getExe usbvfiod} -v --socket-path ${usbvfiodSocket} --device "/dev/bus/usb/teststorage"
-          '';
+      boot.kernelModules = [ "kvm" ];
+    };
+
+    # interactive debugging over ssh
+    interactiveDebugging = {
+      services.openssh = {
+        enable = true;
+        settings = {
+          PermitRootLogin = "yes";
+          PermitEmptyPasswords = "yes";
         };
       };
+      security.pam.services.sshd.allowNullPassword = true;
+      virtualisation.forwardPorts = [
+        { from = "host"; host.port = 2000; guest.port = 22; }
+      ];
+    };
 
-      cloud-hypervisor = {
-        enable = true;
-        wantedBy = [ "multi-user.target" ];
-        requires = [ "usbvfiod.service" ];
-        after = [ "usbvfiod.service" ];
+    # usbvfiod and cloud-hypervisor services
+    systemdServices = {
+      systemd.services = {
+        usbvfiod = {
+          enable = true;
+          wantedBy = [ "multi-user.target" ];
 
-        serviceConfig = {
-          Restart = "on-failure";
-          RestartSec = "2s";
-          ExecStart = ''
-            ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
-              --kernel ${netboot.kernel} \
-              --cmdline ${lib.escapeShellArg netboot.cmdline} \
-              --initramfs ${netboot.initrd} \
-              --user-device socket=${usbvfiodSocket} \
-              --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
-          '';
+          serviceConfig = {
+            User = "usbaccess";
+            Group = "usbaccess";
+            ExecStart = ''
+              ${lib.getExe usbvfiod} -v --socket-path ${usbvfiodSocket} --device "/dev/bus/usb/teststorage"
+            '';
+          };
+        };
+
+        cloud-hypervisor = {
+          enable = true;
+          wantedBy = [ "multi-user.target" ];
+          requires = [ "usbvfiod.service" ];
+          after = [ "usbvfiod.service" ];
+
+          serviceConfig = {
+            Restart = "on-failure";
+            RestartSec = "2s";
+            ExecStart = ''
+              ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
+                --kernel ${netboot.kernel} \
+                --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                --initramfs ${netboot.initrd} \
+                --user-device socket=${usbvfiodSocket} \
+                --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+            '';
+          };
         };
       };
     };
   };
+
   # The nested CI runs are really slow.
   globalTimeout = 3600;
 
-
   make-smoke-test = qemu-device: pkgs.nixosTest {
-    name = "usbvfiod Smoke Test with ${qemu-device}";
+    name = "usbvfiod blockdevice test with ${qemu-device}";
 
     inherit globalTimeout;
 
     nodes.machine = _: {
-      imports = [ testMachineConfig.basicMachineConfig testMachineConfig.interactiveDebugging testMachineConfig.sytemdServices ];
+      imports = [ testMachineConfig.basicMachineConfig testMachineConfig.interactiveDebugging testMachineConfig.systemdServices ];
 
       services.udev.extraRules = ''
         ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="${vendorId}", ATTRS{idProduct}=="${productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/teststorage"
@@ -267,16 +275,14 @@ let
   };
 in
 {
-  integration-smoke = make-smoke-test "qemu-xhci";
+  blockdevice-usb-3 = make-smoke-test "qemu-xhci";
 
-  integration-smoke-usb-2 = make-smoke-test "usb-ehci";
+  blockdevice-usb-2 = make-smoke-test "usb-ehci";
 
-  integration-smoke-usb-interrupts = pkgs.nixosTest {
-    name = "usbvfiod Smoke Test using a HID device";
+  interrupts-endpoints = pkgs.nixosTest {
+    name = "usbvfiod test using a HID device";
 
     inherit globalTimeout;
-
-    extraPythonPackages = p: [ p.qemu ];
 
     testScript = ''
       import os
@@ -287,44 +293,40 @@ in
       start_all()
       machine.wait_for_unit("cloud-hypervisor.service")
 
-      # use qemu qmp interface to send event into QemuConsole (the default PS/2 HID device)
+      # use QEMU QMP interface to send commands
       os.system("""nix run nixpkgs#socat -- - UNIX-CONNECT:/tmp/qmp.sock <<EOF
       {"execute": "qmp_capabilities"}
       {"execute": "send-key", "arguments": {"keys": [ { "type": "qcode", "data": "ctrl" } ]}}
       EOF""")
 
-      # TODO evaluate if inputs were received in cloud-hypervisor (it currently doesn't due to usbvfio and todo!())
+      # TODO evaluate if inputs were received in cloud-hypervisor
     '';
 
-    nodes.machine = { ... }:
+    nodes.machine = _:
       let
         hid-vendorId = "0627";
         hid-productId = "0001";
       in
       {
-        imports = [ testMachineConfig.basicMachineConfig testMachineConfig.interactiveDebugging testMachineConfig.sytemdServices ];
-
-        virtualisation.forwardPorts = [
-          #qemu qmp interface
-          { from = "host"; host.port = 2001; guest.port = 4444; }
-        ];
+        imports = [ testMachineConfig.basicMachineConfig testMachineConfig.interactiveDebugging testMachineConfig.systemdServices ];
 
         services.udev.extraRules = ''
-          ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="${hid-vendorId}", ATTRS{idProduct}=="${hid-productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/teststorage"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{name}=="QEMU QEMU_USB_Keyboard", ATTRS{idVendor}=="${hid-vendorId}", ATTRS{idProduct}=="${hid-productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/teststorage"
         '';
 
         virtualisation = {
           cores = 2;
           memorySize = 4096;
+          # QEMU QMP send-key commands will be sent through default non-usb (vfio) devices if not disabled
+          qemu.virtioKeyboard = false;
           qemu.options = [
             # A virtual USB UHCI controller in the host ...
             "-device qemu-xhci,id=xhci,addr=10"
             # ... with an attached usb keyboard
-            #"-device usb-kbd,bus=xhci.0,id=keybrd" # TODO how to make inputs
-            #"-device usb-mouse,bus=xhci.0" # TODO CommandTrb EvaluateContext not yet implemented & how to make inputs
+            "-device usb-kbd,bus=xhci.0"
 
-            # make qmp interactions available
-            "-chardev socket,id=qmp,port=4444,path=/tmp/qmp.sock,server=on,wait=off"
+            # enable QEMU QMP interactions
+            "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
             "-mon chardev=qmp,mode=control,pretty=on"
           ];
         };
