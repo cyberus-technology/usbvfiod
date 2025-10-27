@@ -23,12 +23,12 @@ nix run .\#checks.x86_64-linux.integration-smoke.driverInteractive --print-build
 
 This will start a python environment where you can run the `test_script()` (or other functions like `start_all()`).
 
-The QEMU vm will be accessible with:
+The QEMU vm will be accessible with the alias `sshhost` (available in the Nix devshell) or:
 ```
 ssh -p 2000 root@localhost -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
 ```
 
-Using the QEMU vm as a proxy the nested cloud-hypervisor vm will be accessible with:
+Using the QEMU vm as a proxy the nested cloud-hypervisor vm will be accessible with the alias `sshguest`:
 ```
 ssh -o ProxyCommand="ssh -W %h:%p -p 2000 root@localhost -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2
 ```

@@ -163,8 +163,6 @@
             checks
             ;
 
-          inherit (self.checks.pre-commit-check) shellHook;
-
           # Additional dev-shell environment variables can be set directly
           # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
 
@@ -172,6 +170,12 @@
           packages = [
             # pkgs.ripgrep
           ];
+
+          shellHook = ''
+            ${self.checks.pre-commit-check.shellHook}
+            alias sshhost=ssh\ -p\ 2000\ root@localhost\ -o\ UserKnownHostsFile=/dev/null\ -o\ StrictHostKeyChecking=no
+            alias sshguest=ssh\ -o\ ProxyCommand="ssh\ -W\ %h:%p\ -p\ 2000\ root@localhost\ -o\ UserKnownHostsFile=/dev/null\ -o\ StrictHostKeyChecking=no"\ -o\ UserKnownHostsFile=/dev/null\ -o\ StrictHostKeyChecking=no\ root@192.168.100.2
+          '';
         };
 
         herculesCI = {
