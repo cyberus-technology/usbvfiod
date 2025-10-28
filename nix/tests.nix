@@ -375,4 +375,56 @@ in
           };
         };
     };
+
+  multiple-blockdevices =
+    pkgs.testers.runNixOSTest {
+      name = "usbvfiod with multiple blockdevices";
+
+      inherit globalTimeout;
+
+      nodes.machine = _: {
+        imports = [ testMachineConfig.basicMachineConfig ];
+
+        virtualisation = {
+          cores = 2;
+          memorySize = 4096;
+          qemu.options = [
+            # virtual USB controllers in the host
+            "-device usb-ehci,id=ehci"
+            "-device qemu-xhci,id=xhci"
+            # ... with attached usb sticks.
+            "-drive if=none,id=ehci-01,format=raw,file=${blockDeviceFile}1"
+            "-device usb-storage,bus=ehci.0,port=1,drive=ehci-01"
+            "-drive if=none,id=ehci-02,format=raw,file=${blockDeviceFile}2"
+            "-device usb-storage,bus=ehci.0,port=2,drive=ehci-02"
+            "-drive if=none,id=ehci-03,format=raw,file=${blockDeviceFile}3"
+            "-device usb-storage,bus=ehci.0,port=3,drive=ehci-03"
+            "-drive if=none,id=ehci-04,format=raw,file=${blockDeviceFile}4"
+            "-device usb-storage,bus=ehci.0,port=4,drive=ehci-04"
+
+            "-drive if=none,id=xhci-01,format=raw,file=${blockDeviceFile}5"
+            "-device usb-storage,bus=xhci.0,port=1,drive=xhci-01"
+            "-drive if=none,id=xhci-02,format=raw,file=${blockDeviceFile}6"
+            "-device usb-storage,bus=xhci.0,port=2,drive=xhci-02"
+            "-drive if=none,id=xhci-03,format=raw,file=${blockDeviceFile}7"
+            "-device usb-storage,bus=xhci.0,port=3,drive=xhci-03"
+            "-drive if=none,id=xhci-04,format=raw,file=${blockDeviceFile}8"
+            "-device usb-storage,bus=xhci.0,port=4,drive=xhci-04"
+          ];
+        };
+      };
+
+      testScript = ''
+        ${nestedPythonClass}
+        import os
+
+        # only relevant for interactive testing when `dd seek=` will not reset the image file by overwriting
+        print("Creating file images at ${blockDeviceFile}x")
+        for i in range(1,10):
+          os.system("rm ${blockDeviceFile}")
+          os.system(f"dd bs=1  count=1 seek=${blockDeviceSize} if=/dev/zero of=${blockDeviceFile}{i}")
+      
+        start_all()
+      '';
+    };
 }
