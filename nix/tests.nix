@@ -15,6 +15,10 @@ let
           # Enable dyndbg messages for the XHCI driver.
           "xhci_pci.dyndbg==pmfl"
           "xhci_hcd.dyndbg==pmfl"
+
+          # currently we can not handle the automatic suspend that is triggered so we disable dynamic power management
+          # https://github.com/torvalds/linux/blob/master/Documentation/driver-api/usb/power-management.rst
+          "usbcore.autosuspend=-1"
         ];
 
         # Enable debug verbosity.
@@ -119,7 +123,7 @@ let
             User = "usbaccess";
             Group = "usbaccess";
             ExecStart = ''
-              ${lib.getExe usbvfiod} -v --socket-path ${usbvfiodSocket} --device "/dev/bus/usb/teststorage"
+              ${lib.getExe usbvfiod} -v --socket-path ${usbvfiodSocket} --device "/dev/bus/usb/testdevice"
             '';
           };
         };
@@ -206,7 +210,7 @@ let
       imports = [ testMachineConfig.basicMachineConfig testMachineConfig.systemdServices ];
 
       services.udev.extraRules = ''
-        ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="${vendorId}", ATTRS{idProduct}=="${productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/teststorage"
+        ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="${vendorId}", ATTRS{idProduct}=="${productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/testdevice"
       '';
 
       virtualisation = {
@@ -236,7 +240,7 @@ let
 
       machine.wait_for_unit("cloud-hypervisor.service")
 
-      # check sshd in systemd.services.cloud-hypervisor is usable prior to testing over ssh
+      # Check sshd in systemd.services.cloud-hypervisor is usable prior to testing over ssh
       machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
 
       cloud_hypervisor = Nested(vm_host=machine)
@@ -287,4 +291,87 @@ in
   blockdevice-usb-3 = make-blockdevice-test "qemu-xhci";
 
   blockdevice-usb-2 = make-blockdevice-test "usb-ehci";
+
+  interrupt-endpoints =
+    let
+      hid-vendorId = "0627";
+      hid-productId = "0001";
+    in
+    pkgs.testers.runNixOSTest {
+      name = "usbvfiod testing a HID device";
+
+      inherit globalTimeout;
+
+      testScript = ''
+        ${nestedPythonClass}
+        import os
+        import time
+        import threading
+
+        start_all()
+        machine.wait_for_unit("cloud-hypervisor.service")
+
+        # Check sshd in systemd.services.cloud-hypervisor is usable prior to testing over ssh.
+        machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
+
+        # A function that can send input events in the background.
+        def create_input():
+          for i in range(1, 4):
+            time.sleep(1)
+            os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
+        {"execute": "qmp_capabilities"}
+        {"execute": "send-key", "arguments": {"keys": [ { "type": "qcode", "data": "ctrl" } ]}}
+        EOF""")
+            print(f"input loop `{i}` done")
+
+        cloud_hypervisor = Nested(vm_host=machine)
+
+        # Check the Keyboard is in detected in the guest.
+        cloud_hypervisor.succeed("lsusb -d ${hid-vendorId}:${hid-productId}")
+
+        # Generate inputs in the background.
+        t1 = threading.Thread(target=create_input)
+        t1.start()
+        print("started sending input events")
+
+        # Catch one key down event and one key up event inputs.
+        # It is theoretically possible all events appear and are consumed by the input subsystem before we have the opportunity to listen.
+        out = cloud_hypervisor.succeed("hexdump --length 144 --two-bytes-hex /dev/input/by-id/usb-QEMU_QEMU_USB_Keyboard_68284-0000\\:00\\:10.0-1-event-kbd")
+      
+        # Check if the hexdump contains a ctrl event sequence
+        # https://docs.kernel.org/input/input.html#event-interface
+        search("0001    001d    0001", out) # EV_KEY KEY_LEFTCTRL pressed
+        search("0001    001d    0000", out) # EV_KEY KEY_LEFTCTRL released
+        print("done")
+      
+        # Make a clean exit since the test will wait for thread termination either way.
+        t1.join()
+      '';
+
+      nodes.machine = _:
+        {
+          imports = [ testMachineConfig.basicMachineConfig testMachineConfig.systemdServices ];
+
+          services.udev.extraRules = ''
+            ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{product}=="QEMU USB Keyboard", ATTRS{idVendor}=="${hid-vendorId}", ATTRS{idProduct}=="${hid-productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/testdevice"
+          '';
+
+          virtualisation = {
+            cores = 2;
+            memorySize = 4096;
+            # QEMU QMP send-key commands will be sent through default non-usb (vfio) devices if not explicitly disabled
+            qemu.virtioKeyboard = false;
+            qemu.options = [
+              # A virtual USB UHCI controller in the host ...
+              "-device qemu-xhci,id=xhci,addr=10"
+              # ... with an attached usb keyboard.
+              "-device usb-kbd,bus=xhci.0"
+
+              # Enable QEMU QMP interactions.
+              "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
+              "-mon chardev=qmp,mode=control,pretty=on"
+            ];
+          };
+        };
+    };
 }
