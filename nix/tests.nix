@@ -81,27 +81,36 @@ let
   blockDeviceFile = "/tmp/image.img";
   blockDeviceSize = "8M";
 
-  make-smoke-test = qemu-device: pkgs.nixosTest {
-    name = "usbvfiod Smoke Test with ${qemu-device}";
-
-    nodes.machine = _: {
+  # prepared node config snippets that can be individually imported in test nodes
+  testMachineConfig = {
+    basicMachineConfig = {
       environment.systemPackages = with pkgs; [
         jq
         usbutils
       ];
-
-      services.udev.extraRules = ''
-        ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="${vendorId}", ATTRS{idProduct}=="${productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/teststorage"
-      '';
-
       users.groups.usbaccess = { };
-
       users.users.usbaccess = {
         isSystemUser = true;
         group = "usbaccess";
       };
-
       boot.kernelModules = [ "kvm" ];
+
+      # interactive debugging over ssh
+      services.openssh = {
+        enable = true;
+        settings = {
+          PermitRootLogin = "yes";
+          PermitEmptyPasswords = "yes";
+        };
+      };
+      security.pam.services.sshd.allowNullPassword = true;
+      virtualisation.forwardPorts = [
+        { from = "host"; host.port = 2000; guest.port = 22; }
+      ];
+    };
+
+    # usbvfiod and cloud-hypervisor services
+    systemdServices = {
       systemd.services = {
         usbvfiod = {
           wantedBy = [ "multi-user.target" ];
@@ -134,26 +143,78 @@ let
           };
         };
       };
+    };
+  };
 
-      # interactive debugging
-      services.openssh = {
-        enable = true;
-        settings = {
-          PermitRootLogin = "yes";
-          PermitEmptyPasswords = "yes";
-        };
-      };
-      security.pam.services.sshd.allowNullPassword = true;
-      virtualisation.forwardPorts = [
-        { from = "host"; host.port = 2000; guest.port = 22; }
-      ];
+  nestedPythonClass = ''
+    import re
+    from test_driver.errors import RequestedAssertionFailed
+
+    class Nested():
+      """Extending Nix Test Framework to enable using known functions on a nested VM.
+      Commands are executed over ssh.
+      Heavily inspired by nixos-tests (https://nixos.org/manual/nixos/stable/index.html#ssec-machine-objects) and their implementation.
+      """
+      def __init__(self, vm_host: Machine) -> None:
+        self.vm_host = vm_host
+
+      def succeed(self, *commands: str, timeout: int | None = None) -> str:
+        vm_host = self.vm_host
+        output = ""
+        for command in commands:
+            with vm_host.nested(f"must succeed in cloud-hypervisor: {command}"):
+                (status, out) = vm_host.execute("ssh -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 '" + command + "'", timeout=timeout)
+                if status != 0:
+                    vm_host.log(f"output: {out}")
+                    raise RequestedAssertionFailed(
+                        f"command `{command}` failed (exit code {status})"
+                    )
+                output += out
+        return output
+
+      def wait_until_succeeds(self, command: str, timeout: int = 900):
+        vm_host = self.vm_host
+        output = ""
+
+        def check_success(_last_try: bool) -> bool:
+          nonlocal output
+          status, output = vm_host.execute("ssh -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 '" + command + "'", timeout=timeout)
+          return status == 0
+
+        with vm_host.nested(f"waiting for success in cloud-hypervisor: {command}"):
+          retry(check_success, timeout)
+          return(output)
+
+    def search(pattern: str, string: str):
+      if re.search(pattern, string):
+        return
+      else:
+        raise RequestedAssertionFailed(
+          f"pattern `{pattern}` not found in {string}"
+        )
+  '';
+
+  # The nested CI runs are really slow.
+  globalTimeout = 3600;
+
+  make-blockdevice-test = qemu-usb-controller: pkgs.nixosTest {
+    name = "usbvfiod blockdevice test with ${qemu-usb-controller}";
+
+    inherit globalTimeout;
+
+    nodes.machine = _: {
+      imports = [ testMachineConfig.basicMachineConfig testMachineConfig.systemdServices ];
+
+      services.udev.extraRules = ''
+        ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="${vendorId}", ATTRS{idProduct}=="${productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/teststorage"
+      '';
 
       virtualisation = {
         cores = 2;
         memorySize = 4096;
         qemu.options = [
           # A virtual USB controller in the host ...
-          "-device ${qemu-device},id=usbcontroller,addr=10"
+          "-device ${qemu-usb-controller},id=usbcontroller,addr=10"
           # ... with an attached usb stick.
           "-drive if=none,id=usbstick,format=raw,file=${blockDeviceFile}"
           "-device usb-storage,bus=usbcontroller.0,drive=usbstick"
@@ -161,56 +222,10 @@ let
       };
     };
 
-    # The nested CI runs are really slow.
-    globalTimeout = 3600;
     testScript = ''
-      import re
+      ${nestedPythonClass}
       import os
-      from test_driver.errors import RequestedAssertionFailed
 
-      class Nested():
-        """Extending Nix Test Framework to enable using known functions on a nested VM.
-        Commands are executed over ssh.
-        Heavily inspired by nixos-tests (https://nixos.org/manual/nixos/stable/index.html#ssec-machine-objects) and their implementation.
-        """
-        def __init__(self, vm_host: Machine) -> None:
-          self.vm_host = vm_host
-
-        def succeed(self, *commands: str, timeout: int | None = None) -> str:
-          vm_host = self.vm_host
-          output = ""
-          for command in commands:
-              with vm_host.nested(f"must succeed: {command}"):
-                  (status, out) = vm_host.execute("ssh -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 '" + command + "'", timeout=timeout)
-                  if status != 0:
-                      vm_host.log(f"output: {out}")
-                      raise RequestedAssertionFailed(
-                          f"command `{command}` failed (exit code {status})"
-                      )
-                  output += out
-          return output        
-
-        def wait_until_succeeds(self, command: str, timeout: int = 900):
-          vm_host = self.vm_host
-          output = ""
-
-          def check_success(_last_try: bool) -> bool:
-            nonlocal output
-            status, output = vm_host.execute("ssh -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 '" + command + "'", timeout=timeout)
-            return status == 0
-
-          with vm_host.nested(f"waiting for success in cloud-hypervisor: {command}"):
-            retry(check_success, timeout)
-            return(output)
-
-      def search(pattern: str, string: str):
-        if re.search(pattern, string):
-          return
-        else:
-          raise RequestedAssertionFailed(
-            f"pattern `{pattern}` not found in {string}"
-          )
-      
       # only relevant for interactive testing when `dd seek=` will not reset the image file by overwriting
       os.system("rm ${blockDeviceFile}")
 
@@ -269,7 +284,7 @@ let
   };
 in
 {
-  integration-smoke = make-smoke-test "qemu-xhci";
+  blockdevice-usb-3 = make-blockdevice-test "qemu-xhci";
 
-  integration-smoke-usb-2 = make-smoke-test "usb-ehci";
+  blockdevice-usb-2 = make-blockdevice-test "usb-ehci";
 }
