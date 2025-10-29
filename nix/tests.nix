@@ -287,4 +287,64 @@ in
   blockdevice-usb-3 = make-blockdevice-test "qemu-xhci";
 
   blockdevice-usb-2 = make-blockdevice-test "usb-ehci";
+
+  hotplugging = pkgs.testers.runNixOSTest {
+    name = "usbvfiod testing hotplugging functionality";
+
+    inherit globalTimeout passthru;
+
+    nodes.machine = _: {
+      imports = [ testMachineConfig.basicMachineConfig ];
+
+      virtualisation = {
+        cores = 2;
+        memorySize = 4096;
+        qemu.options = [
+          # A virtual USB UHCI controller in the host ...
+          "-device qemu-xhci,id=xhci"
+
+          # enable QEMU QMP interactions
+          "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
+          "-mon chardev=qmp,mode=control,pretty=on"
+        ];
+      };
+    };
+
+    testScript = ''
+      ${nestedPythonClass}
+      import os
+
+      start_all()
+
+      # create a blockdevice
+      os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
+      {"execute": "qmp_capabilities"}
+      {"execute": "blockdev-add", "arguments": {"driver": "file", "node-name": "hotplugblock", "filename": "/tmp/hotplug.img"} }
+      EOF""")
+
+      # plug in a blockdevice
+      os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
+      {"execute": "qmp_capabilities"}
+      {"execute": "device_add", "arguments": {"driver": "usb-storage", "id": "hotplug", "drive": "hotplugblock"} }
+      EOF""")
+      
+      machine.wait_until_succeeds("lsusb | grep 'QEMU QEMU USB HARDDRIVE'")
+      
+      # plug out a blockdevice
+      os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
+      {"execute": "qmp_capabilities"}
+      {"execute": "device_del", "arguments": { "id": "hotplug" } }
+      EOF""")
+
+      machine.wait_until_fails("lsusb | grep 'QEMU QEMU USB HARDDRIVE'")
+
+      # plug back in a second time
+      os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
+      {"execute": "qmp_capabilities"}
+      {"execute": "device_add", "arguments": {"driver": "usb-storage", "id": "hotplug", "drive": "hotplugblock"} }
+      EOF""")
+
+      machine.wait_until_succeeds("lsusb | grep 'QEMU QEMU USB HARDDRIVE'")
+    '';
+  };
 }
