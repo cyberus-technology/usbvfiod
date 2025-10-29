@@ -385,6 +385,18 @@ in
       nodes.machine = _: {
         imports = [ testMachineConfig.basicMachineConfig ];
 
+        services.udev.extraRules = ''
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="EHCI Host Controller" ATTR{devpath}=="1", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/ehci-01"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="EHCI Host Controller" ATTR{devpath}=="2", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/ehci-02"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="EHCI Host Controller" ATTR{devpath}=="3", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/ehci-03"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="EHCI Host Controller" ATTR{devpath}=="4", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/ehci-04"
+
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="xHCI Host Controller", ATTR{devpath}=="1", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/xhci-01"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="xHCI Host Controller", ATTR{devpath}=="2", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/xhci-02"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="xHCI Host Controller", ATTR{devpath}=="3", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/xhci-03"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="xHCI Host Controller", ATTR{devpath}=="4", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/xhci-04"
+        '';
+
         virtualisation = {
           cores = 2;
           memorySize = 4096;
