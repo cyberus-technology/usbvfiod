@@ -29,6 +29,12 @@
         # Expose only platforms that cloud-hypervisor supports.
         # The `x86_64-linux` attribute is used arbitrarily to access the derivation's attributes.
         systems = inputs.nixpkgs.legacyPackages.x86_64-linux.cloud-hypervisor.meta.platforms;
+
+        # Hercules CI runs can be configured using the `herculesCI` attribute.
+        # See: https://docs.hercules-ci.com/hercules-ci-agent/evaluation
+        extraOutputsWithoutSystems = [
+          "herculesCI"
+        ];
       };
       inherit (dnf)
         exportOutputs
@@ -165,6 +171,13 @@
           # Extra inputs can be added here; cargo and rustc are provided by default.
           packages = [
             # pkgs.ripgrep
+          ];
+        };
+
+        herculesCI = {
+          ciSystems = [
+            "x86_64-linux"
+            "aarch64-linux"
           ];
         };
       }
