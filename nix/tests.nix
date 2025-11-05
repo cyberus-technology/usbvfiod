@@ -380,7 +380,7 @@ in
     pkgs.testers.runNixOSTest {
       name = "usbvfiod with multiple blockdevices";
 
-      inherit globalTimeout;
+      inherit globalTimeout passthru;
 
       nodes.machine = _: {
         imports = [ testMachineConfig.basicMachineConfig ];
