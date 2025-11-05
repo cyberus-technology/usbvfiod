@@ -24,8 +24,10 @@ clap = { version = "4.5.35", features = [
   "std",
   "usage",
 ], default-features = false }
+crossterm = "0.29.0"
 memmap2 = "0.9.5"
 nusb = { version = "0.2.0", default-features = false }
+ratatui = "0.29.0"
 thiserror = { version = "2.0.12" }
 tokio = { version = "1.48.0", features = ["full"] }
 tracing = { version = "0.1.41", default-features = false, features = [
