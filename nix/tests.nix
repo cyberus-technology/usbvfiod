@@ -201,10 +201,26 @@ let
   # The nested CI runs are really slow.
   globalTimeout = 3600;
 
+  passthru = {
+    # Limit running tests on known successful platforms.
+    # This is used to work around CI issues, where both `ignoreFailure` and `requireFailure`
+    # for HerculesCI have weird interaction with reporting back the status to GitHub.
+    # This is also making sure the test is still available for end-users to run on their systems.
+    # Using buildDependenciesOnly means the actual test will not be ran, but all dependencies will be built.
+    buildDependenciesOnly = {
+      # Verified systems, which should work.
+      "x86_64-linux" = false;
+      # `aarch64-linux` fails on Hercules CI due to nested virtualization usage.
+      # The build might be working, but after a 1 hour timeout, the machine barely gets into stage-2.
+      # So for now, skip running the actual test.
+      "aarch64-linux" = true;
+    }.${pkgs.system} or true /* Also ignore failure on any systems not otherwise listed. */;
+  };
+
   make-blockdevice-test = qemu-usb-controller: pkgs.testers.runNixOSTest {
     name = "usbvfiod blockdevice test with ${qemu-usb-controller}";
 
-    inherit globalTimeout;
+    inherit globalTimeout passthru;
 
     nodes.machine = _: {
       imports = [ testMachineConfig.basicMachineConfig testMachineConfig.systemdServices ];
@@ -270,21 +286,6 @@ let
       out = cloud_hypervisor.succeed("cat /mnt/file.txt")
       search("123TEST123", out)
     '';
-    passthru = {
-      # Limit running tests on known successful platforms.
-      # This is used to work around CI issues, where both `ignoreFailure` and `requireFailure`
-      # for HerculesCI have weird interaction with reporting back the status to GitHub.
-      # This is also making sure the test is still available for end-users to run on their systems.
-      # Using buildDependenciesOnly means the actual test will not be ran, but all dependencies will be built.
-      buildDependenciesOnly = {
-        # Verified systems, which should work.
-        "x86_64-linux" = false;
-        # `aarch64-linux` fails on Hercules CI due to nested virtualization usage.
-        # The build might be working, but after a 1 hour timeout, the machine barely gets into stage-2.
-        # So for now, skip running the actual test.
-        "aarch64-linux" = true;
-      }.${pkgs.system} or true /* Also ignore failure on any systems not otherwise listed. */;
-    };
   };
 in
 {
@@ -300,7 +301,7 @@ in
     pkgs.testers.runNixOSTest {
       name = "usbvfiod testing a HID device";
 
-      inherit globalTimeout;
+      inherit globalTimeout passthru;
 
       testScript = ''
         ${nestedPythonClass}
