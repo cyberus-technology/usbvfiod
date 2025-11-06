@@ -287,4 +287,100 @@ in
   blockdevice-usb-3 = make-blockdevice-test "qemu-xhci";
 
   blockdevice-usb-2 = make-blockdevice-test "usb-ehci";
+
+  graceful-attach-detach = pkgs.testers.runNixOSTest {
+    name = "attach and detach on a running system";
+
+    inherit globalTimeout;
+
+    nodes.machine = _: {
+      imports = [ testMachineConfig.basicMachineConfig ];
+
+      # TODO maybe make ACTION="add|change" for detaching from usbvfiod if necessary
+      services.udev.extraRules = ''
+        ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="${vendorId}", ATTRS{idProduct}=="${productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/teststorage"
+      '';
+
+      virtualisation = {
+        cores = 2;
+        memorySize = 4096;
+        qemu.options = [
+          # A virtual USB controller in the host ...
+          "-device qemu-xhci,id=usbcontroller,addr=10"
+          # ... with an attached usb stick.
+          "-drive if=none,id=usbstick,format=raw,file=${blockDeviceFile}"
+          "-device usb-storage,bus=usbcontroller.0,drive=usbstick"
+        ];
+      };
+
+      systemd.services = {
+        usbvfiod = {
+          wantedBy = [ "multi-user.target" ];
+
+          serviceConfig = {
+            User = "usbaccess";
+            Group = "usbaccess";
+            ExecStart = ''
+              ${lib.getExe usbvfiod} -v --socket-path ${usbvfiodSocket}
+            '';
+          };
+        };
+
+        cloud-hypervisor = {
+          wantedBy = [ "multi-user.target" ];
+          requires = [ "usbvfiod.service" ];
+          after = [ "usbvfiod.service" ];
+
+          serviceConfig = {
+            Restart = "on-failure";
+            RestartSec = "2s";
+            ExecStart = ''
+              ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
+                --kernel ${netboot.kernel} \
+                --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                --initramfs ${netboot.initrd} \
+                --user-device socket=${usbvfiodSocket} \
+                --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+            '';
+          };
+        };
+      };
+
+    };
+
+    testScript = ''
+      ${nestedPythonClass}
+      import os
+
+      # only relevant for interactive testing when `dd seek=` will not reset the image file by overwriting
+      os.system("rm ${blockDeviceFile}")
+
+      print("Creating file image at ${blockDeviceFile}")
+      os.system("dd bs=1  count=1 seek=${blockDeviceSize} if=/dev/zero of=${blockDeviceFile}")
+      
+      start_all()
+
+      machine.wait_for_unit("cloud-hypervisor.service")
+
+      # check sshd in systemd.services.cloud-hypervisor is usable prior to testing over ssh
+      machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
+
+      cloud_hypervisor = Nested(vm_host=machine)
+
+      # run attach detach actions a few times
+      for i in range(1,10)
+        # Confirm the boot blockdevice is the only one in cloud-hypervisor.
+        cloud_hypervisor.succeed("""[[ "$(lsblk | wc -l)" -eq 2 ]]""")
+
+        # attach a device
+        
+
+        # confirm the usb device is in cloud-hypervisor -> hotpluggin attach tested
+        out = cloud_hypervisor.succeed("lsblk")
+        #search ("sda", out)
+
+        # detach a device --> gaceful detach test result shown on next loop
+        
+    '';
+  };
 }
