@@ -492,6 +492,16 @@ in
         search("Port 002: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
         search("Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
         search("Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
+
+        out = cloud_hypervisor.succeed("lsblk")
+        search(r'sda     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdb     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdc     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdd     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sde     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdf     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdg     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdh     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
       '';
     };
 }
