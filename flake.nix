@@ -77,6 +77,21 @@
             mainProgram = "usbvfiod";
           };
         });
+
+        remote-cli = craneLib.buildPackage (commonArgs // {
+          inherit cargoArtifacts;
+
+          meta = {
+            mainProgram = "remote-cli";
+          };
+        });
+        remote-tui = craneLib.buildPackage (commonArgs // {
+          inherit cargoArtifacts;
+
+          meta = {
+            mainProgram = "remote-tui";
+          };
+        });
       in
       {
         checks = {
@@ -86,6 +101,7 @@
               nixpkgs-fmt.enable = true;
               rustfmt.enable = true;
               typos.enable = true;
+              typos.settings.ignored-words = [ "ratatui" ];
               deadnix.enable = true;
               statix.enable = true;
             };
@@ -146,6 +162,7 @@
 
         packages = {
           default = usbvfiod;
+          inherit remote-cli remote-tui;
         } // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
           usbvfiod-llvm-coverage = craneLibLLvmTools.cargoLlvmCov (commonArgs // {
             inherit cargoArtifacts;
