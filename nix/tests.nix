@@ -197,7 +197,7 @@ let
   # The nested CI runs are really slow.
   globalTimeout = 3600;
 
-  make-blockdevice-test = qemu-usb-controller: pkgs.nixosTest {
+  make-blockdevice-test = qemu-usb-controller: pkgs.testers.runNixOSTest {
     name = "usbvfiod blockdevice test with ${qemu-usb-controller}";
 
     inherit globalTimeout;
