@@ -226,7 +226,7 @@ let
       imports = [ testMachineConfig.basicMachineConfig testMachineConfig.systemdServices ];
 
       services.udev.extraRules = ''
-        ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="${vendorId}", ATTRS{idProduct}=="${productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/testdevice"
+        ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{idVendor}=="${vendorId}", ATTRS{idProduct}=="${productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/teststorage"
       '';
 
       virtualisation = {
@@ -287,6 +287,102 @@ let
       search("123TEST123", out)
     '';
   };
+
+  # model generic function arg usage
+  attrs = {
+    name = "myName";
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 4;
+        udevRule.enable = true;
+        udevRule.symlink = "teststorage";
+        attachedOnStartup = true;
+      }
+      {
+        type = "hid-device";
+        usbVersion = "2";
+        usbPort = 3;
+        udevRule.enable = true;
+        udevRule.symlink = "testkeyboard";
+        attachedOnStartup = true;
+      }
+    ];
+    testscript.requireNestedAccess = true; # do you need access to an nested class object
+    testscript.text = ''
+      cloud_hypervisor.succeed("whoami");
+    '';
+  };
+
+
+  # helper
+  mkUsbvfiodUdevRule = controller: port: symlink: ''"ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{product}=="${controller}" ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"'';
+
+  # main
+  mkUsbvfiodTest =
+    let
+      ehci-product = "EHCI Host Controller";
+      xhci-product = "xHCI Host Controller";
+    in
+    attrs: pkgs.testers.runNixOSTest {
+      name = attrs.name;
+
+      inherit globalTimeout;
+
+      nodes.machine = _: {
+        imports = [ testMachineConfig.basicMachineConfig testMachineConfig.systemdServices ];
+
+        # for each elem in attrs.virtualdevices if enabled add a udev rule to create a symlink
+        services.udev.extraRules =
+          builtins.forEach attrs.virtualdevices (element:
+            lib.mkIf element.udevRule.enable (
+              let
+                controller = (lib.mkIf (element.usbVersion == "2") ehci-product)
+                  (lib.mkIf (element.usbVersion == "3") xhci-product);
+              in
+              lib.mkAssert
+                ((controller == null) || (element.usbPort == null) || (element.symlink == null))
+                "missing values for a udev rule"
+                (mkUsbvfiodUdevRule controller element.usbPort element.symlink)
+            )
+          )
+        ;
+
+        virtualisation = {
+          cores = 2;
+          memorySize = 4096;
+          qemu.options = [
+            # any usb 3
+            # add qemu-xhci
+            # any usb 3 
+            # add usb-ehci
+
+            # each device
+            # if attached
+            # add blk or hid on usb bus with port
+
+            # TODO
+          ];
+        };
+      };
+
+      testscript = ''
+        ${nestedPythonClass}
+
+        # TODO prepare blockdevice images if neccessary
+
+        start_all()
+        machine.wait_for_unit("cloud-hypervisor.service")
+
+        # Check sshd in systemd.services.cloud-hypervisor is usable prior to testing over ssh.
+        machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
+
+        cloud_hypervisor = Nested(vm_host=machine)
+
+        ${attrs.testscript}
+      '';
+    };
 in
 {
   blockdevice-usb-3 = make-blockdevice-test "qemu-xhci";
