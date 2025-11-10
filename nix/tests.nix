@@ -317,48 +317,75 @@ let
 
 
   # helper
-  mkUsbvfiodUdevRule = controller: port: symlink: ''"ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{product}=="${controller}" ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"'';
+  mkUsbvfiodUdevRule = controller: port: symlink: ''
+    ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{product}=="${controller}" ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
+  '';
+
+  mkUsbvfiodQemuBlockdevice = driveId: driveFile: deviceBus: devicePort: [
+    "-drive if=none,id=${driveId},format=raw,file=${driveFile}"
+    "-device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}"
+  ];
+  mkUsbvfiodQemuKeyboard = deviceBus: [
+    "-device usb-kbd,bus=${deviceBus}.0"
+  ];
 
   # main
   mkUsbvfiodTest =
     let
-      ehci-product = "EHCI Host Controller";
-      xhci-product = "xHCI Host Controller";
+      ehciProductName = "EHCI Host Controller";
+      xhciProductName = "xHCI Host Controller";
     in
-    attrs: pkgs.testers.runNixOSTest {
-      name = attrs.name;
+    args: pkgs.testers.runNixOSTest {
+      name = args.name;
 
       inherit globalTimeout;
 
       nodes.machine = _: {
         imports = [ testMachineConfig.basicMachineConfig testMachineConfig.systemdServices ];
 
-        # for each elem in attrs.virtualdevices if enabled add a udev rule to create a symlink
         services.udev.extraRules =
-          builtins.forEach attrs.virtualdevices (element:
-            lib.mkIf element.udevRule.enable (
-              let
-                controller = (lib.mkIf (element.usbVersion == "2") ehci-product)
-                  (lib.mkIf (element.usbVersion == "3") xhci-product);
-              in
-              lib.mkAssert
-                ((controller == null) || (element.usbPort == null) || (element.symlink == null))
-                "missing values for a udev rule"
-                (mkUsbvfiodUdevRule controller element.usbPort element.symlink)
-            )
-          )
+          lib.concatStrings (
+            # for each elem in args.virtualdevices
+            builtins.map
+              (element:
+                # if enabled add a udev rule
+                if element.udevRule.enable then
+                # to create a symlink
+                  let
+                    controller =
+                      if (element.usbVersion == "2") then "${ehciProductName}"
+                      else if (element.usbVersion == "3") then "${xhciProductName}" else null;
+                  in
+                  # TODO assert for missing args
+                    # make a udev rule string
+                  ''
+                    ${mkUsbvfiodUdevRule controller (builtins.toString element.usbPort) element.udevRule.symlink}
+                  ''
+                else ""
+              )
+              args.virtualDevices)
         ;
 
         virtualisation = {
           cores = 2;
           memorySize = 4096;
           qemu.options = [
-            # any usb 3
-            # add qemu-xhci
-            # any usb 3 
-            # add usb-ehci
+            # if any usb 3 --> add xhci controller
+            (lib.optionalString (builtins.any (element: element.usbVersion == "3") (args.virtualDevices))
+              "-device qemu-xhci,id=xhci,addr=10"
+            )
+            # if any usb 2 --> add ehci controller
+            (lib.optionalString (builtins.any (element: element.usbVersion == "2") (args.virtualDevices))
+              "-device usb-ehci,id=ehci,addr=11"
+            )
 
-            # each device
+            # if any device is hid or not attached on start enable QEMU QMP interface
+            (lib.optionalString (builtins.any (element: element.type == "hid-device" || element.attachedOnStartup == false) (args.virtualDevices))
+              "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off -mon chardev=qmp,mode=control,pretty=on"
+            )
+
+
+            # handle each device
             # if attached
             # add blk or hid on usb bus with port
 
@@ -367,24 +394,28 @@ let
         };
       };
 
-      testscript = ''
+      testScript = ''
         ${nestedPythonClass}
 
-        # TODO prepare blockdevice images if neccessary
+        # TODO prepare blockdevice images if necessary
 
         start_all()
-        machine.wait_for_unit("cloud-hypervisor.service")
+        #machine.wait_for_unit("cloud-hypervisor.service")
 
         # Check sshd in systemd.services.cloud-hypervisor is usable prior to testing over ssh.
-        machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
+        #machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
 
-        cloud_hypervisor = Nested(vm_host=machine)
+        #cloud_hypervisor = Nested(vm_host=machine)
 
-        ${attrs.testscript}
+        #${args.testscript.text}
       '';
     };
 in
 {
+  helper = mkUsbvfiodUdevRule "xhci" "001" "test";
+
+  function = mkUsbvfiodTest attrs;
+
   blockdevice-usb-3 = make-blockdevice-test "qemu-xhci";
 
   blockdevice-usb-2 = make-blockdevice-test "usb-ehci";
