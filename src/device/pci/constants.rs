@@ -212,9 +212,9 @@ pub mod xhci {
     /// Runtime register base offset.
     pub const RUN_BASE: u64 = 0x3000;
     /// Number of USB 3 ports that we use
-    pub const NUM_USB3_PORTS: u64 = 2;
+    pub const NUM_USB3_PORTS: u64 = 4;
     /// Number of USB 2 ports that we use
-    pub const NUM_USB2_PORTS: u64 = 2;
+    pub const NUM_USB2_PORTS: u64 = 4;
     /// Maximum number of supported ports.
     pub const MAX_PORTS: u64 = NUM_USB3_PORTS + NUM_USB2_PORTS;
     /// Maximum number of supported interrupter register sets.

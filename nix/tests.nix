@@ -375,4 +375,133 @@ in
           };
         };
     };
+
+  multiple-blockdevices =
+    pkgs.testers.runNixOSTest {
+      name = "usbvfiod with multiple blockdevices";
+
+      inherit globalTimeout passthru;
+
+      nodes.machine = _: {
+        imports = [ testMachineConfig.basicMachineConfig ];
+
+        virtualisation = {
+          cores = 2;
+          memorySize = 4096;
+          qemu.options = [
+            # virtual USB controllers in the host
+            "-device usb-ehci,id=ehci"
+            "-device qemu-xhci,id=xhci"
+            # ... with attached usb sticks.
+            "-drive if=none,id=ehci-01,format=raw,file=${blockDeviceFile}1"
+            "-device usb-storage,bus=ehci.0,port=1,drive=ehci-01"
+            "-drive if=none,id=ehci-02,format=raw,file=${blockDeviceFile}2"
+            "-device usb-storage,bus=ehci.0,port=2,drive=ehci-02"
+            "-drive if=none,id=ehci-03,format=raw,file=${blockDeviceFile}3"
+            "-device usb-storage,bus=ehci.0,port=3,drive=ehci-03"
+            "-drive if=none,id=ehci-04,format=raw,file=${blockDeviceFile}4"
+            "-device usb-storage,bus=ehci.0,port=4,drive=ehci-04"
+
+            "-drive if=none,id=xhci-01,format=raw,file=${blockDeviceFile}5"
+            "-device usb-storage,bus=xhci.0,port=1,drive=xhci-01"
+            "-drive if=none,id=xhci-02,format=raw,file=${blockDeviceFile}6"
+            "-device usb-storage,bus=xhci.0,port=2,drive=xhci-02"
+            "-drive if=none,id=xhci-03,format=raw,file=${blockDeviceFile}7"
+            "-device usb-storage,bus=xhci.0,port=3,drive=xhci-03"
+            "-drive if=none,id=xhci-04,format=raw,file=${blockDeviceFile}8"
+            "-device usb-storage,bus=xhci.0,port=4,drive=xhci-04"
+          ];
+        };
+
+        services.udev.extraRules = ''
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="EHCI Host Controller" ATTR{devpath}=="1", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/ehci-01"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="EHCI Host Controller" ATTR{devpath}=="2", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/ehci-02"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="EHCI Host Controller" ATTR{devpath}=="3", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/ehci-03"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="EHCI Host Controller" ATTR{devpath}=="4", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/ehci-04"
+
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="xHCI Host Controller", ATTR{devpath}=="1", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/xhci-01"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="xHCI Host Controller", ATTR{devpath}=="2", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/xhci-02"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="xHCI Host Controller", ATTR{devpath}=="3", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/xhci-03"
+          ACTION=="add", SUBSYSTEM=="usb", ATTRS{product}=="xHCI Host Controller", ATTR{devpath}=="4", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/xhci-04"
+        '';
+
+        systemd.services = {
+          usbvfiod = {
+            wantedBy = [ "multi-user.target" ];
+
+            serviceConfig = {
+              User = "usbaccess";
+              Group = "usbaccess";
+              ExecStart = ''
+                ${lib.getExe usbvfiod} -v --socket-path ${usbvfiodSocket} \
+                  --device "/dev/bus/usb/ehci-01" \
+                  --device "/dev/bus/usb/ehci-02" \
+                  --device "/dev/bus/usb/ehci-03" \
+                  --device "/dev/bus/usb/ehci-04" \
+                  --device "/dev/bus/usb/xhci-01" \
+                  --device "/dev/bus/usb/xhci-02" \
+                  --device "/dev/bus/usb/xhci-03" \
+                  --device "/dev/bus/usb/xhci-04"
+              '';
+            };
+          };
+          cloud-hypervisor = {
+            wantedBy = [ "multi-user.target" ];
+            requires = [ "usbvfiod.service" ];
+            after = [ "usbvfiod.service" ];
+
+            serviceConfig = {
+              Restart = "on-failure";
+              RestartSec = "2s";
+              ExecStart = ''
+                ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
+                  --kernel ${netboot.kernel} \
+                  --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                  --initramfs ${netboot.initrd} \
+                  --user-device socket=${usbvfiodSocket} \
+                  --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+              '';
+            };
+          };
+        };
+      };
+
+      testScript = ''
+        ${nestedPythonClass}
+        import os
+
+        print("Creating file images at ${blockDeviceFile}x")
+        for i in range(1,9):
+          # only relevant for interactive testing when `dd seek=` will not reset the image file by overwriting
+          os.system("rm ${blockDeviceFile}")
+          os.system(f"dd bs=1  count=1 seek=${blockDeviceSize} if=/dev/zero of=${blockDeviceFile}{i}")
+
+        start_all()
+
+        machine.wait_for_unit("cloud-hypervisor.service")
+
+        machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
+        cloud_hypervisor = Nested(vm_host=machine)
+
+        out = cloud_hypervisor.succeed("lsusb --tree")
+        search("Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
+        search("Port 002: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
+        search("Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
+        search("Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
+        search("Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
+        search("Port 002: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
+        search("Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
+        search("Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
+
+        out = cloud_hypervisor.succeed("lsblk")
+        search(r'sda     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdb     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdc     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdd     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sde     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdf     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdg     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+        search(r'sdh     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+      '';
+    };
 }
