@@ -295,10 +295,26 @@ let
       {
         type = "blockdevice";
         usbVersion = "3";
-        usbPort = 4;
+        usbPort = "4";
         udevRule.enable = true;
         udevRule.symlink = "teststorage";
-        attachedOnStartup = true;
+        attachedOnStartup.enable = true;
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 4;
+        udevRule.enable = true;
+        udevRule.symlink = "tester";
+        attachedOnStartup.enable = true;
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "2";
+        usbPort = 4;
+        udevRule.enable = true;
+        udevRule.symlink = "testonehci";
+        attachedOnStartup.enable = false;
       }
       {
         type = "hid-device";
@@ -306,7 +322,15 @@ let
         usbPort = 3;
         udevRule.enable = true;
         udevRule.symlink = "testkeyboard";
-        attachedOnStartup = true;
+        attachedOnStartup.enable = true;
+      }
+      {
+        type = "hid-device";
+        usbVersion = "2";
+        usbPort = "3";
+        udevRule.enable = true;
+        udevRule.symlink = "testkeyboard";
+        attachedOnStartup.enable = true;
       }
     ];
     testscript.requireNestedAccess = true; # do you need access to an nested class object
@@ -315,19 +339,79 @@ let
     '';
   };
 
-
-  # helper
+  # fill in a template udev rule
   mkUsbvfiodUdevRule = controller: port: symlink: ''
     ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{product}=="${controller}" ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
   '';
 
-  mkUsbvfiodQemuBlockdevice = driveId: driveFile: deviceBus: devicePort: [
-    "-drive if=none,id=${driveId},format=raw,file=${driveFile}"
-    "-device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}"
-  ];
-  mkUsbvfiodQemuKeyboard = deviceBus: [
-    "-device usb-kbd,bus=${deviceBus}.0"
-  ];
+  # fill in a template for the qemu.options list with a string that contains device and drive flags for a blcockdevice
+  mkUsbvfiodQemuBlockdevice = driveId: driveFile: deviceBus: devicePort: ''
+    -drive if=none,id=${driveId},format=raw,file=${driveFile} -device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}
+  '';
+  # fill in a template for the qemu.options list with a string that contains device flag for a usb keyboard
+  mkUsbvfiodQemuKeyboard = deviceBus: devicePort: ''
+    -device usb-kbd,bus=${deviceBus}.0,port=${devicePort}
+  '';
+  # TODO deadnix
+  # derive a device string for the qemu.options list from one attrs of the args.virtualDevices list 
+  mkUsbvfiodUsbDeviceAttachAll = element: (
+    if (element.type == "blockdevice" && element.usbVersion == "2")
+    then
+      mkUsbvfiodQemuBlockdevice
+        "ehci-${element.udevRule.symlink}"
+        "${blockDeviceFile}-${element.udevRule.symlink}.img"
+        "ehci"
+        "${builtins.toString element.usbPort}"
+    else if (element.type == "blockdevice" && element.usbVersion == "3")
+    then
+      mkUsbvfiodQemuBlockdevice
+        "xhci-${element.udevRule.symlink}"
+        "${blockDeviceFile}-${element.udevRule.symlink}"
+        "xhci"
+        "${builtins.toString element.usbPort}"
+    else if (element.type == "hid-device" && element.usbVersion == "2")
+    then
+      mkUsbvfiodQemuKeyboard
+        "ehci"
+        "${builtins.toString element.usbPort}"
+    else if (element.type == "hid-device" && element.usbVersion == "3")
+    then
+      mkUsbvfiodQemuKeyboard
+        "xhci"
+        "${builtins.toString element.usbPort}"
+    else ""
+  );
+
+  # decide to create a blockdevice or usb-keyboard
+  mkUsbvfiodUsbDeviceSortType = element: deviceBus:
+    if (element.type == "blockdevice")
+    then
+      mkUsbvfiodQemuBlockdevice
+        "${deviceBus}-${element.udevRule.symlink}"
+        "${blockDeviceFile}-${element.udevRule.symlink}"
+        "${deviceBus}"
+        "${builtins.toString element.usbPort}"
+    else if (element.type == "hid-device")
+    then
+      mkUsbvfiodQemuKeyboard
+        "${deviceBus}"
+        "${builtins.toString element.usbPort}"
+    else ""; # TODO panic
+
+  # decide to pick the bus corresponding with the declared usb version 
+  mkUsbvfiodUsbDeviceSortBus = element:
+    if (element.usbVersion == "2")
+    then mkUsbvfiodUsbDeviceSortType element "ehci"
+    else if (element.usbVersion == "3")
+    then mkUsbvfiodUsbDeviceSortType element "xhci"
+    else ""; # TODO panic
+
+  # respect the attached on boot boolean true->do false->ignore
+  mkUsbvfiodUsbDevice = element:
+    if element.attachedOnStartup.enable
+    then mkUsbvfiodUsbDeviceSortBus element
+    else ""; # device will be handled via QEMU QMP in the testScript
+
 
   # main
   mkUsbvfiodTest =
@@ -336,7 +420,7 @@ let
       xhciProductName = "xHCI Host Controller";
     in
     args: pkgs.testers.runNixOSTest {
-      name = args.name;
+      inherit (args) name;
 
       inherit globalTimeout;
 
@@ -371,26 +455,23 @@ let
           memorySize = 4096;
           qemu.options = [
             # if any usb 3 --> add xhci controller
-            (lib.optionalString (builtins.any (element: element.usbVersion == "3") (args.virtualDevices))
+            (lib.optionalString
+              (builtins.any (element: element.usbVersion == "3") args.virtualDevices)
               "-device qemu-xhci,id=xhci,addr=10"
             )
+
             # if any usb 2 --> add ehci controller
-            (lib.optionalString (builtins.any (element: element.usbVersion == "2") (args.virtualDevices))
+            (lib.optionalString (builtins.any (element: element.usbVersion == "2") args.virtualDevices)
               "-device usb-ehci,id=ehci,addr=11"
             )
 
             # if any device is hid or not attached on start enable QEMU QMP interface
-            (lib.optionalString (builtins.any (element: element.type == "hid-device" || element.attachedOnStartup == false) (args.virtualDevices))
+            (lib.optionalString (builtins.any (element: element.type == "hid-device" || !element.attachedOnStartup.enable) args.virtualDevices)
               "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off -mon chardev=qmp,mode=control,pretty=on"
             )
-
-
-            # handle each device
-            # if attached
-            # add blk or hid on usb bus with port
-
-            # TODO
-          ];
+          ]
+          # handle each list-entry of args.virtualDevices
+          ++ (builtins.map mkUsbvfiodUsbDevice args.virtualDevices);
         };
       };
 
@@ -400,6 +481,8 @@ let
         # TODO prepare blockdevice images if necessary
 
         start_all()
+        machine.wait_for_unit("default.target")
+        machine.execute("lsusb")
         #machine.wait_for_unit("cloud-hypervisor.service")
 
         # Check sshd in systemd.services.cloud-hypervisor is usable prior to testing over ssh.
@@ -412,8 +495,6 @@ let
     };
 in
 {
-  helper = mkUsbvfiodUdevRule "xhci" "001" "test";
-
   function = mkUsbvfiodTest attrs;
 
   blockdevice-usb-3 = make-blockdevice-test "qemu-xhci";
