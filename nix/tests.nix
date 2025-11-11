@@ -305,7 +305,7 @@ let
       {
         type = "blockdevice";
         usbVersion = "3";
-        usbPort = 4;
+        usbPort = "3";
         udevRule.enable = true;
         udevRule.symlink = "tester";
         attachedOnStartup.host.enable = true;
@@ -314,7 +314,7 @@ let
       {
         type = "blockdevice";
         usbVersion = "2";
-        usbPort = 4;
+        usbPort = 2;
         udevRule.enable = true;
         udevRule.symlink = "testonehci";
         attachedOnStartup.host.enable = false;
@@ -334,6 +334,7 @@ let
     testscript.text = ''
       print("custom scripting time")
     '';
+    # TODO wildcard that gets inherited as is?
   };
 
   # fill in a template udev rule
@@ -343,12 +344,10 @@ let
 
   # fill in a template for the qemu.options list with a string that contains device and drive flags for a blcockdevice
   mkUsbvfiodQemuBlockdevice = driveId: driveFile: deviceBus: devicePort: ''
-    -drive if=none,id=${driveId},format=raw,file=${driveFile} -device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}
-  '';
+    -drive if=none,id=${driveId},format=raw,file=${driveFile} -device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}'';
   # fill in a template for the qemu.options list with a string that contains device flag for a usb keyboard
   mkUsbvfiodQemuKeyboard = deviceBus: devicePort: ''
-    -device usb-kbd,bus=${deviceBus}.0,port=${devicePort}
-  '';
+    -device usb-kbd,bus=${deviceBus}.0,port=${devicePort}'';
   # TODO deadnix
   # derive a device string for the qemu.options list from one attrs of the args.virtualDevices list 
   mkUsbvfiodUsbDeviceAttachAll = element: (
@@ -411,19 +410,21 @@ let
     if element.attachedOnStartup.host.enable
     then mkUsbvfiodUsbDeviceSortBus element
     else ""; # device will be handled via QEMU QMP in the testScript
-  
+
   # helper to create a string to make one image file
   mkPrepareOneBlockdeviceImage = device:
     let
       filepath = "${image}-${device.udevRule.symlink}.img";
-    in ''
+    in
+    ''
       os.system("rm ${filepath}")
       print("Creating file image at ${filepath}")
       os.system("dd bs=1  count=1 seek=${blockDeviceSize} if=/dev/zero of=${filepath}")
     '';
-    
+
   # prepare the blockdevixe images given to the qemu -drive options when generating qemu options
-  mkPrepareBlockdeviceImages = device: if device.type == "blockdevice"
+  mkPrepareBlockdeviceImages = device:
+    if device.type == "blockdevice"
     then mkPrepareOneBlockdeviceImage device
     else ""; # hid-devices dont need a backing image
 
@@ -469,46 +470,46 @@ let
         virtualisation = {
           cores = 2;
           memorySize = 4096;
-          qemu.virtioKeyboard = false; # TODO optional or per default? permanently removes stuff...
+          #qemu.virtioKeyboard = false; # TODO optional or per default? permanently removes stuff...
           qemu.options = [
             # if any usb 3 --> add xhci controller
-            (lib.optionalString
-              (builtins.any (element: element.usbVersion == "3") args.virtualDevices)
-              "-device qemu-xhci,id=xhci,addr=10"
+            (if (builtins.any (element: element.usbVersion == "3") args.virtualDevices)
+            then "-device qemu-xhci,id=xhci,addr=10"
+            else ""
             )
 
             # if any usb 2 --> add ehci controller
-            (lib.optionalString (builtins.any (element: element.usbVersion == "2") args.virtualDevices)
-              "-device usb-ehci,id=ehci,addr=11"
-            )           
-          ] ++ 
+            (if (builtins.any (element: element.usbVersion == "2") args.virtualDevices)
+            then "-device usb-ehci,id=ehci,addr=11"
+            else ""
+            )
+          ] ++
           # if any device is hid or not attached on start enable QEMU QMP interface
-          (lib.optionalString (builtins.any (element: element.type == "hid-device" || !element.attachedOnStartup.host.enable) args.virtualDevices)
-            [ "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off" "-mon chardev=qmp,mode=control,pretty=on" ]
+          (if (builtins.any (element: element.type == "hid-device" || !element.attachedOnStartup.host.enable) args.virtualDevices)
+          then [ "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off" "-mon chardev=qmp,mode=control,pretty=on" ]
+          else [ ]
           )
           # handle each list-entry of args.virtualDevices
           ++ (builtins.map mkUsbvfiodUsbDevice args.virtualDevices);
         };
+
+        # TODO systemd service usbvfiod
+        # TODO systemd service cloud-hypervisor
+
       };
 
       testScript = ''
         ${nestedPythonClass}
         import os
 
-        # TODO prepare blockdevice images if necessary
+        # prepare blockdevice images if necessary
         ${lib.concatStringsSep "\n" (builtins.map mkPrepareBlockdeviceImages args.virtualDevices)}
 
-        print(">>>CHECKPOINT<<< ALL IMAGE FILES CREATED")
-        
         start_all()
-
-        print(">>>CHECKPOINT<<< STARTED ALL")
         
         machine.wait_for_unit("default.target")
-        
-        print(">>>CHECKPOINT<<< HIT DEFAULT TARGET")
 
-        #machine.execute("lsusb")
+        machine.execute("lsusb")
         
         #machine.wait_for_unit("cloud-hypervisor.service")
 
@@ -517,7 +518,7 @@ let
 
         # cloud_hypervisor = Nested(vm_host=machine)
 
-        #${args.testscript.text}
+        ${args.testscript.text}
       '';
     };
 in
