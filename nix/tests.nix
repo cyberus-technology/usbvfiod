@@ -289,6 +289,7 @@ let
   };
 
   # model generic function arg usage
+  # TODO make a fn to set defaults?
   attrs = {
     name = "myName";
     virtualDevices = [
@@ -298,7 +299,8 @@ let
         usbPort = "4";
         udevRule.enable = true;
         udevRule.symlink = "teststorage";
-        attachedOnStartup.enable = true;
+        attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
+        attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
       }
       {
         type = "blockdevice";
@@ -306,7 +308,8 @@ let
         usbPort = 4;
         udevRule.enable = true;
         udevRule.symlink = "tester";
-        attachedOnStartup.enable = true;
+        attachedOnStartup.host.enable = true;
+        attachedOnStartup.guest.enable = true;
       }
       {
         type = "blockdevice";
@@ -314,15 +317,8 @@ let
         usbPort = 4;
         udevRule.enable = true;
         udevRule.symlink = "testonehci";
-        attachedOnStartup.enable = false;
-      }
-      {
-        type = "hid-device";
-        usbVersion = "2";
-        usbPort = 3;
-        udevRule.enable = true;
-        udevRule.symlink = "testkeyboard";
-        attachedOnStartup.enable = true;
+        attachedOnStartup.host.enable = false;
+        attachedOnStartup.guest.enable = false; # TODO assert if false host then need false guest
       }
       {
         type = "hid-device";
@@ -330,12 +326,13 @@ let
         usbPort = "3";
         udevRule.enable = true;
         udevRule.symlink = "testkeyboard";
-        attachedOnStartup.enable = true;
+        attachedOnStartup.host.enable = true;
+        attachedOnStartup.guest.enable = true;
       }
     ];
     testscript.requireNestedAccess = true; # do you need access to an nested class object
     testscript.text = ''
-      cloud_hypervisor.succeed("whoami");
+      print("custom scripting time")
     '';
   };
 
@@ -382,13 +379,16 @@ let
     else ""
   );
 
+  # TODO ref to existing blockdevice file path
+  image = "/tmp/image";
+
   # decide to create a blockdevice or usb-keyboard
   mkUsbvfiodUsbDeviceSortType = element: deviceBus:
     if (element.type == "blockdevice")
     then
       mkUsbvfiodQemuBlockdevice
         "${deviceBus}-${element.udevRule.symlink}"
-        "${blockDeviceFile}-${element.udevRule.symlink}"
+        "${image}-${element.udevRule.symlink}.img"
         "${deviceBus}"
         "${builtins.toString element.usbPort}"
     else if (element.type == "hid-device")
@@ -408,12 +408,28 @@ let
 
   # respect the attached on boot boolean true->do false->ignore
   mkUsbvfiodUsbDevice = element:
-    if element.attachedOnStartup.enable
+    if element.attachedOnStartup.host.enable
     then mkUsbvfiodUsbDeviceSortBus element
     else ""; # device will be handled via QEMU QMP in the testScript
+  
+  # helper to create a string to make one image file
+  mkPrepareOneBlockdeviceImage = device:
+    let
+      filepath = "${image}-${device.udevRule.symlink}.img";
+    in ''
+      os.system("rm ${filepath}")
+      print("Creating file image at ${filepath}")
+      os.system("dd bs=1  count=1 seek=${blockDeviceSize} if=/dev/zero of=${filepath}")
+    '';
+    
+  # prepare the blockdevixe images given to the qemu -drive options when generating qemu options
+  mkPrepareBlockdeviceImages = device: if device.type == "blockdevice"
+    then mkPrepareOneBlockdeviceImage device
+    else ""; # hid-devices dont need a backing image
 
-
-  # main
+  # ######
+  # MAIN
+  # ######
   mkUsbvfiodTest =
     let
       ehciProductName = "EHCI Host Controller";
@@ -422,10 +438,10 @@ let
     args: pkgs.testers.runNixOSTest {
       inherit (args) name;
 
-      inherit globalTimeout;
+      inherit globalTimeout passthru;
 
       nodes.machine = _: {
-        imports = [ testMachineConfig.basicMachineConfig testMachineConfig.systemdServices ];
+        imports = [ testMachineConfig.basicMachineConfig ];
 
         services.udev.extraRules =
           lib.concatStrings (
@@ -453,6 +469,7 @@ let
         virtualisation = {
           cores = 2;
           memorySize = 4096;
+          qemu.virtioKeyboard = false; # TODO optional or per default? permanently removes stuff...
           qemu.options = [
             # if any usb 3 --> add xhci controller
             (lib.optionalString
@@ -463,13 +480,12 @@ let
             # if any usb 2 --> add ehci controller
             (lib.optionalString (builtins.any (element: element.usbVersion == "2") args.virtualDevices)
               "-device usb-ehci,id=ehci,addr=11"
-            )
-
-            # if any device is hid or not attached on start enable QEMU QMP interface
-            (lib.optionalString (builtins.any (element: element.type == "hid-device" || !element.attachedOnStartup.enable) args.virtualDevices)
-              "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off -mon chardev=qmp,mode=control,pretty=on"
-            )
-          ]
+            )           
+          ] ++ 
+          # if any device is hid or not attached on start enable QEMU QMP interface
+          (lib.optionalString (builtins.any (element: element.type == "hid-device" || !element.attachedOnStartup.host.enable) args.virtualDevices)
+            [ "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off" "-mon chardev=qmp,mode=control,pretty=on" ]
+          )
           # handle each list-entry of args.virtualDevices
           ++ (builtins.map mkUsbvfiodUsbDevice args.virtualDevices);
         };
@@ -477,18 +493,29 @@ let
 
       testScript = ''
         ${nestedPythonClass}
+        import os
 
         # TODO prepare blockdevice images if necessary
+        ${lib.concatStringsSep "\n" (builtins.map mkPrepareBlockdeviceImages args.virtualDevices)}
 
+        print(">>>CHECKPOINT<<< ALL IMAGE FILES CREATED")
+        
         start_all()
+
+        print(">>>CHECKPOINT<<< STARTED ALL")
+        
         machine.wait_for_unit("default.target")
-        machine.execute("lsusb")
+        
+        print(">>>CHECKPOINT<<< HIT DEFAULT TARGET")
+
+        #machine.execute("lsusb")
+        
         #machine.wait_for_unit("cloud-hypervisor.service")
 
         # Check sshd in systemd.services.cloud-hypervisor is usable prior to testing over ssh.
-        #machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
+        # machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
 
-        #cloud_hypervisor = Nested(vm_host=machine)
+        # cloud_hypervisor = Nested(vm_host=machine)
 
         #${args.testscript.text}
       '';
