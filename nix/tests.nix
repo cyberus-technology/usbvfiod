@@ -430,7 +430,7 @@ let
               User = "usbaccess";
               Group = "usbaccess";
               ExecStart = ''
-                ${lib.getExe usbvfiod} -v --socket-path ${usbvfiodSocket} ${lib.concatStringsSep " " (builtins.map mkUsbvfiodDeviceFlag args.virtualDevices)}
+                ${lib.getExe usbvfiod} ${if args.debug then "-v" else ""} --socket-path ${usbvfiodSocket} ${lib.concatStringsSep " " (builtins.map mkUsbvfiodDeviceFlag args.virtualDevices)}
               '';
             };
           };
@@ -700,9 +700,10 @@ in
   # use with the function generated tests
   # #####
 
+  # TMP NOTE: example
   function = mkUsbvfiodTest {
-    name = "myName";
-    # TODO implement a debug bool
+    name = "testing the function";
+    debug = false; # add verbose flag to usbvfiod
     virtualDevices = [
       {
         type = "blockdevice";
@@ -748,7 +749,8 @@ in
   };
 
   blockdevice-usb-3-generated = mkUsbvfiodTest {
-    name = "blockdevice-usb-3-fn";
+    name = "blockdevice-usb-3-generated";
+    debug = true;
     virtualDevices = [
       {
         type = "blockdevice";
@@ -756,8 +758,8 @@ in
         usbPort = 4;
         udevRule.enable = true;
         udevRule.symlink = "teststorage";
-        attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
-        attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
+        attachedOnStartup.host.enable = true;
+        attachedOnStartup.guest.enable = true;
       }
     ];
     testscript.text = ''
@@ -789,7 +791,8 @@ in
   };
 
   blockdevice-usb-2-generated = mkUsbvfiodTest {
-    name = "blockdevice-usb-2-fn";
+    name = "blockdevice-usb-2-generated";
+    debug = true;
     virtualDevices = [
       {
         type = "blockdevice";
@@ -831,6 +834,7 @@ in
 
   interrupt-endpoints-generated = mkUsbvfiodTest {
     name = "interrupt-endpoints-generated";
+    debug = true;
     virtualDevices = [
       {
         type = "hid-device";
@@ -881,6 +885,7 @@ in
 
   multiple-blockdevices-generated = mkUsbvfiodTest {
     name = "multiple-blockdevices-generated";
+    debug = true;
     virtualDevices = [
       {
         type = "blockdevice";
