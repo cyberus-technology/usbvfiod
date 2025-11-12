@@ -288,74 +288,27 @@ let
     '';
   };
 
-  # model generic function arg usage
-  # TODO make a fn/constructor to set defaults?
-  attrs = {
-    name = "myName";
-    # TODO implement a debug bool
-    virtualDevices = [
-      {
-        type = "blockdevice";
-        usbVersion = "3";
-        usbPort = "4";
-        udevRule.enable = true;
-        udevRule.symlink = "teststorage";
-        attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
-        attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
-      }
-      {
-        type = "blockdevice";
-        usbVersion = "3";
-        usbPort = "3";
-        udevRule.enable = true;
-        udevRule.symlink = "tester";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
-      }
-      {
-        type = "blockdevice";
-        usbVersion = "2";
-        usbPort = 2;
-        udevRule.enable = true;
-        udevRule.symlink = "testonehci";
-        attachedOnStartup.host.enable = false;
-        attachedOnStartup.guest.enable = false; # TODO assert if false host then need false guest
-      }
-      {
-        type = "hid-device";
-        usbVersion = "2";
-        usbPort = "3";
-        udevRule.enable = true;
-        udevRule.symlink = "testkeyboard";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
-      }
-    ];
-    testscript.requireNestedAccess = true; # do you need access to an nested class object
-    testscript.text = ''
-      print("custom scripting time")
-    '';
-    # TODO wildcard that gets inherited as is?
-  };
+  # TMP NOTE: BEGIN FUNCTION STUFF
 
-  # TODO ref to existing blockdevice file path
+  # Some static values.
   image = "/tmp/image";
-  hid-vendorId = "0627";
-  hid-productId = "0001";
+  blockdeviceVendorId = "46f4";
+  blockdeviceProductId = "0001";
+  hidVendorId = "0627";
+  hidProductId = "0001";
 
-  # fill in a template udev rule
+  # Fill in a template for a udev rule.
   mkUsbvfiodUdevRule = controller: port: symlink: ''
     ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{product}=="${controller}" ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
   '';
 
-  # fill in a template for the qemu.options list with a string that contains device and drive flags for a blcockdevice
-  mkUsbvfiodQemuBlockdevice = driveId: driveFile: deviceBus: devicePort: ''
-    -drive if=none,id=${driveId},format=raw,file=${driveFile} -device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}'';
-  # fill in a template for the qemu.options list with a string that contains device flag for a usb keyboard
-  mkUsbvfiodQemuKeyboard = deviceBus: devicePort: ''
-    -device usb-kbd,bus=${deviceBus}.0,port=${devicePort}'';
+  # Fill in a template for the qemu.options list for a blockdevice.
+  mkUsbvfiodQemuBlockdevice = driveId: driveFile: deviceBus: devicePort: ''-drive if=none,id=${driveId},format=raw,file=${driveFile} -device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}'';
 
-  # decide to create a blockdevice or usb-keyboard
+  # Fill in a template for the qemu.options list for a USB keyboard.
+  mkUsbvfiodQemuKeyboard = deviceBus: devicePort: ''-device usb-kbd,bus=${deviceBus}.0,port=${devicePort}'';
+
+  # Create a blockdevice or USB keyboard.
   mkUsbvfiodUsbDeviceSortType = element: deviceBus:
     if (element.type == "blockdevice")
     then
@@ -371,7 +324,7 @@ let
         "${builtins.toString element.usbPort}"
     else ""; # TODO panic
 
-  # decide to pick the bus corresponding with the declared usb version 
+  # Pick the QEMU bus-id corresponding with the declared usb version to create the QEMU device option.
   mkUsbvfiodUsbDeviceSortBus = element:
     if (element.usbVersion == "2")
     then mkUsbvfiodUsbDeviceSortType element "ehci"
@@ -379,13 +332,13 @@ let
     then mkUsbvfiodUsbDeviceSortType element "xhci"
     else ""; # TODO panic
 
-  # respect the attached on boot boolean true->do false->ignore
+  # Respect if attached at host on boot option is true to create the QEMU device option.
   mkUsbvfiodUsbDevice = element:
     if element.attachedOnStartup.host.enable
     then mkUsbvfiodUsbDeviceSortBus element
-    else ""; # device will be handled via QEMU QMP in the testScript
+    else ""; # Device should be handled via QEMU QMP in the testScript.
 
-  # helper to create a string to make one image file
+  # Create a testScript snippet to make a clean blockdevice image file.
   mkPrepareOneBlockdeviceImage = device:
     let
       filepath = "${image}-${device.udevRule.symlink}.img";
@@ -396,22 +349,19 @@ let
       os.system("dd bs=1  count=1 seek=${blockDeviceSize} if=/dev/zero of=${filepath}")
     '';
 
-  # prepare the blockdevixe images given to the qemu -drive options when generating qemu options
+  # Decide if a virtual device needs a backing image file.
   mkPrepareBlockdeviceImages = device:
-    if device.type == "blockdevice"
+    if device.type == "blockdevice" # for now only blockdevices need a backing file
     then mkPrepareOneBlockdeviceImage device
-    else ""; # hid-devices dont need a backing image
+    else "";
 
-  # generate usbvfiod argument flags to hand over devices by their generated symlinks
+  # Generate usbvfiod argument flags to hand over the device through their udev generated symlink.
   mkUsbvfiodDeviceFlag = device:
-    if device.attachedOnStartup.host.enable
+    if device.attachedOnStartup.guest.enable
     then ''--device "/dev/bus/usb/${device.udevRule.symlink}"'' ## TODO assert if udevrule false || symlink missing
-    else ""; # don't need a flag
+    else "";
 
-
-  # ######
   # MAIN
-  # ######
   mkUsbvfiodTest =
     let
       ehciProductName = "EHCI Host Controller";
@@ -451,25 +401,25 @@ let
         virtualisation = {
           cores = 2;
           memorySize = 4096;
-          qemu.virtioKeyboard = false; # TODO optional or per default? permanently removes stuff...
+          qemu.virtioKeyboard = false; # TODO optional or per default? permanently removes stuff and we should have never used it anyways...probably
           qemu.options = [
-            # if any usb 3 --> add xhci controller
+            # If any USB 3 device is added, add the xhci controller.
             (if (builtins.any (element: element.usbVersion == "3") args.virtualDevices)
             then "-device qemu-xhci,id=xhci,addr=10"
             else ""
             )
-            # if any usb 2 --> add ehci controller
+            # If any USB 2 device is added, add the ehci controller.
             (if (builtins.any (element: element.usbVersion == "2") args.virtualDevices)
             then "-device usb-ehci,id=ehci,addr=11"
             else ""
             )
           ] ++
-          # if any device is hid or not attached to host on start enable QEMU QMP interface
+          # If any device is (1) HID (needs to send QMP events) or (2) not attached to host on startup, enable the QEMU QMP interface.
           (if (builtins.any (element: element.type == "hid-device" || !element.attachedOnStartup.host.enable) args.virtualDevices)
           then [ "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off" "-mon chardev=qmp,mode=control,pretty=on" ]
           else [ ]
           )
-          # handle each list-entry of args.virtualDevices
+          # Handle each entry of the args.virtualDevices list.
           ++ (builtins.map mkUsbvfiodUsbDevice args.virtualDevices);
         };
 
@@ -503,7 +453,6 @@ let
             };
           };
         };
-
       };
 
       testScript = ''
@@ -525,6 +474,8 @@ let
         ${args.testscript.text}
       '';
     };
+
+  # TMP NOTE: END FUNCTION STUFF
 in
 {
   blockdevice-usb-3 = make-blockdevice-test "qemu-xhci";
@@ -749,7 +700,52 @@ in
   # use with the function generated tests
   # #####
 
-  function = mkUsbvfiodTest attrs;
+  function = mkUsbvfiodTest {
+    name = "myName";
+    # TODO implement a debug bool
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = "4";
+        udevRule.enable = true;
+        udevRule.symlink = "teststorage";
+        attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
+        attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = "3";
+        udevRule.enable = true;
+        udevRule.symlink = "tester";
+        attachedOnStartup.host.enable = true;
+        attachedOnStartup.guest.enable = true;
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "2";
+        usbPort = 2;
+        udevRule.enable = true;
+        udevRule.symlink = "testonehci";
+        attachedOnStartup.host.enable = false;
+        attachedOnStartup.guest.enable = false; # TODO assert if false host then need false guest
+      }
+      {
+        type = "hid-device";
+        usbVersion = "2";
+        usbPort = "3";
+        udevRule.enable = true;
+        udevRule.symlink = "testkeyboard";
+        attachedOnStartup.host.enable = true;
+        attachedOnStartup.guest.enable = true;
+      }
+    ];
+    testscript.text = ''
+      print("custom scripting time")
+    '';
+    # TODO wildcard that gets inherited as is?
+  };
 
   blockdevice-usb-3-generated = mkUsbvfiodTest {
     name = "blockdevice-usb-3-fn";
@@ -764,7 +760,6 @@ in
         attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
       }
     ];
-    testscript.requireNestedAccess = true; # do you need access to an nested class object
     testscript.text = ''
       # Confirm USB controller pops up in boot logs
       out = cloud_hypervisor.succeed("journalctl -b")
@@ -775,7 +770,7 @@ in
       out = cloud_hypervisor.succeed("cat /proc/interrupts")
       search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
       out = cloud_hypervisor.succeed("lsusb")
-      search("ID ${vendorId}:${productId} QEMU QEMU USB HARDDRIVE", out)
+      search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
       out = cloud_hypervisor.succeed("sfdisk -l")
       search("Disk /dev/sda:", out)
       
@@ -802,11 +797,10 @@ in
         usbPort = 4;
         udevRule.enable = true;
         udevRule.symlink = "teststorage";
-        attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
-        attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
+        attachedOnStartup.host.enable = true;
+        attachedOnStartup.guest.enable = true;
       }
     ];
-    testscript.requireNestedAccess = true; # do you need access to an nested class object
     testscript.text = ''
       # Confirm USB controller pops up in boot logs
       out = cloud_hypervisor.succeed("journalctl -b")
@@ -817,7 +811,7 @@ in
       out = cloud_hypervisor.succeed("cat /proc/interrupts")
       search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
       out = cloud_hypervisor.succeed("lsusb")
-      search("ID ${vendorId}:${productId} QEMU QEMU USB HARDDRIVE", out)
+      search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
       out = cloud_hypervisor.succeed("sfdisk -l")
       search("Disk /dev/sda:", out)
       
@@ -835,7 +829,6 @@ in
     '';
   };
 
-
   interrupt-endpoints-generated = mkUsbvfiodTest {
     name = "interrupt-endpoints-generated";
     virtualDevices = [
@@ -845,11 +838,10 @@ in
         usbPort = 1; # TODO this changes the /dev/input/by-id path used in the script to listen for events
         udevRule.enable = true;
         udevRule.symlink = "keyboard";
-        attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
-        attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
+        attachedOnStartup.host.enable = true;
+        attachedOnStartup.guest.enable = true;
       }
     ];
-    testscript.requireNestedAccess = true; # do you need access to an nested class object
     testscript.text = ''
       import time
       import threading
@@ -865,7 +857,7 @@ in
           print(f"input loop `{i}` done")
 
       # Check the Keyboard is in detected in the guest.
-      cloud_hypervisor.succeed("lsusb -d ${hid-vendorId}:${hid-productId}")
+      cloud_hypervisor.succeed("lsusb -d ${hidVendorId}:${hidProductId}")
 
       # Generate inputs in the background.
       t1 = threading.Thread(target=create_input)
@@ -886,6 +878,7 @@ in
       t1.join()
     '';
   };
+
   multiple-blockdevices-generated = mkUsbvfiodTest {
     name = "multiple-blockdevices-generated";
     virtualDevices = [
@@ -895,8 +888,8 @@ in
         usbPort = 1;
         udevRule.enable = true;
         udevRule.symlink = "teststorage";
-        attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
-        attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
+        attachedOnStartup.host.enable = true;
+        attachedOnStartup.guest.enable = true;
       }
       {
         type = "blockdevice";
@@ -962,7 +955,6 @@ in
         attachedOnStartup.guest.enable = true;
       }
     ];
-    testscript.requireNestedAccess = true; # do you need access to an nested class object
     testscript.text = ''
       out = cloud_hypervisor.succeed("lsusb --tree")
       search("Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
