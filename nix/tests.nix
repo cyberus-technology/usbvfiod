@@ -1,4 +1,6 @@
-# This file contains integration tests for usbvfiod.
+/**
+  This file contains integration tests for usbvfiod.
+*/
 { lib, pkgs, usbvfiod }:
 let
   # For the VM that we start in Cloud Hypervisor, we re-use the netboot image.
@@ -370,7 +372,86 @@ let
     then ''--device "/dev/bus/usb/${device.udevRule.symlink}"''
     else "";
 
-  # MAIN
+
+  /**
+    Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
+    The Functions purpose is to remove dupicated lines, make comparing tests easier and write new tests with less boilerplate.
+
+    # Inputs
+
+    `args`
+    
+    : 1\. Function argument
+
+    # Type
+
+    ```
+    mkUsbvfiodTest :: {
+      name :: String
+      debug :: Bool
+      virtualDevices :: [
+        {
+        type :: "blockdevice" || "hid-device"
+        usbVersion :: "2" || "3"
+        usbPort :: Integer
+        udevRule.enable :: Bool
+        udevRule.symlink :: String
+        attachedOnStartup :: "host" || "guest" || "none"
+        }
+      ]
+      testScript :: String
+    } -> a
+    ```
+
+    # Examples
+    :::{.example}
+    ## `mkUsbvfiodTest` usage example
+
+    ```nix
+    myTest = mkUsbvfiodTest {
+      name = "foo";
+      debug = true;
+      virtualDevices = [
+        {
+          type = "blockdevice";
+          usbVersion = "2";
+          usbPort = 1;
+          udevRule.enable = true;
+          udevRule.symlink = "teststorage";
+          attachedOnStartup.host.enable = true;
+          attachedOnStartup.guest.enable = true;
+        }
+      ];
+      testScript = ''
+        # Confirm USB controller pops up in boot logs
+        out = cloud_hypervisor.succeed("journalctl -b")
+        search("usb usb1: Product: xHCI Host Controller", out)
+        search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
+
+        # Confirm some diagnostic information
+        out = cloud_hypervisor.succeed("cat /proc/interrupts")
+        search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
+        out = cloud_hypervisor.succeed("lsusb")
+        search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
+        out = cloud_hypervisor.succeed("sfdisk -l")
+        search("Disk /dev/sda:", out)
+        
+        # Test partitioning
+        cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda")
+        
+        # Test filesystem
+        cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1")
+        cloud_hypervisor.succeed("mount /dev/sda1 /mnt")
+        cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt")
+        cloud_hypervisor.succeed("umount /mnt")
+        cloud_hypervisor.succeed("mount /dev/sda1 /mnt")
+        out = cloud_hypervisor.succeed("cat /mnt/file.txt")
+        search("123TEST123", out)
+      '';
+    };
+    ```
+
+  */
   mkUsbvfiodTest =
     let
       ehciProductName = "EHCI Host Controller";
