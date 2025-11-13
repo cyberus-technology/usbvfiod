@@ -1,3 +1,5 @@
+[![Hercules CI](https://hercules-ci.com/api/v1/site/github/account/cyberus-technology/project/usbvfiod/badge)](https://hercules-ci.com/github/cyberus-technology/usbvfiod/status)
+
 # usbvfiod
 
 **usbvfiod** is a Rust-based tool designed to enable USB device
@@ -12,14 +14,18 @@ project in the following order:
 
 1. **Validating our Assumptions** (Done)
    - We are looking for suitable libraries to use and finalize our design.
-2. **Towards USB Storage Passthrough** (Done)
+1. **Towards USB Storage Passthrough** (Done)
    - We build up a virtual XHCI controller and the necessary plumbing
      to pass-through USB devices from the host.
    - Our initial test target will be USB storage devices.
-3. **Broaden Device Support** (🚧 **Ongoing** 🚧)
+1. **Broaden Device Support** (Done)
    - We broaden the set of USB devices we support and actively test.
    - Our current focus is enabling USB-2 devices and devices with interrupt
      endpoints.
+1. **Hotplug Devices** (🚧 **Ongoing** 🚧)
+   - We enable attach and detach of exposed devices during runtime.
+1. **Everything Beyond**
+   - Many topics remain open. We stay flexible regarding upcoming features.
 
 If you want to use this code, please check back later or [get in
 touch](https://cyberus-technology.de/en/contact), if you need
