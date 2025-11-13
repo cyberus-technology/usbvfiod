@@ -409,22 +409,16 @@ let
           # We only really need to set this for interrupt endpoints, but since it removes stuff we use it for every other test too.
           qemu.virtioKeyboard = false;
           qemu.options = [
-            # If any USB 3 device is added, add the xhci controller.
-            (if (builtins.any (element: element.usbVersion == "3") args.virtualDevices)
-            then "-device qemu-xhci,id=xhci,addr=10"
-            else ""
-            )
-            # If any USB 2 device is added, add the ehci controller.
-            (if (builtins.any (element: element.usbVersion == "2") args.virtualDevices)
-            then "-device usb-ehci,id=ehci,addr=11"
-            else ""
-            )
-          ] ++
-          # If any device is (1) HID (needs to send QMP events) or (2) not attached to host on startup, enable the QEMU QMP interface.
-          (if (builtins.any (element: element.type == "hid-device" || !element.attachedOnStartup.host.enable) args.virtualDevices)
-          then [ "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off" "-mon chardev=qmp,mode=control,pretty=on" ]
-          else [ ]
-          )
+            # Add the xhci controller to use USB 3.0.
+            "-device qemu-xhci,id=xhci,addr=10"
+
+            # Add the ehci controller to use USB 2.0.
+            "-device usb-ehci,id=ehci,addr=11"
+
+            # Enable the QEMU QMP interface to trigger HID events or plug blockdevices at runtime.
+            "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
+            "-mon chardev=qmp,mode=control,pretty=on"
+          ]
           # Handle each entry of the args.virtualDevices list.
           ++ (builtins.map mkUsbvfiodUsbDevice args.virtualDevices);
         };
