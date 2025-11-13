@@ -310,7 +310,9 @@ let
 
   # Create a blockdevice or USB keyboard.
   mkUsbvfiodUsbDeviceSortType = element: deviceBus:
-    if (element.type == "blockdevice")
+    if (!element.udevRule.enable || element.udevRule.symlink == "")
+    then abort "udevRule is necessary to attach create qemu device before/on startup"
+    else if (element.type == "blockdevice")
     then
       mkUsbvfiodQemuBlockdevice
         "${deviceBus}-${element.udevRule.symlink}"
@@ -322,7 +324,7 @@ let
       mkUsbvfiodQemuKeyboard
         "${deviceBus}"
         "${builtins.toString element.usbPort}"
-    else ""; # TODO panic
+    else builtins.abort ''wrong device type; types supported are "blockdevice" and "hid-device"''; # TODO panic
 
   # Pick the QEMU bus-id corresponding with the declared usb version to create the QEMU device option.
   mkUsbvfiodUsbDeviceSortBus = element:
@@ -330,7 +332,7 @@ let
     then mkUsbvfiodUsbDeviceSortType element "ehci"
     else if (element.usbVersion == "3")
     then mkUsbvfiodUsbDeviceSortType element "xhci"
-    else ""; # TODO panic
+    else builtins.abort "only USB versions 2 using an ehci and 3 using a xhci controller are available";
 
   # Respect if attached at host on boot option is true to create the QEMU device option.
   mkUsbvfiodUsbDevice = element:
@@ -357,8 +359,10 @@ let
 
   # Generate usbvfiod argument flags to hand over the device through their udev generated symlink.
   mkUsbvfiodDeviceFlag = device:
-    if device.attachedOnStartup.guest.enable
-    then ''--device "/dev/bus/usb/${device.udevRule.symlink}"'' ## TODO assert if udevrule false || symlink missing
+    if device.attachedOnStartup.guest.enable && (!device.udevRule.enable || device.udevRule.symlink == "")
+    then abort "udevRule is necessary to attach device before startup of usbvfiod"
+    else if device.attachedOnStartup.guest.enable
+    then ''--device "/dev/bus/usb/${device.udevRule.symlink}"''
     else "";
 
   # MAIN
@@ -375,24 +379,25 @@ let
       nodes.machine = _: {
         imports = [ testMachineConfig.basicMachineConfig ];
 
+        # Create a udev rule for every device listed that enables it.
         services.udev.extraRules =
           lib.concatStrings (
-            # for each elem in args.virtualdevices
             builtins.map
               (element:
-                # if enabled add a udev rule
                 if element.udevRule.enable then
-                # to create a symlink
                   let
                     controller =
                       if (element.usbVersion == "2") then "${ehciProductName}"
-                      else if (element.usbVersion == "3") then "${xhciProductName}" else null;
+                      else if (element.usbVersion == "3") then "${xhciProductName}"
+                      else builtins.abort "only USB versions 2 using an ehci and 3 using a xhci controller are available";
+                    usbPort = builtins.toString element.usbPort;
                   in
-                  # TODO assert for missing args
-                    # make a udev rule string
-                  ''
-                    ${mkUsbvfiodUdevRule controller (builtins.toString element.usbPort) element.udevRule.symlink}
-                  ''
+                  if (usbPort == "" || element.udevRule.symlink == "")
+                  then abort "A udev rules requires to set a usbPort and a symlink string"
+                  else
+                    ''
+                      ${mkUsbvfiodUdevRule controller usbPort element.udevRule.symlink}
+                    ''
                 else ""
               )
               args.virtualDevices)
@@ -401,7 +406,8 @@ let
         virtualisation = {
           cores = 2;
           memorySize = 4096;
-          qemu.virtioKeyboard = false; # TODO optional or per default? permanently removes stuff and we should have never used it anyways...probably
+          # We only really need to set this for interrupt endpoints, but since it removes stuff we use it for every other test too.
+          qemu.virtioKeyboard = false;
           qemu.options = [
             # If any USB 3 device is added, add the xhci controller.
             (if (builtins.any (element: element.usbVersion == "3") args.virtualDevices)
@@ -471,7 +477,7 @@ let
 
         cloud_hypervisor = Nested(vm_host=machine)
 
-        ${args.testscript.text}
+        ${args.testScript}
       '';
     };
 
@@ -708,9 +714,9 @@ in
       {
         type = "blockdevice";
         usbVersion = "3";
-        usbPort = "4";
+        usbPort = 4;
         udevRule.enable = true;
-        udevRule.symlink = "teststorage";
+        udevRule.symlink = "3";
         attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
         attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
       }
@@ -742,7 +748,7 @@ in
         attachedOnStartup.guest.enable = true;
       }
     ];
-    testscript.text = ''
+    testScript = ''
       print("custom scripting time")
     '';
     # TODO wildcard that gets inherited as is?
@@ -762,7 +768,7 @@ in
         attachedOnStartup.guest.enable = true;
       }
     ];
-    testscript.text = ''
+    testScript = ''
       # Confirm USB controller pops up in boot logs
       out = cloud_hypervisor.succeed("journalctl -b")
       search("usb usb1: Product: xHCI Host Controller", out)
@@ -804,7 +810,7 @@ in
         attachedOnStartup.guest.enable = true;
       }
     ];
-    testscript.text = ''
+    testScript = ''
       # Confirm USB controller pops up in boot logs
       out = cloud_hypervisor.succeed("journalctl -b")
       search("usb usb1: Product: xHCI Host Controller", out)
@@ -846,7 +852,7 @@ in
         attachedOnStartup.guest.enable = true;
       }
     ];
-    testscript.text = ''
+    testScript = ''
       import time
       import threading
       
@@ -960,7 +966,7 @@ in
         attachedOnStartup.guest.enable = true;
       }
     ];
-    testscript.text = ''
+    testScript = ''
       out = cloud_hypervisor.succeed("lsusb --tree")
       search("Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
       search("Port 002: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
