@@ -1,8 +1,10 @@
-# This file contains integration tests for usbvfiod.
+/**
+  This file contains integration tests for usbvfiod.
+*/
 { lib, pkgs, usbvfiod }:
 let
   # For the VM that we start in Cloud Hypervisor, we re-use the netboot image.
-  netbootNixos = lib.nixosSystem {
+  netbootNixos = debug: lib.nixosSystem {
     inherit (pkgs) system;
 
     modules = [
@@ -12,17 +14,18 @@ let
       ({ config, ... }: {
 
         boot.kernelParams = [
-          # Enable dyndbg messages for the XHCI driver.
-          "xhci_pci.dyndbg==pmfl"
-          "xhci_hcd.dyndbg==pmfl"
-
           # currently we can not handle the automatic suspend that is triggered so we disable dynamic power management
           # https://github.com/torvalds/linux/blob/master/Documentation/driver-api/usb/power-management.rst
           "usbcore.autosuspend=-1"
-        ];
+        ] ++ (if debug then [
+          # Enable dyndbg messages for the XHCI driver.
+          "xhci_pci.dyndbg==pmfl"
+          "xhci_hcd.dyndbg==pmfl"
+        ]
+        else [ ]);
 
         # Enable debug verbosity.
-        boot.consoleLogLevel = 8;
+        boot.consoleLogLevel = lib.mkIf debug 8;
 
         # Convenience packages for interactive use
         environment.systemPackages = with pkgs; [ pciutils usbutils ];
@@ -61,9 +64,9 @@ let
     ];
   };
 
-  netboot =
+  mkNetboot = debug:
     let
-      inherit (netbootNixos) config;
+      inherit (netbootNixos debug) config;
 
       kernelTarget = pkgs.stdenv.hostPlatform.linux-kernel.target;
     in
@@ -128,24 +131,28 @@ let
           };
         };
 
-        cloud-hypervisor = {
-          wantedBy = [ "multi-user.target" ];
-          requires = [ "usbvfiod.service" ];
-          after = [ "usbvfiod.service" ];
+        cloud-hypervisor =
+          let
+            netboot = mkNetboot true;
+          in
+          {
+            wantedBy = [ "multi-user.target" ];
+            requires = [ "usbvfiod.service" ];
+            after = [ "usbvfiod.service" ];
 
-          serviceConfig = {
-            Restart = "on-failure";
-            RestartSec = "2s";
-            ExecStart = ''
-              ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
-                --kernel ${netboot.kernel} \
-                --cmdline ${lib.escapeShellArg netboot.cmdline} \
-                --initramfs ${netboot.initrd} \
-                --user-device socket=${usbvfiodSocket} \
-                --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
-            '';
+            serviceConfig = {
+              Restart = "on-failure";
+              RestartSec = "2s";
+              ExecStart = ''
+                ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
+                  --kernel ${netboot.kernel} \
+                  --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                  --initramfs ${netboot.initrd} \
+                  --user-device socket=${usbvfiodSocket} \
+                  --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+              '';
+            };
           };
-        };
       };
     };
   };
@@ -226,7 +233,7 @@ let
       imports = [ testMachineConfig.basicMachineConfig testMachineConfig.systemdServices ];
 
       services.udev.extraRules = ''
-        ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="${vendorId}", ATTRS{idProduct}=="${productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/testdevice"
+        ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{idVendor}=="${vendorId}", ATTRS{idProduct}=="${productId}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/testdevice"
       '';
 
       virtualisation = {
@@ -287,6 +294,309 @@ let
       search("123TEST123", out)
     '';
   };
+
+  # TMP NOTE: BEGIN FUNCTION STUFF
+
+  # Some static values.
+  image = "/tmp/image";
+  blockdeviceVendorId = "46f4";
+  blockdeviceProductId = "0001";
+  hidVendorId = "0627";
+  hidProductId = "0001";
+
+  # Fill in a template for a udev rule.
+  mkUdevRule = controller: port: symlink: ''
+    ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{product}=="${controller}" ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
+  '';
+
+  # Fill in a template for the qemu.options list for a blockdevice.
+  mkQemuBlockdevice = driveId: driveFile: deviceBus: devicePort: ''-drive if=none,id=${driveId},format=raw,file=${driveFile} -device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}'';
+
+  # Fill in a template for the qemu.options list for a USB keyboard.
+  mkQemuKeyboard = deviceBus: devicePort: ''-device usb-kbd,bus=${deviceBus}.0,port=${devicePort}'';
+
+  # Create a blockdevice or USB keyboard.
+  mkUsbDeviceSortType = element: deviceBus:
+    if (!element.udevRule.enable || element.udevRule.symlink == "")
+    then abort "udevRule is necessary to attach create qemu device before/on startup"
+    else if (element.type == "blockdevice")
+    then
+      mkQemuBlockdevice
+        "${deviceBus}-${element.udevRule.symlink}"
+        "${image}-${element.udevRule.symlink}.img"
+        "${deviceBus}"
+        "${builtins.toString element.usbPort}"
+    else if (element.type == "hid-device")
+    then
+      mkQemuKeyboard
+        "${deviceBus}"
+        "${builtins.toString element.usbPort}"
+    else builtins.abort ''wrong device type; types supported are "blockdevice" and "hid-device"''; # TODO panic
+
+  # Pick the QEMU bus-id corresponding with the declared usb version to create the QEMU device option.
+  mkUsbDeviceSortBus = element:
+    if (element.usbVersion == "2")
+    then mkUsbDeviceSortType element "ehci"
+    else if (element.usbVersion == "3")
+    then mkUsbDeviceSortType element "xhci"
+    else builtins.abort "only USB versions 2 using an ehci and 3 using a xhci controller are available";
+
+  # Respect if attached at host on boot option is true to create the QEMU device option.
+  mkUsbDevice = element:
+    if element.attachedOnStartup == "host" || element.attachedOnStartup == "guest"
+    then mkUsbDeviceSortBus element
+    else ""; # Device should be handled via QEMU QMP in the testScript.
+
+  # Create a testScript snippet to make a clean blockdevice image file.
+  mkPrepareOneBlockdeviceImage = device:
+    let
+      filepath = "${image}-${device.udevRule.symlink}.img";
+    in
+    ''
+      os.system("rm ${filepath}")
+      print("Creating file image at ${filepath}")
+      os.system("dd bs=1  count=1 seek=${blockDeviceSize} if=/dev/zero of=${filepath}")
+    '';
+
+  # Decide if a virtual device needs a backing image file.
+  mkPrepareBlockdeviceImages = device:
+    if device.type == "blockdevice" # for now only blockdevices need a backing file
+    then mkPrepareOneBlockdeviceImage device
+    else "";
+
+  # Generate usbvfiod argument flags to hand over the device through their udev generated symlink.
+  mkDeviceFlag = device:
+    if device.attachedOnStartup == "guest" && (!device.udevRule.enable || device.udevRule.symlink == "")
+    then abort "udevRule is necessary to attach device before startup of usbvfiod"
+    else if device.attachedOnStartup == "guest"
+    then ''--device "/dev/bus/usb/${device.udevRule.symlink}"''
+    else "";
+
+  # input type checker for list of virtualDevices
+  sanityCheckDevice = device:
+    let
+      str = "is not of type";
+    in
+    if device.type != "blockdevice" && device.type != "hid-device"
+    then abort ''type ${str} "blockdevice" or "hid-device"''
+    else if device.usbVersion != "2" && device.usbVersion != "3"
+    then abort "debug ${str} bool"
+    else if builtins.typeOf device.usbPort != "int" && builtins.typeOf device.usbPort != "string"
+    then abort "usbPort ${str} integer"
+    else if builtins.typeOf device.udevRule.enable != "bool"
+    then abort "udevrule.enable ${str} bool"
+    else if builtins.typeOf device.udevRule.symlink != "string"
+    then abort "udevrule.symlink ${str} string"
+    else if device.attachedOnStartup != "none" && device.attachedOnStartup != "host" && device.attachedOnStartup != "guest"
+    then abort ''attachedOnStartup ${str} "none", "host" or "guest"''
+    else true;
+
+  # input type checker for arg
+  sanityCheckArgs = args:
+    let
+      str = "is not of type";
+    in
+    if builtins.typeOf args.name != "string" then abort "name ${str} string"
+    else if builtins.typeOf args.debug != "bool" then abort "debug ${str} bool"
+    else if builtins.typeOf args.virtualDevices != "list" then abort "virtualDevices ${str} list"
+    else if builtins.typeOf args.testScript != "string" then abort "testScript ${str} string"
+    else if !(builtins.all sanityCheckDevice args.virtualDevices) then abort "args error in an element of virtualDevices"
+    else args;
+
+  /**
+    Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
+    The Functions purpose is to remove dupicated lines, make comparing tests easier and write new tests with less boilerplate.
+
+    # Inputs
+
+    `args`
+    
+    : 1\. Function argument
+
+    # Type
+
+    ```
+    mkUsbvfiodTest :: {
+      name :: String
+      debug :: Bool
+      virtualDevices :: [
+        {
+        type :: "blockdevice" || "hid-device"
+        usbVersion :: "2" || "3"
+        usbPort :: Integer
+        udevRule.enable :: Bool
+        udevRule.symlink :: String
+        attachedOnStartup :: "host" || "guest" || "none"
+        }
+      ]
+      testScript :: String
+    } -> a
+    ```
+
+    # Examples
+    :::{.example}
+    ## `mkUsbvfiodTest` usage example
+
+    ```nix
+    myTest = mkUsbvfiodTest {
+      name = "foo";
+      debug = true;
+      virtualDevices = [
+        {
+          type = "blockdevice";
+          usbVersion = "2";
+          usbPort = 1;
+          udevRule.enable = true;
+          udevRule.symlink = "teststorage";
+          attachedOnStartup = "guest";
+        }
+      ];
+      testScript = ''
+        # Confirm USB controller pops up in boot logs
+        out = cloud_hypervisor.succeed("journalctl -b")
+        search("usb usb1: Product: xHCI Host Controller", out)
+        search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
+
+        # Confirm some diagnostic information
+        out = cloud_hypervisor.succeed("cat /proc/interrupts")
+        search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
+        out = cloud_hypervisor.succeed("lsusb")
+        search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
+        out = cloud_hypervisor.succeed("sfdisk -l")
+        search("Disk /dev/sda:", out)
+        
+        # Test partitioning
+        cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda")
+        
+        # Test filesystem
+        cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1")
+        cloud_hypervisor.succeed("mount /dev/sda1 /mnt")
+        cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt")
+        cloud_hypervisor.succeed("umount /mnt")
+        cloud_hypervisor.succeed("mount /dev/sda1 /mnt")
+        out = cloud_hypervisor.succeed("cat /mnt/file.txt")
+        search("123TEST123", out)
+      '';
+    };
+    ```
+
+  */
+  mkUsbvfiodTest = args: mkUsbvfiodTestInsecure (sanityCheckArgs args);
+
+  mkUsbvfiodTestInsecure =
+    let
+      ehciProductName = "EHCI Host Controller";
+      xhciProductName = "xHCI Host Controller";
+    in
+    args: pkgs.testers.runNixOSTest {
+      inherit (args) name;
+
+      inherit globalTimeout passthru;
+
+      nodes.machine = _: {
+        imports = [ testMachineConfig.basicMachineConfig ];
+
+        # Create a udev rule for every device listed that enables it.
+        services.udev.extraRules =
+          lib.concatStrings (
+            builtins.map
+              (element:
+                if element.udevRule.enable then
+                  let
+                    controller =
+                      if (element.usbVersion == "2") then "${ehciProductName}"
+                      else if (element.usbVersion == "3") then "${xhciProductName}"
+                      else builtins.abort "only USB versions 2 using an ehci and 3 using a xhci controller are available";
+                    usbPort = builtins.toString element.usbPort;
+                  in
+                  if (usbPort == "" || element.udevRule.symlink == "")
+                  then abort "A udev rules requires to set a usbPort and a symlink string"
+                  else
+                    ''
+                      ${mkUdevRule controller usbPort element.udevRule.symlink}
+                    ''
+                else ""
+              )
+              args.virtualDevices)
+        ;
+
+        virtualisation = {
+          cores = 2;
+          memorySize = 4096;
+          # We only really need to set this for interrupt endpoints, but since it removes stuff we use it for every other test too.
+          qemu.virtioKeyboard = false;
+          qemu.options = [
+            # Add the xhci controller to use USB 3.0.
+            "-device qemu-xhci,id=xhci,addr=10"
+
+            # Add the ehci controller to use USB 2.0.
+            "-device usb-ehci,id=ehci,addr=11"
+
+            # Enable the QEMU QMP interface to trigger HID events or plug blockdevices at runtime.
+            "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
+            "-mon chardev=qmp,mode=control,pretty=on"
+          ]
+          # Handle each entry of the args.virtualDevices list.
+          ++ (builtins.map mkUsbDevice args.virtualDevices);
+        };
+
+        systemd.services = {
+          usbvfiod = {
+            wantedBy = [ "multi-user.target" ];
+            serviceConfig = {
+              User = "usbaccess";
+              Group = "usbaccess";
+              ExecStart = ''
+                ${lib.getExe usbvfiod} ${if args.debug then "-v" else ""} --socket-path ${usbvfiodSocket} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
+              '';
+            };
+          };
+
+          cloud-hypervisor =
+            let
+              netboot = mkNetboot args.debug;
+            in
+            {
+              wantedBy = [ "multi-user.target" ];
+              requires = [ "usbvfiod.service" ];
+              after = [ "usbvfiod.service" ];
+              serviceConfig = {
+                Restart = "on-failure";
+                RestartSec = "2s";
+                ExecStart = ''
+                  ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
+                    --kernel ${netboot.kernel} \
+                    --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                    --initramfs ${netboot.initrd} \
+                    --user-device socket=${usbvfiodSocket} \
+                    --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+                '';
+              };
+            };
+        };
+      };
+
+      testScript = ''
+        ${nestedPythonClass}
+        import os
+
+        # prepare blockdevice images if necessary
+        ${lib.concatStringsSep "\n" (builtins.map mkPrepareBlockdeviceImages args.virtualDevices)}
+
+        start_all()
+        
+        machine.wait_for_unit("cloud-hypervisor.service")
+
+        # Check sshd in systemd.services.cloud-hypervisor is usable prior to testing over ssh.
+        machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
+
+        cloud_hypervisor = Nested(vm_host=machine)
+
+        ${args.testScript}
+      '';
+    };
+
+  # TMP NOTE: END FUNCTION STUFF
 in
 {
   blockdevice-usb-3 = make-blockdevice-test "qemu-xhci";
@@ -445,24 +755,28 @@ in
               '';
             };
           };
-          cloud-hypervisor = {
-            wantedBy = [ "multi-user.target" ];
-            requires = [ "usbvfiod.service" ];
-            after = [ "usbvfiod.service" ];
+          cloud-hypervisor =
+            let
+              netboot = mkNetboot true;
+            in
+            {
+              wantedBy = [ "multi-user.target" ];
+              requires = [ "usbvfiod.service" ];
+              after = [ "usbvfiod.service" ];
 
-            serviceConfig = {
-              Restart = "on-failure";
-              RestartSec = "2s";
-              ExecStart = ''
-                ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
-                  --kernel ${netboot.kernel} \
-                  --cmdline ${lib.escapeShellArg netboot.cmdline} \
-                  --initramfs ${netboot.initrd} \
-                  --user-device socket=${usbvfiodSocket} \
-                  --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
-              '';
+              serviceConfig = {
+                Restart = "on-failure";
+                RestartSec = "2s";
+                ExecStart = ''
+                  ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
+                    --kernel ${netboot.kernel} \
+                    --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                    --initramfs ${netboot.initrd} \
+                    --user-device socket=${usbvfiodSocket} \
+                    --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+                '';
+              };
             };
-          };
         };
       };
 
@@ -504,4 +818,324 @@ in
         search(r'sdh     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
       '';
     };
+
+
+
+  # #####
+  # use with the function generated tests
+  # #####
+
+  # TMP NOTE: example
+  function-prod = mkUsbvfiodTest {
+    name = "testing the function";
+    debug = false; # add verbose flag to usbvfiod
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 4;
+        udevRule.enable = true;
+        udevRule.symlink = "3";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = "3";
+        udevRule.enable = true;
+        udevRule.symlink = "tester";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "2";
+        usbPort = 2;
+        udevRule.enable = true;
+        udevRule.symlink = "testonehci";
+        attachedOnStartup = "none";
+      }
+      {
+        type = "hid-device";
+        usbVersion = "2";
+        usbPort = "3";
+        udevRule.enable = true;
+        udevRule.symlink = "testkeyboard";
+        attachedOnStartup = "guest";
+      }
+    ];
+    testScript = ''
+      print("custom scripting time")
+      print(cloud_hypervisor.succeed("dmesg | wc -l"))
+      print(cloud_hypervisor.succeed("journalctl | wc -l"))
+    '';
+    # TODO wildcard that gets inherited as is?
+  };
+  function-dev = mkUsbvfiodTest {
+    name = "testing the function";
+    debug = true; # add verbose flag to usbvfiod
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 4;
+        udevRule.enable = true;
+        udevRule.symlink = "3";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = "3";
+        udevRule.enable = true;
+        udevRule.symlink = "tester";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "2";
+        usbPort = 2;
+        udevRule.enable = true;
+        udevRule.symlink = "testonehci";
+        attachedOnStartup = "none";
+      }
+      {
+        type = "hid-device";
+        usbVersion = "2";
+        usbPort = "3";
+        udevRule.enable = true;
+        udevRule.symlink = "testkeyboard";
+        attachedOnStartup = "guest";
+      }
+    ];
+    testScript = ''
+      print("custom scripting time")
+      print(cloud_hypervisor.succeed("dmesg | wc -l"))
+      print(cloud_hypervisor.succeed("journalctl | wc -l"))
+    '';
+  };
+
+  blockdevice-usb-3-generated = mkUsbvfiodTest {
+    name = "blockdevice-usb-3-generated";
+    debug = true;
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 4;
+        udevRule.enable = true;
+        udevRule.symlink = "teststorage";
+        attachedOnStartup = "guest";
+      }
+    ];
+    testScript = ''
+      # Confirm USB controller pops up in boot logs
+      out = cloud_hypervisor.succeed("journalctl -b")
+      search("usb usb1: Product: xHCI Host Controller", out)
+      search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
+
+      # Confirm some diagnostic information
+      out = cloud_hypervisor.succeed("cat /proc/interrupts")
+      search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
+      out = cloud_hypervisor.succeed("lsusb")
+      search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
+      out = cloud_hypervisor.succeed("sfdisk -l")
+      search("Disk /dev/sda:", out)
+      
+      # Test partitioning
+      cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda")
+      
+      # Test filesystem
+      cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1")
+      cloud_hypervisor.succeed("mount /dev/sda1 /mnt")
+      cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt")
+      cloud_hypervisor.succeed("umount /mnt")
+      cloud_hypervisor.succeed("mount /dev/sda1 /mnt")
+      out = cloud_hypervisor.succeed("cat /mnt/file.txt")
+      search("123TEST123", out)
+    '';
+  };
+
+  blockdevice-usb-2-generated = mkUsbvfiodTest {
+    name = "blockdevice-usb-2-generated";
+    debug = true;
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "2";
+        usbPort = 4;
+        udevRule.enable = true;
+        udevRule.symlink = "teststorage";
+        attachedOnStartup = "guest";
+      }
+    ];
+    testScript = ''
+      # Confirm USB controller pops up in boot logs
+      out = cloud_hypervisor.succeed("journalctl -b")
+      search("usb usb1: Product: xHCI Host Controller", out)
+      search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
+
+      # Confirm some diagnostic information
+      out = cloud_hypervisor.succeed("cat /proc/interrupts")
+      search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
+      out = cloud_hypervisor.succeed("lsusb")
+      search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
+      out = cloud_hypervisor.succeed("sfdisk -l")
+      search("Disk /dev/sda:", out)
+      
+      # Test partitioning
+      cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda")
+      
+      # Test filesystem
+      cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1")
+      cloud_hypervisor.succeed("mount /dev/sda1 /mnt")
+      cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt")
+      cloud_hypervisor.succeed("umount /mnt")
+      cloud_hypervisor.succeed("mount /dev/sda1 /mnt")
+      out = cloud_hypervisor.succeed("cat /mnt/file.txt")
+      search("123TEST123", out)
+    '';
+  };
+
+  interrupt-endpoints-generated = mkUsbvfiodTest {
+    name = "interrupt-endpoints-generated";
+    debug = true;
+    virtualDevices = [
+      {
+        type = "hid-device";
+        usbVersion = "3";
+        usbPort = 1; # TODO this changes the /dev/input/by-id path used in the script to listen for events
+        udevRule.enable = true;
+        udevRule.symlink = "keyboard";
+        attachedOnStartup = "guest";
+      }
+    ];
+    testScript = ''
+      import time
+      import threading
+      
+      # A function that can send input events in the background.
+      def create_input():
+        for i in range(1, 4):
+          time.sleep(1)
+          os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
+      {"execute": "qmp_capabilities"}
+      {"execute": "send-key", "arguments": {"keys": [ { "type": "qcode", "data": "ctrl" } ]}}
+      EOF""")
+          print(f"input loop `{i}` done")
+
+      # Check the Keyboard is in detected in the guest.
+      cloud_hypervisor.succeed("lsusb -d ${hidVendorId}:${hidProductId}")
+
+      # Generate inputs in the background.
+      t1 = threading.Thread(target=create_input)
+      t1.start()
+      print("started sending input events")
+
+      # Catch one key down event and one key up event inputs.
+      # It is theoretically possible all events appear and are consumed by the input subsystem before we have the opportunity to listen.
+      out = cloud_hypervisor.succeed("hexdump --length 144 --two-bytes-hex /dev/input/by-id/usb-QEMU_QEMU_USB_Keyboard_68284-0000\\:00\\:10.0-1-event-kbd")
+    
+      # Check if the hexdump contains a ctrl event sequence
+      # https://docs.kernel.org/input/input.html#event-interface
+      search("0001    001d    0001", out) # EV_KEY KEY_LEFTCTRL pressed
+      search("0001    001d    0000", out) # EV_KEY KEY_LEFTCTRL released
+      print("done")
+    
+      # Make a clean exit since the test will wait for thread termination either way.
+      t1.join()
+    '';
+  };
+
+  multiple-blockdevices-generated = mkUsbvfiodTest {
+    name = "multiple-blockdevices-generated";
+    debug = true;
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "2";
+        usbPort = 1;
+        udevRule.enable = true;
+        udevRule.symlink = "teststorage";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "2";
+        usbPort = 2;
+        udevRule.enable = true;
+        udevRule.symlink = "teststorage2";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "2";
+        usbPort = 3;
+        udevRule.enable = true;
+        udevRule.symlink = "ehcitest3";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "2";
+        usbPort = 4;
+        udevRule.enable = true;
+        udevRule.symlink = "some-drive";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 1;
+        udevRule.enable = true;
+        udevRule.symlink = "some-xhci";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 2;
+        udevRule.enable = true;
+        udevRule.symlink = "some-xhci-2";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 3;
+        udevRule.enable = true;
+        udevRule.symlink = "some-xhci-03";
+        attachedOnStartup = "guest";
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 4;
+        udevRule.enable = true;
+        udevRule.symlink = "some-xhci-four";
+        attachedOnStartup = "guest";
+      }
+    ];
+    testScript = ''
+      out = cloud_hypervisor.succeed("lsusb --tree")
+      search("Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
+      search("Port 002: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
+      search("Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
+      search("Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M", out)
+      search("Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
+      search("Port 002: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
+      search("Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
+      search("Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M", out)
+
+      out = cloud_hypervisor.succeed("lsblk")
+      search(r'sda     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+      search(r'sdb     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+      search(r'sdc     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+      search(r'sdd     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+      search(r'sde     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+      search(r'sdf     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+      search(r'sdg     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+      search(r'sdh     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+    '';
+  };
+
 }
