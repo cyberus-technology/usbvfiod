@@ -341,7 +341,7 @@ let
 
   # Respect if attached at host on boot option is true to create the QEMU device option.
   mkUsbDevice = element:
-    if element.attachedOnStartup.host.enable
+    if element.attachedOnStartup == "host" || element.attachedOnStartup == "guest"
     then mkUsbDeviceSortBus element
     else ""; # Device should be handled via QEMU QMP in the testScript.
 
@@ -364,9 +364,9 @@ let
 
   # Generate usbvfiod argument flags to hand over the device through their udev generated symlink.
   mkDeviceFlag = device:
-    if device.attachedOnStartup.guest.enable && (!device.udevRule.enable || device.udevRule.symlink == "")
+    if device.attachedOnStartup == "guest" && (!device.udevRule.enable || device.udevRule.symlink == "")
     then abort "udevRule is necessary to attach device before startup of usbvfiod"
-    else if device.attachedOnStartup.guest.enable
+    else if device.attachedOnStartup == "guest"
     then ''--device "/dev/bus/usb/${device.udevRule.symlink}"''
     else "";
 
@@ -724,8 +724,7 @@ in
         usbPort = 4;
         udevRule.enable = true;
         udevRule.symlink = "3";
-        attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
-        attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -733,8 +732,7 @@ in
         usbPort = "3";
         udevRule.enable = true;
         udevRule.symlink = "tester";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -742,8 +740,7 @@ in
         usbPort = 2;
         udevRule.enable = true;
         udevRule.symlink = "testonehci";
-        attachedOnStartup.host.enable = false;
-        attachedOnStartup.guest.enable = false; # TODO assert if false host then need false guest
+        attachedOnStartup = "none";
       }
       {
         type = "hid-device";
@@ -751,8 +748,7 @@ in
         usbPort = "3";
         udevRule.enable = true;
         udevRule.symlink = "testkeyboard";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
     ];
     testScript = ''
@@ -772,8 +768,7 @@ in
         usbPort = 4;
         udevRule.enable = true;
         udevRule.symlink = "3";
-        attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
-        attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -781,8 +776,7 @@ in
         usbPort = "3";
         udevRule.enable = true;
         udevRule.symlink = "tester";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -790,8 +784,7 @@ in
         usbPort = 2;
         udevRule.enable = true;
         udevRule.symlink = "testonehci";
-        attachedOnStartup.host.enable = false;
-        attachedOnStartup.guest.enable = false; # TODO assert if false host then need false guest
+        attachedOnStartup = "none";
       }
       {
         type = "hid-device";
@@ -799,8 +792,7 @@ in
         usbPort = "3";
         udevRule.enable = true;
         udevRule.symlink = "testkeyboard";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
     ];
     testScript = ''
@@ -820,8 +812,7 @@ in
         usbPort = 4;
         udevRule.enable = true;
         udevRule.symlink = "teststorage";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
     ];
     testScript = ''
@@ -862,8 +853,7 @@ in
         usbPort = 4;
         udevRule.enable = true;
         udevRule.symlink = "teststorage";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
     ];
     testScript = ''
@@ -904,8 +894,7 @@ in
         usbPort = 1; # TODO this changes the /dev/input/by-id path used in the script to listen for events
         udevRule.enable = true;
         udevRule.symlink = "keyboard";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
     ];
     testScript = ''
@@ -955,8 +944,7 @@ in
         usbPort = 1;
         udevRule.enable = true;
         udevRule.symlink = "teststorage";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -964,8 +952,7 @@ in
         usbPort = 2;
         udevRule.enable = true;
         udevRule.symlink = "teststorage2";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -973,8 +960,7 @@ in
         usbPort = 3;
         udevRule.enable = true;
         udevRule.symlink = "ehcitest3";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -982,8 +968,7 @@ in
         usbPort = 4;
         udevRule.enable = true;
         udevRule.symlink = "some-drive";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -991,8 +976,7 @@ in
         usbPort = 1;
         udevRule.enable = true;
         udevRule.symlink = "some-xhci";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -1000,8 +984,7 @@ in
         usbPort = 2;
         udevRule.enable = true;
         udevRule.symlink = "some-xhci-2";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -1009,8 +992,7 @@ in
         usbPort = 3;
         udevRule.enable = true;
         udevRule.symlink = "some-xhci-03";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
       {
         type = "blockdevice";
@@ -1018,8 +1000,7 @@ in
         usbPort = 4;
         udevRule.enable = true;
         udevRule.symlink = "some-xhci-four";
-        attachedOnStartup.host.enable = true;
-        attachedOnStartup.guest.enable = true;
+        attachedOnStartup = "guest";
       }
     ];
     testScript = ''
