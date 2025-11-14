@@ -372,6 +372,36 @@ let
     then ''--device "/dev/bus/usb/${device.udevRule.symlink}"''
     else "";
 
+  # input type checker for list of virtualDevices
+  sanityCheckDevice = device:
+    let
+      str = "is not of type";
+    in
+    if device.type != "blockdevice" && device.type != "hid-device"
+    then abort ''type ${str} "blockdevice" or "hid-device"''
+    else if device.usbVersion != "2" && device.usbVersion != "3"
+    then abort "debug ${str} bool"
+    else if builtins.typeOf device.usbPort != "int" && builtins.typeOf device.usbPort != "string"
+    then abort "usbPort ${str} integer"
+    else if builtins.typeOf device.udevRule.enable != "bool"
+    then abort "udevrule.enable ${str} bool"
+    else if builtins.typeOf device.udevRule.symlink != "string"
+    then abort "udevrule.symlink ${str} string"
+    else if device.attachedOnStartup != "none" && device.attachedOnStartup != "host" && device.attachedOnStartup != "guest"
+    then abort ''attachedOnStartup ${str} "none", "host" or "guest"''
+    else true;
+
+  # input type checker for arg
+  sanityCheckArgs = args:
+    let
+      str = "is not of type";
+    in
+    if builtins.typeOf args.name != "string" then abort "name ${str} string"
+    else if builtins.typeOf args.debug != "bool" then abort "debug ${str} bool"
+    else if builtins.typeOf args.virtualDevices != "list" then abort "virtualDevices ${str} list"
+    else if builtins.typeOf args.testScript != "string" then abort "testScript ${str} string"
+    else if !(builtins.all sanityCheckDevice args.virtualDevices) then abort "args error in an element of virtualDevices"
+    else args;
 
   /**
     Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
@@ -418,8 +448,7 @@ let
           usbPort = 1;
           udevRule.enable = true;
           udevRule.symlink = "teststorage";
-          attachedOnStartup.host.enable = true;
-          attachedOnStartup.guest.enable = true;
+          attachedOnStartup = "guest";
         }
       ];
       testScript = ''
@@ -452,7 +481,9 @@ let
     ```
 
   */
-  mkUsbvfiodTest =
+  mkUsbvfiodTest = args: mkUsbvfiodTestInsecure (sanityCheckArgs args);
+
+  mkUsbvfiodTestInsecure =
     let
       ehciProductName = "EHCI Host Controller";
       xhciProductName = "xHCI Host Controller";
