@@ -2,7 +2,7 @@
 { lib, pkgs, usbvfiod }:
 let
   # For the VM that we start in Cloud Hypervisor, we re-use the netboot image.
-  netbootNixos = lib.nixosSystem {
+  netbootNixos = debug: lib.nixosSystem {
     inherit (pkgs) system;
 
     modules = [
@@ -12,17 +12,18 @@ let
       ({ config, ... }: {
 
         boot.kernelParams = [
-          # Enable dyndbg messages for the XHCI driver.
-          "xhci_pci.dyndbg==pmfl"
-          "xhci_hcd.dyndbg==pmfl"
-
           # currently we can not handle the automatic suspend that is triggered so we disable dynamic power management
           # https://github.com/torvalds/linux/blob/master/Documentation/driver-api/usb/power-management.rst
           "usbcore.autosuspend=-1"
-        ];
+        ] ++ (if debug then [
+          # Enable dyndbg messages for the XHCI driver.
+          "xhci_pci.dyndbg==pmfl"
+          "xhci_hcd.dyndbg==pmfl"
+        ]
+        else [ ]);
 
         # Enable debug verbosity.
-        boot.consoleLogLevel = 8;
+        boot.consoleLogLevel = lib.mkIf debug 8;
 
         # Convenience packages for interactive use
         environment.systemPackages = with pkgs; [ pciutils usbutils ];
@@ -61,9 +62,9 @@ let
     ];
   };
 
-  netboot =
+  mkNetboot = debug:
     let
-      inherit (netbootNixos) config;
+      inherit (netbootNixos debug) config;
 
       kernelTarget = pkgs.stdenv.hostPlatform.linux-kernel.target;
     in
@@ -128,24 +129,28 @@ let
           };
         };
 
-        cloud-hypervisor = {
-          wantedBy = [ "multi-user.target" ];
-          requires = [ "usbvfiod.service" ];
-          after = [ "usbvfiod.service" ];
+        cloud-hypervisor =
+          let
+            netboot = mkNetboot true;
+          in
+          {
+            wantedBy = [ "multi-user.target" ];
+            requires = [ "usbvfiod.service" ];
+            after = [ "usbvfiod.service" ];
 
-          serviceConfig = {
-            Restart = "on-failure";
-            RestartSec = "2s";
-            ExecStart = ''
-              ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
-                --kernel ${netboot.kernel} \
-                --cmdline ${lib.escapeShellArg netboot.cmdline} \
-                --initramfs ${netboot.initrd} \
-                --user-device socket=${usbvfiodSocket} \
-                --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
-            '';
+            serviceConfig = {
+              Restart = "on-failure";
+              RestartSec = "2s";
+              ExecStart = ''
+                ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
+                  --kernel ${netboot.kernel} \
+                  --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                  --initramfs ${netboot.initrd} \
+                  --user-device socket=${usbvfiodSocket} \
+                  --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+              '';
+            };
           };
-        };
       };
     };
   };
@@ -298,46 +303,46 @@ let
   hidProductId = "0001";
 
   # Fill in a template for a udev rule.
-  mkUsbvfiodUdevRule = controller: port: symlink: ''
+  mkUdevRule = controller: port: symlink: ''
     ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{product}=="${controller}" ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
   '';
 
   # Fill in a template for the qemu.options list for a blockdevice.
-  mkUsbvfiodQemuBlockdevice = driveId: driveFile: deviceBus: devicePort: ''-drive if=none,id=${driveId},format=raw,file=${driveFile} -device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}'';
+  mkQemuBlockdevice = driveId: driveFile: deviceBus: devicePort: ''-drive if=none,id=${driveId},format=raw,file=${driveFile} -device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}'';
 
   # Fill in a template for the qemu.options list for a USB keyboard.
-  mkUsbvfiodQemuKeyboard = deviceBus: devicePort: ''-device usb-kbd,bus=${deviceBus}.0,port=${devicePort}'';
+  mkQemuKeyboard = deviceBus: devicePort: ''-device usb-kbd,bus=${deviceBus}.0,port=${devicePort}'';
 
   # Create a blockdevice or USB keyboard.
-  mkUsbvfiodUsbDeviceSortType = element: deviceBus:
+  mkUsbDeviceSortType = element: deviceBus:
     if (!element.udevRule.enable || element.udevRule.symlink == "")
     then abort "udevRule is necessary to attach create qemu device before/on startup"
     else if (element.type == "blockdevice")
     then
-      mkUsbvfiodQemuBlockdevice
+      mkQemuBlockdevice
         "${deviceBus}-${element.udevRule.symlink}"
         "${image}-${element.udevRule.symlink}.img"
         "${deviceBus}"
         "${builtins.toString element.usbPort}"
     else if (element.type == "hid-device")
     then
-      mkUsbvfiodQemuKeyboard
+      mkQemuKeyboard
         "${deviceBus}"
         "${builtins.toString element.usbPort}"
     else builtins.abort ''wrong device type; types supported are "blockdevice" and "hid-device"''; # TODO panic
 
   # Pick the QEMU bus-id corresponding with the declared usb version to create the QEMU device option.
-  mkUsbvfiodUsbDeviceSortBus = element:
+  mkUsbDeviceSortBus = element:
     if (element.usbVersion == "2")
-    then mkUsbvfiodUsbDeviceSortType element "ehci"
+    then mkUsbDeviceSortType element "ehci"
     else if (element.usbVersion == "3")
-    then mkUsbvfiodUsbDeviceSortType element "xhci"
+    then mkUsbDeviceSortType element "xhci"
     else builtins.abort "only USB versions 2 using an ehci and 3 using a xhci controller are available";
 
   # Respect if attached at host on boot option is true to create the QEMU device option.
-  mkUsbvfiodUsbDevice = element:
+  mkUsbDevice = element:
     if element.attachedOnStartup.host.enable
-    then mkUsbvfiodUsbDeviceSortBus element
+    then mkUsbDeviceSortBus element
     else ""; # Device should be handled via QEMU QMP in the testScript.
 
   # Create a testScript snippet to make a clean blockdevice image file.
@@ -358,7 +363,7 @@ let
     else "";
 
   # Generate usbvfiod argument flags to hand over the device through their udev generated symlink.
-  mkUsbvfiodDeviceFlag = device:
+  mkDeviceFlag = device:
     if device.attachedOnStartup.guest.enable && (!device.udevRule.enable || device.udevRule.symlink == "")
     then abort "udevRule is necessary to attach device before startup of usbvfiod"
     else if device.attachedOnStartup.guest.enable
@@ -396,7 +401,7 @@ let
                   then abort "A udev rules requires to set a usbPort and a symlink string"
                   else
                     ''
-                      ${mkUsbvfiodUdevRule controller usbPort element.udevRule.symlink}
+                      ${mkUdevRule controller usbPort element.udevRule.symlink}
                     ''
                 else ""
               )
@@ -420,7 +425,7 @@ let
             "-mon chardev=qmp,mode=control,pretty=on"
           ]
           # Handle each entry of the args.virtualDevices list.
-          ++ (builtins.map mkUsbvfiodUsbDevice args.virtualDevices);
+          ++ (builtins.map mkUsbDevice args.virtualDevices);
         };
 
         systemd.services = {
@@ -430,28 +435,32 @@ let
               User = "usbaccess";
               Group = "usbaccess";
               ExecStart = ''
-                ${lib.getExe usbvfiod} ${if args.debug then "-v" else ""} --socket-path ${usbvfiodSocket} ${lib.concatStringsSep " " (builtins.map mkUsbvfiodDeviceFlag args.virtualDevices)}
+                ${lib.getExe usbvfiod} ${if args.debug then "-v" else ""} --socket-path ${usbvfiodSocket} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
               '';
             };
           };
 
-          cloud-hypervisor = {
-            wantedBy = [ "multi-user.target" ];
-            requires = [ "usbvfiod.service" ];
-            after = [ "usbvfiod.service" ];
-            serviceConfig = {
-              Restart = "on-failure";
-              RestartSec = "2s";
-              ExecStart = ''
-                ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
-                  --kernel ${netboot.kernel} \
-                  --cmdline ${lib.escapeShellArg netboot.cmdline} \
-                  --initramfs ${netboot.initrd} \
-                  --user-device socket=${usbvfiodSocket} \
-                  --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
-              '';
+          cloud-hypervisor =
+            let
+              netboot = mkNetboot args.debug;
+            in
+            {
+              wantedBy = [ "multi-user.target" ];
+              requires = [ "usbvfiod.service" ];
+              after = [ "usbvfiod.service" ];
+              serviceConfig = {
+                Restart = "on-failure";
+                RestartSec = "2s";
+                ExecStart = ''
+                  ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
+                    --kernel ${netboot.kernel} \
+                    --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                    --initramfs ${netboot.initrd} \
+                    --user-device socket=${usbvfiodSocket} \
+                    --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+                '';
+              };
             };
-          };
         };
       };
 
@@ -634,24 +643,28 @@ in
               '';
             };
           };
-          cloud-hypervisor = {
-            wantedBy = [ "multi-user.target" ];
-            requires = [ "usbvfiod.service" ];
-            after = [ "usbvfiod.service" ];
+          cloud-hypervisor =
+            let
+              netboot = mkNetboot true;
+            in
+            {
+              wantedBy = [ "multi-user.target" ];
+              requires = [ "usbvfiod.service" ];
+              after = [ "usbvfiod.service" ];
 
-            serviceConfig = {
-              Restart = "on-failure";
-              RestartSec = "2s";
-              ExecStart = ''
-                ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
-                  --kernel ${netboot.kernel} \
-                  --cmdline ${lib.escapeShellArg netboot.cmdline} \
-                  --initramfs ${netboot.initrd} \
-                  --user-device socket=${usbvfiodSocket} \
-                  --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
-              '';
+              serviceConfig = {
+                Restart = "on-failure";
+                RestartSec = "2s";
+                ExecStart = ''
+                  ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
+                    --kernel ${netboot.kernel} \
+                    --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                    --initramfs ${netboot.initrd} \
+                    --user-device socket=${usbvfiodSocket} \
+                    --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+                '';
+              };
             };
-          };
         };
       };
 
@@ -701,7 +714,7 @@ in
   # #####
 
   # TMP NOTE: example
-  function = mkUsbvfiodTest {
+  function-prod = mkUsbvfiodTest {
     name = "testing the function";
     debug = false; # add verbose flag to usbvfiod
     virtualDevices = [
@@ -744,8 +757,57 @@ in
     ];
     testScript = ''
       print("custom scripting time")
+      print(cloud_hypervisor.succeed("dmesg | wc -l"))
+      print(cloud_hypervisor.succeed("journalctl | wc -l"))
     '';
     # TODO wildcard that gets inherited as is?
+  };
+  function-dev = mkUsbvfiodTest {
+    name = "testing the function";
+    debug = true; # add verbose flag to usbvfiod
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 4;
+        udevRule.enable = true;
+        udevRule.symlink = "3";
+        attachedOnStartup.host.enable = true; # TODO survive unplug from host test not yet exists
+        attachedOnStartup.guest.enable = true; # TODO graceful attach detach stuff incoming with next test
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = "3";
+        udevRule.enable = true;
+        udevRule.symlink = "tester";
+        attachedOnStartup.host.enable = true;
+        attachedOnStartup.guest.enable = true;
+      }
+      {
+        type = "blockdevice";
+        usbVersion = "2";
+        usbPort = 2;
+        udevRule.enable = true;
+        udevRule.symlink = "testonehci";
+        attachedOnStartup.host.enable = false;
+        attachedOnStartup.guest.enable = false; # TODO assert if false host then need false guest
+      }
+      {
+        type = "hid-device";
+        usbVersion = "2";
+        usbPort = "3";
+        udevRule.enable = true;
+        udevRule.symlink = "testkeyboard";
+        attachedOnStartup.host.enable = true;
+        attachedOnStartup.guest.enable = true;
+      }
+    ];
+    testScript = ''
+      print("custom scripting time")
+      print(cloud_hypervisor.succeed("dmesg | wc -l"))
+      print(cloud_hypervisor.succeed("journalctl | wc -l"))
+    '';
   };
 
   blockdevice-usb-3-generated = mkUsbvfiodTest {
