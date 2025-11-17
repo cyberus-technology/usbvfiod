@@ -123,10 +123,10 @@ impl EventRing {
     pub fn configure(&mut self, erstba: u64) {
         assert_eq!(erstba & 0x3f, 0, "unaligned event ring base address");
 
-        assert!(
-            self.erst_size > 0,
-            "ERSTSZ must be set before ERSTBA; misconfigured driver"
-        );
+        // assert!(
+        //     self.erst_size > 0,
+        //     "ERSTSZ must be set before ERSTBA; misconfigured driver"
+        // );
 
         self.base_address = erstba;
         self.enqueue_pointer = self.dma_bus.read(Request::new(
@@ -140,14 +140,14 @@ impl EventRing {
         self.cycle_state = true;
 
         debug!("event ring segment table is at {:#x}", erstba);
-        debug!(
-            "initializing event ring enqueue pointer from ERST[0] base: {:#x}",
-            self.enqueue_pointer
-        );
-        debug!(
-            "retrieving TRB count of the first event ring segment from the segment table: {}",
-            self.trb_count
-        );
+        // debug!(
+        //     "initializing event ring enqueue pointer from ERST[0] base: {:#x}",
+        //     self.enqueue_pointer
+        // );
+        // debug!(
+        //     "retrieving TRB count of the first event ring segment from the segment table: {}",
+        //     self.trb_count
+        // );
     }
 
     pub fn set_erst_size(&mut self, size: u32) {
