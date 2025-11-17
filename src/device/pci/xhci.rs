@@ -648,9 +648,21 @@ impl PciDevice for Mutex<XhciController> {
 
             // xHC Extended Capability ("Supported Protocols Capability")
             offset::SUPPORTED_PROTOCOLS => capability::supported_protocols::CAP_INFO,
+            val if val == offset::SUPPORTED_PROTOCOLS + 4 => {
+                capability::supported_protocols::CAP_INFO >> 32
+            }
             offset::SUPPORTED_PROTOCOLS_CONFIG => capability::supported_protocols::CONFIG,
+            val if val == offset::SUPPORTED_PROTOCOLS_CONFIG + 4 => {
+                capability::supported_protocols::CONFIG >> 32
+            }
             offset::SUPPORTED_PROTOCOLS_USB2 => capability::supported_protocols_usb2::CAP_INFO,
+            val if val == offset::SUPPORTED_PROTOCOLS_USB2 + 4 => {
+                capability::supported_protocols_usb2::CAP_INFO >> 32
+            }
             offset::SUPPORTED_PROTOCOLS_USB2_CONFIG => capability::supported_protocols_usb2::CONFIG,
+            val if val == offset::SUPPORTED_PROTOCOLS_USB2_CONFIG + 4 => {
+                capability::supported_protocols_usb2::CONFIG >> 32
+            }
 
             // xHC Operational Registers
             offset::USBCMD => 0,
