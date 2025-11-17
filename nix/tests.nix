@@ -200,15 +200,18 @@ let
   # Fill in a template for the qemu.options list for a USB keyboard.
   mkQemuKeyboard = deviceBus: devicePort: ''-device usb-kbd,bus=${deviceBus}.0,port=${devicePort}'';
 
-  # Create a blockdevice or USB keyboard.
-  mkUsbDeviceSortType = device: deviceBus:
+  # Create a blockdevice or USB keyboard on our QEMU bus-id corresponding with the declared usb version.
+  mkUsbDeviceType = testname: device:
+    let
+      deviceBus = { "2" = "ehci"; "3" = "xhci"; }.${device.usbVersion};
+    in
     if (!device.udevRule.enable || device.udevRule.symlink == "")
     then abort "udevRule is necessary to attach create qemu device before/on startup"
     else if (device.type == "blockdevice")
     then
       mkQemuBlockdevice
         "${deviceBus}-${device.udevRule.symlink}"
-        "${imagePathPart}-${device.udevRule.symlink}.img"
+        "${imagePathPart}-${testname}-${device.udevRule.symlink}.img"
         "${deviceBus}"
         "${builtins.toString device.usbPort}"
     else if (device.type == "hid-device")
@@ -216,26 +219,18 @@ let
       mkQemuKeyboard
         "${deviceBus}"
         "${builtins.toString device.usbPort}"
-    else builtins.abort ''wrong device type; types supported are "blockdevice" and "hid-device"''; # TODO panic
-
-  # Pick the QEMU bus-id corresponding with the declared usb version to create the QEMU device option.
-  mkUsbDeviceSortBus = device:
-    if (device.usbVersion == "2")
-    then mkUsbDeviceSortType device "ehci"
-    else if (device.usbVersion == "3")
-    then mkUsbDeviceSortType device "xhci"
-    else builtins.abort "only USB versions 2 using an ehci and 3 using a xhci controller are available";
+    else builtins.abort ''wrong device type; types supported are "blockdevice" and "hid-device"'';
 
   # Respect if attached at host on boot option is true to create the QEMU device option.
-  mkUsbDevice = device:
+  mkUsbDevice = testname: device:
     if device.attachedOnStartup == "host" || device.attachedOnStartup == "guest"
-    then mkUsbDeviceSortBus device
+    then mkUsbDeviceType testname device
     else ""; # Device should be handled via QEMU QMP in the testScript.
 
   # Create a testScript snippet to make a clean blockdevice image file.
-  mkPrepareOneBlockdeviceImage = device:
+  mkPrepareOneBlockdeviceImage = testname: device:
     let
-      filepath = "${imagePathPart}-${device.udevRule.symlink}.img";
+      filepath = "${imagePathPart}-${testname}-${device.udevRule.symlink}.img";
     in
     ''
       os.system("rm ${filepath}")
@@ -244,9 +239,9 @@ let
     '';
 
   # Decide if a virtual device needs a backing image file.
-  mkPrepareBlockdeviceImages = device:
+  mkPrepareBlockdeviceImages = testname: device:
     if device.type == "blockdevice" # for now only blockdevices need a backing file
-    then mkPrepareOneBlockdeviceImage device
+    then mkPrepareOneBlockdeviceImage testname device
     else "";
 
   # Generate usbvfiod argument flags to hand over the device through their udev generated symlink.
@@ -411,7 +406,7 @@ let
             "-mon chardev=qmp,mode=control,pretty=on"
           ]
           # Handle each entry of the args.virtualDevices list.
-          ++ (builtins.map mkUsbDevice args.virtualDevices);
+          ++ (builtins.map (mkUsbDevice args.name) args.virtualDevices);
         };
 
         systemd.services = {
@@ -455,7 +450,7 @@ let
         import os
 
         # prepare blockdevice images if necessary
-        ${lib.concatStringsSep "\n" (builtins.map mkPrepareBlockdeviceImages args.virtualDevices)}
+        ${lib.concatStringsSep "\n" (builtins.map (mkPrepareBlockdeviceImages args.name) args.virtualDevices)}
 
         start_all()
 
