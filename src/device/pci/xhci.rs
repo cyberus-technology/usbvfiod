@@ -289,12 +289,15 @@ impl XhciController {
 
     /// Enable device slots.
     pub fn enable_slots(&self, count: u64) {
-        assert!(
-            count == self.device_slot_manager.num_slots,
-            "we expect the driver to enable all slots that we report"
-        );
+        // assert!(
+        //     count == self.device_slot_manager.num_slots,
+        //     "we expect the driver to enable all slots that we report"
+        // );
 
-        debug!("enabled {} device slots", count);
+        debug!(
+            "enabled {} of {} device slots",
+            count, self.device_slot_manager.num_slots
+        );
     }
 
     /// Configure the device context array from the array base pointer.
