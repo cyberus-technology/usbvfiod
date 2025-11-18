@@ -271,6 +271,32 @@ let
     assert (builtins.all sanityCheckDevice args.virtualDevices);
     args;
 
+  # If possible use default values for not set things.
+  mkDefaults = args:
+    let
+      deviceCount = builtins.length args.virtualDevices;
+
+      # The defined default values to generate a test argument attrs.
+      virtualDevice = {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 1;
+        udevRule.enable = true;
+        udevRule.symlink = "testdevice";
+        attachedOnStartup = "guest";
+      };
+
+      attrs = {
+        debug = true;
+      } // args // {
+        virtualDevices = builtins.genList (i: lib.recursiveUpdate virtualDevice (builtins.elemAt args.virtualDevices i)) deviceCount;
+      };
+
+    in
+    attrs;
+
+
+
   /**
     Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
     The Functions purpose is to remove dupicated lines, make comparing tests easier and write new tests with less boilerplate.
@@ -352,7 +378,7 @@ let
     ```
 
   */
-  mkUsbTest = args: mkUsbTestChecked (sanityCheckArgs args);
+  mkUsbTest = args: mkUsbTestChecked (sanityCheckArgs (mkDefaults args));
 
   # See mkUsbTest (this runs without any arg checks).
   mkUsbTestChecked =
@@ -496,15 +522,10 @@ in
 {
   blockdevice-usb-3 = mkUsbTest {
     name = "blockdevice-usb-3";
-    debug = true;
     virtualDevices = [
       {
         type = "blockdevice";
         usbVersion = "3";
-        usbPort = 1;
-        udevRule.enable = true;
-        udevRule.symlink = "teststorage";
-        attachedOnStartup = "guest";
       }
     ];
     testScript = singleBlockDeviceTestScript;
@@ -512,15 +533,10 @@ in
 
   blockdevice-usb-2 = mkUsbTest {
     name = "blockdevice-usb-2";
-    debug = true;
     virtualDevices = [
       {
         type = "blockdevice";
         usbVersion = "2";
-        usbPort = 1;
-        udevRule.enable = true;
-        udevRule.symlink = "teststorage";
-        attachedOnStartup = "guest";
       }
     ];
     testScript = singleBlockDeviceTestScript;
@@ -528,15 +544,12 @@ in
 
   interrupt-endpoints = mkUsbTest {
     name = "interrupt-endpoints";
-    debug = true;
     virtualDevices = [
       {
         type = "hid-device";
         usbVersion = "3"; # note: this changes the /dev/input/by-id path used in the script (xhci/ehci bus number)
         usbPort = 1; # note: this changes the /dev/input/by-id path used in the script
-        udevRule.enable = true;
         udevRule.symlink = "keyboard";
-        attachedOnStartup = "guest";
       }
     ];
     testScript = ''
@@ -578,7 +591,6 @@ in
 
   multiple-blockdevices = mkUsbTest {
     name = "multiple-blockdevices";
-    debug = true;
     virtualDevices =
       builtins.concatMap
         (usb:
@@ -588,9 +600,7 @@ in
                 type = "blockdevice";
                 usbVersion = "${usb}";
                 usbPort = num;
-                udevRule.enable = true;
                 udevRule.symlink = "usb-${usb}-device-${builtins.toString num}";
-                attachedOnStartup = "guest";
               }
             ) [ 1 2 3 4 ]
         ) [ "2" "3" ];
