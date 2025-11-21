@@ -14,6 +14,7 @@
 mod cli;
 mod device;
 mod dynamic_bus;
+mod hotplug_protocol;
 mod memory_segment;
 mod xhci_backend;
 
