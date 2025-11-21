@@ -27,7 +27,7 @@ use super::{
     config_space::BarInfo,
     constants::xhci::{device_slots::endpoint_state, operational::usbsts, MAX_PORTS},
     device_slots::DeviceSlotManager,
-    realdevice::{EndpointWorkerInfo, RealDevice, Speed},
+    realdevice::{EndpointWorkerInfo, IdentifiableRealDevice, RealDevice, Speed},
     registers::PortscRegister,
     rings::{CommandRing, EventRing},
     trb::{
@@ -179,7 +179,8 @@ impl XhciController {
     // and indicates with the return value that the attachment failed. There is no good reason
     // for us to crash here, we can continue running as before, it is up to the caller to
     // decide how to handle the failed attachment attempt.
-    pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
+    pub fn set_device(&mut self, device: IdentifiableRealDevice) {
+        let device = device.real_device;
         if let Some(speed) = device.speed() {
             let version = UsbVersion::from_speed(speed);
             let available_port_index = (0..MAX_PORTS as usize)
