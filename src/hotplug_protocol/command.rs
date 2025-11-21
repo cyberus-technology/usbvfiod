@@ -1,0 +1,97 @@
+use std::fs::File;
+use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
+
+use vmm_sys_util::errno::Error;
+use vmm_sys_util::sock_ctrl_msg::ScmSocket;
+
+#[derive(Debug)]
+pub enum Command {
+    Attach { bus: u8, device: u8, fd: File },
+    Detach { bus: u8, device: u8 },
+    List,
+}
+
+impl Command {
+    pub fn send_over_socket(self, socket: &UnixStream) -> Result<(), CommandSendError> {
+        let id = self.variant_to_id();
+        let (buf, fd) = match self {
+            Command::Attach { bus, device, fd } => ([id, bus, device], Some(fd.as_raw_fd())),
+            Command::Detach { bus, device } => ([id, bus, device], None),
+            Command::List => ([id, 0, 0], None),
+        };
+
+        let transmitted = if let Some(fd) = fd {
+            socket.send_with_fd(&buf[..], fd)
+        } else {
+            socket.send_with_fds(&[&buf[..]], &[])
+        }?;
+
+        // should we try retransmission instead?
+        if transmitted == buf.len() {
+            Ok(())
+        } else {
+            Err(CommandSendError::NotSentEnough(
+                buf.len() as usize,
+                transmitted as usize,
+            ))
+        }
+    }
+
+    pub fn receive_from_socket(socket: &UnixStream) -> Result<Self, CommandReceiveError> {
+        let mut buf = [0u8; 3];
+        let (bytes_read, file) = socket.recv_with_fd(&mut buf[..])?;
+        if bytes_read != buf.len() {
+            return Err(CommandReceiveError::NotEnoughData(buf.len(), bytes_read));
+        }
+        match (buf[0], file) {
+            (0, Some(file)) => Ok(Command::Attach {
+                bus: buf[1],
+                device: buf[2],
+                fd: file,
+            }),
+            (0, None) => Err(CommandReceiveError::MissingFd),
+            (1, None) => Ok(Command::Detach {
+                bus: buf[1],
+                device: buf[2],
+            }),
+            (2, None) => Ok(Command::List {}),
+            (command, None) => Err(CommandReceiveError::UnknownCommand(command)),
+            (_, Some(_)) => Err(CommandReceiveError::UnexpectedFd),
+        }
+    }
+
+    fn variant_to_id(&self) -> u8 {
+        match self {
+            Command::Attach {
+                bus: _,
+                device: _,
+                fd: _,
+            } => 0,
+            Command::Detach { bus: _, device: _ } => 1,
+            Command::List => 2,
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum CommandReceiveError {
+    #[error("did not receive enough data over the socket. Expected {0}, received {1}")]
+    NotEnoughData(usize, usize),
+    #[error("expected to receive a file descriptor, but there was none")]
+    MissingFd,
+    #[error("did not expect to receive a file descriptor, but there was one")]
+    UnexpectedFd,
+    #[error("Unknown command")]
+    UnknownCommand(u8),
+    #[error("Encountered errno during socket IO: {0}")]
+    ErrnoError(#[from] Error),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum CommandSendError {
+    #[error("did not receive enough data over the socket. Expected to send {0}, sent {1}")]
+    NotSentEnough(usize, usize),
+    #[error("Encountered errno during socket IO: {0}")]
+    ErrnoError(#[from] Error),
+}
