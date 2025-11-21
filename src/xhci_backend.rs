@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use nusb::MaybeFuture;
 use tracing::{debug, info, trace, warn};
 
@@ -121,7 +121,8 @@ impl XhciBackend {
                 bus_number: bus,
                 device_number: dev,
                 real_device: wrapped_device,
-            });
+            })
+            .map_err(|response| anyhow!("Error during device attach: {:?}", response))?;
         Ok(())
     }
 }
