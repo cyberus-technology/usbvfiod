@@ -70,3 +70,17 @@ pub struct EndpointWorkerInfo {
     /// Interrupt line to notify about enqueued transfer events.
     pub interrupt_line: Arc<dyn InterruptLine>,
 }
+
+// A RealDevice trait coupled with bus and device number for identification.
+//
+// A real device alone might not be able to identify itself (an nusb device can
+// only query information from the device; if the device has no unique serial
+// number, then fields such as vendor id and product id are the best bet for
+// identification. However, with two identical devices, this approach fails to
+// uniquely identify the devices.
+#[derive(Debug)]
+pub struct IdentifiableRealDevice {
+    pub bus_number: u8,
+    pub device_number: u8,
+    pub real_device: Box<dyn RealDevice>,
+}
