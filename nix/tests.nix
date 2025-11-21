@@ -21,10 +21,11 @@ let
             # https://github.com/torvalds/linux/blob/master/Documentation/driver-api/usb/power-management.rst
             "usbcore.autosuspend=-1"
 
-            "console=ttyS0,115200n8"
-            "earlyprintk=ttyS0,115200n8"
-
+            # Faster logging than serial would provide.
             "console=hvc0"
+
+            # Keep a console available for early boot until we can write hvc.
+            "console=tty0"
           ] ++ (if debug then [
             # Enable dyndbg messages for the XHCI driver.
             "xhci_pci.dyndbg==pmfl"
@@ -93,6 +94,8 @@ let
   # well.
   usbvfiodSocket = "/tmp/usbvfio";
 
+  guestLogFile = "/tmp/console.log";
+
   # Will very likely be used in every test.
   basicMachineConfig = {
     environment.systemPackages = with pkgs; [
@@ -143,7 +146,7 @@ let
                 (status, out) = vm_host.execute("ssh -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 '" + command + "'", timeout=timeout)
                 if status != 0:
 
-                    (guest_status, guest_out) = vm_host.execute("cat /tmp/console.log")
+                    (guest_status, guest_out) = vm_host.execute("cat ${guestLogFile}")
                     print(f'\n<<<<<GUEST LOGS>>>>>\n\n{guest_out}\n\n<<<<<END GUEST LOGS>>>>>\n')
 
                     vm_host.log(f"output: {out}")
@@ -475,7 +478,7 @@ let
                 RestartSec = "2s";
                 # --console file=/tmp/console.log --serial file=/tmp/chv.log \
                 ExecStart = ''
-                  ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console file=/tmp/console.log --serial file=/tmp/chv.log \
+                  ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console file=${guestLogFile} --serial off \
                     --kernel ${netboot.kernel} \
                     --cmdline ${lib.escapeShellArg netboot.cmdline} \
                     --initramfs ${netboot.initrd} \
@@ -536,21 +539,6 @@ let
 
 in
 {
-  test = mkUsbTest {
-    name = "test";
-    debug = false;
-    virtualDevices = [
-      {
-        type = "blockdevice";
-        usbVersion = "3";
-      }
-    ];
-    testScript = ''
-      out = cloud_hypervisor.succeed('for num in "1" "2" "3" "4" "5" "6" "7" "8" "9" "10"; do echo $num; sleep 1; done', timeout = 5)
-      print(out)
-    '';
-  };
-
   blockdevice-usb-3 = mkUsbTest {
     name = "blockdevice-usb-3";
     virtualDevices = [
