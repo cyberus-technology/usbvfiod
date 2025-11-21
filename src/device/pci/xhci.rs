@@ -22,6 +22,7 @@ use crate::device::{
         trb::{CommandTrbVariant, CompletionCode, EventTrb},
     },
 };
+use usbvfiod::hotplug_protocol::response::Response;
 
 use super::{
     config_space::BarInfo,
@@ -175,23 +176,18 @@ impl XhciController {
     /// # Parameters
     ///
     /// * `device` - The real USB device to attach
-    ///
-    /// # Panics
-    ///
-    /// Currently panics if no USB port is available for the device.
-    // TODO: Replace the panic (expect) with logic that does nothing if there is no space
-    // and indicates with the return value that the attachment failed. There is no good reason
-    // for us to crash here, we can continue running as before, it is up to the caller to
-    // decide how to handle the failed attachment attempt.
-    pub fn attach_device(&mut self, device: IdentifiableRealDevice) {
+    pub fn attach_device(&mut self, device: IdentifiableRealDevice) -> Result<Response, Response> {
         if let Some(speed) = device.real_device.speed() {
             let version = UsbVersion::from_speed(speed);
-            let available_port_index = (0..MAX_PORTS as usize)
+            let available_port_index = match (0..MAX_PORTS as usize)
                 .find(|&i| {
                     self.devices[i].is_none()
                         && matches!(Self::port_index_to_id(i), Some((v, _)) if v == version)
                 }) // filter USB2/3
-                .unwrap(); // crash if there is no free suitable port
+                {
+                    Some(port) => port,
+                    None => return Err(Response::NoFreePort),
+                };
 
             self.devices[available_port_index] = Some(device);
             self.portsc[available_port_index] = PortscRegister::new(
@@ -214,8 +210,10 @@ impl XhciController {
             // We organize the ports in an array, so we started with index 0.
             // For the guest driver, the first port is Port 1, so we need to offset our index.
             self.send_port_status_change_event(available_port_index as u8 + 1);
+            Ok(Response::SuccessfulOperation)
         } else {
             warn!("Failed to attach device: Unable to determine speed");
+            Err(Response::CouldNotDetermineSpeed)
         }
     }
 
