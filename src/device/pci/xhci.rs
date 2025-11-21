@@ -9,18 +9,21 @@ use std::sync::{
 };
 use tracing::{debug, info, trace, warn};
 
-use crate::device::{
-    bus::{BusDeviceRef, Request, SingleThreadedBusDevice},
-    interrupt_line::{DummyInterruptLine, InterruptLine},
-    pci::{
-        config_space::{ConfigSpace, ConfigSpaceBuilder},
-        constants::xhci::{
-            capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS, NUM_USB3_PORTS,
-            OP_BASE, RUN_BASE,
+use crate::{
+    device::{
+        bus::{BusDeviceRef, Request, SingleThreadedBusDevice},
+        interrupt_line::{DummyInterruptLine, InterruptLine},
+        pci::{
+            config_space::{ConfigSpace, ConfigSpaceBuilder},
+            constants::xhci::{
+                capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS,
+                NUM_USB3_PORTS, OP_BASE, RUN_BASE,
+            },
+            traits::PciDevice,
+            trb::{CommandTrbVariant, CompletionCode, EventTrb},
         },
-        traits::PciDevice,
-        trb::{CommandTrbVariant, CompletionCode, EventTrb},
     },
+    hotplug_protocol::response::Response,
 };
 
 use super::{
@@ -179,16 +182,19 @@ impl XhciController {
     // and indicates with the return value that the attachment failed. There is no good reason
     // for us to crash here, we can continue running as before, it is up to the caller to
     // decide how to handle the failed attachment attempt.
-    pub fn attach_device(&mut self, device: IdentifiableRealDevice) {
+    pub fn attach_device(&mut self, device: IdentifiableRealDevice) -> Result<Response, Response> {
         let device = device.real_device;
         if let Some(speed) = device.speed() {
             let version = UsbVersion::from_speed(speed);
-            let available_port_index = (0..MAX_PORTS as usize)
+            let available_port_index = match (0..MAX_PORTS as usize)
                 .find(|&i| {
                     self.devices[i].is_none()
                         && matches!(Self::port_index_to_id(i), Some((v, _)) if v == version)
                 }) // filter USB2/3
-                .unwrap(); // crash if there is no free suitable port
+                {
+                    Some(port) => port,
+                    None => return Err(Response::NoFreePort),
+                };
 
             self.devices[available_port_index] = Some(device);
             self.portsc[available_port_index] = PortscRegister::new(
@@ -220,8 +226,10 @@ impl XhciController {
             } else {
                 debug!("controller is not running, not notifying about the port status change");
             }
+            Ok(Response::SuccessfulOperation)
         } else {
             warn!("Failed to attach device: Unable to determine speed");
+            Err(Response::CouldNotDetermineSpeed)
         }
     }
 
