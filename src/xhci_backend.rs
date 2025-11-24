@@ -110,7 +110,7 @@ impl XhciBackend {
         self.controller
             .lock()
             .unwrap()
-            .set_device(IdentifiableRealDevice {
+            .attach_device(IdentifiableRealDevice {
                 bus_number: bus,
                 device_number: dev,
                 real_device: wrapped_device,
