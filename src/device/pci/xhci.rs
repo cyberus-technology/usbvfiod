@@ -56,7 +56,7 @@ impl UsbVersion {
 #[derive(Debug)]
 pub struct XhciController {
     /// real USB devices
-    devices: [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
+    devices: [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
 
     /// Slot-to-port mapping.
     slot_to_port: [Option<usize>; MAX_SLOTS as usize],
@@ -132,7 +132,11 @@ impl XhciController {
         self.slot_to_port
             .get(slot_id as usize - 1)
             .and_then(|slot_id| *slot_id)
-            .and_then(|port_index| self.devices[port_index].as_ref().map(|x| x.as_ref()))
+            .and_then(|port_index| {
+                self.devices[port_index]
+                    .as_ref()
+                    .map(|x| x.real_device.as_ref())
+            })
     }
 
     fn device_by_slot_expect(&self, slot_id: u8) -> &dyn RealDevice {
@@ -143,18 +147,18 @@ impl XhciController {
 
     fn device_by_slot_mut<'a>(
         slot_to_port: &[Option<usize>; MAX_SLOTS as usize],
-        devices: &'a mut [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
+        devices: &'a mut [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
         slot_id: u8,
     ) -> Option<&'a mut Box<dyn RealDevice>> {
         slot_to_port
             .get(slot_id as usize - 1)
             .and_then(|slot_id| *slot_id)
-            .and_then(|port_index| devices[port_index].as_mut())
+            .and_then(|port_index| devices[port_index].as_mut().map(|dev| &mut dev.real_device))
     }
 
     fn device_by_slot_mut_expect<'a>(
         slot_to_port: &[Option<usize>; MAX_SLOTS as usize],
-        devices: &'a mut [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
+        devices: &'a mut [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
         slot_id: u8,
     ) -> &'a mut Box<dyn RealDevice> {
         Self::device_by_slot_mut(slot_to_port, devices, slot_id).unwrap_or_else(|| {
@@ -180,8 +184,7 @@ impl XhciController {
     // for us to crash here, we can continue running as before, it is up to the caller to
     // decide how to handle the failed attachment attempt.
     pub fn set_device(&mut self, device: IdentifiableRealDevice) {
-        let device = device.real_device;
-        if let Some(speed) = device.speed() {
+        if let Some(speed) = device.real_device.speed() {
             let version = UsbVersion::from_speed(speed);
             let available_port_index = (0..MAX_PORTS as usize)
                 .find(|&i| {
