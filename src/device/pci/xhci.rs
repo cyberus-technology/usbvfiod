@@ -322,16 +322,27 @@ impl XhciController {
         if self.running {
             debug!("controller started with cmd {usbcmd:#x}");
 
-            // Send a port status change event, which signals the driver to
-            // inspect the PORTSC status register.
-            let trb = EventTrb::new_port_status_change_event_trb(0);
-            self.event_ring.lock().unwrap().enqueue(&trb);
+            // Send a port status change event for every attached device,
+            // signaling the driver to inspect the PORTSC status registers.
+            let ports_with_device = self
+                .devices
+                .iter()
+                .enumerate()
+                .filter(|(_, dev)| dev.is_some())
+                .map(|(index, _)| index as u8 + 1)
+                .collect::<Vec<_>>();
+            let num_devices = ports_with_device.len();
 
-            // XXX: This is just a test to see if we can generate interrupts.
-            // This will be removed once we generate interrupts in the right
-            // place, (e.g. generate a Port Connect Status Event) and test it.
-            self.interrupt_line.interrupt();
-            debug!("signalled a bogus interrupt");
+            for port in ports_with_device {
+                let trb = EventTrb::new_port_status_change_event_trb(port);
+                self.event_ring.lock().unwrap().enqueue(&trb);
+            }
+
+            // if we enqueued an event, we inform the driver with an interrupt.
+            if num_devices > 0 {
+                self.interrupt_line.interrupt();
+                debug!("Enqueue events and signaled interrupt to notify driver of {} attached devices.", num_devices);
+            }
         } else {
             debug!("controller stopped with cmd {usbcmd:#x}");
         }
