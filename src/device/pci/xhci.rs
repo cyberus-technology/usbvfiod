@@ -383,12 +383,14 @@ impl XhciController {
             }
             CommandTrbVariant::SetTrDequeuePointer => todo!(),
             CommandTrbVariant::ResetDevice(data) => {
-                // TODO this command probably requires more handling. The guest
+                // TODO this command requires more handling. The guest
                 // driver will attempt resets when descriptors do not match what
                 // the virtual port announces.
                 // Currently, we just acknowledge to not crash usbvfiod when
                 // testing with unsupported devices.
-                warn!("device reset! the driver probably didn't like it.");
+                // A known exception is the USB 2.0 protocol with one early
+                // reset being intended behaviour.
+                warn!("device reset! not fully implemented.");
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
