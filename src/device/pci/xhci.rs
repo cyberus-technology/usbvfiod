@@ -177,6 +177,12 @@ impl XhciController {
     ///
     /// * `device` - The real USB device to attach
     pub fn attach_device(&mut self, device: IdentifiableRealDevice) -> Result<Response, Response> {
+        if self
+            .attached_devices()
+            .contains(&(device.bus_number, device.device_number))
+        {
+            return Err(Response::AlreadyAttached);
+        }
         if let Some(speed) = device.real_device.speed() {
             let version = UsbVersion::from_speed(speed);
             let available_port_index = match (0..MAX_PORTS as usize)
@@ -215,6 +221,14 @@ impl XhciController {
             warn!("Failed to attach device: Unable to determine speed");
             Err(Response::CouldNotDetermineSpeed)
         }
+    }
+
+    fn attached_devices(&self) -> Vec<(u8, u8)> {
+        self.devices
+            .iter()
+            .filter_map(|dev| dev.as_ref())
+            .map(|dev| (dev.bus_number, dev.device_number))
+            .collect()
     }
 
     fn send_port_status_change_event(&self, port: u8) {
