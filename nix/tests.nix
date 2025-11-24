@@ -13,16 +13,28 @@ let
       # Cloud Hypervisor Guest Convenience
       ({ config, ... }: {
 
-        boot.kernelParams = [
-          # currently we can not handle the automatic suspend that is triggered so we disable dynamic power management
-          # https://github.com/torvalds/linux/blob/master/Documentation/driver-api/usb/power-management.rst
-          "usbcore.autosuspend=-1"
-        ] ++ (if debug then [
-          # Enable dyndbg messages for the XHCI driver.
-          "xhci_pci.dyndbg==pmfl"
-          "xhci_hcd.dyndbg==pmfl"
-        ]
-        else [ ]);
+        boot = {
+          initrd.kernelModules = [ "virtio_console" ];
+
+          kernelParams = [
+            # currently we can not handle the automatic suspend that is triggered so we disable dynamic power management
+            # https://github.com/torvalds/linux/blob/master/Documentation/driver-api/usb/power-management.rst
+            "usbcore.autosuspend=-1"
+
+            # Faster logging than serial would provide.
+            "console=hvc0"
+
+            # Keep a console available for early boot until we can write hvc.
+            "console=tty0"
+          ] ++ (if debug then [
+            # Enable dyndbg messages for the XHCI driver.
+            "xhci_pci.dyndbg==pmfl"
+            "xhci_hcd.dyndbg==pmfl"
+          ]
+          else [ ]);
+        };
+
+        services.journald.console = "hvc0";
 
         # Enable debug verbosity.
         boot.consoleLogLevel = lib.mkIf debug 8;
@@ -31,7 +43,7 @@ let
         environment.systemPackages = with pkgs; [ pciutils usbutils ];
 
         # network configuration for interactive debugging
-        networking.interfaces."ens1" = {
+        networking.interfaces."ens2" = {
           ipv4.addresses = [
             {
               address = "192.168.100.2";
@@ -82,6 +94,8 @@ let
   # well.
   usbvfiodSocket = "/tmp/usbvfio";
 
+  guestLogFile = "/tmp/console.log";
+
   # Will very likely be used in every test.
   basicMachineConfig = {
     environment.systemPackages = with pkgs; [
@@ -131,6 +145,10 @@ let
             with vm_host.nested(f"must succeed in cloud-hypervisor: {command}"):
                 (status, out) = vm_host.execute("ssh -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 '" + command + "'", timeout=timeout)
                 if status != 0:
+
+                    (guest_status, guest_out) = vm_host.execute("cat ${guestLogFile}")
+                    print(f'\n<<<<<GUEST LOGS>>>>>\n\n{guest_out}\n\n<<<<<END GUEST LOGS>>>>>\n')
+
                     vm_host.log(f"output: {out}")
                     raise RequestedAssertionFailed(
                         f"command `{command}` failed (exit code {status})"
@@ -459,7 +477,7 @@ let
                 Restart = "on-failure";
                 RestartSec = "2s";
                 ExecStart = ''
-                  ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console off \
+                  ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console file=${guestLogFile} --serial off \
                     --kernel ${netboot.kernel} \
                     --cmdline ${lib.escapeShellArg netboot.cmdline} \
                     --initramfs ${netboot.initrd} \
