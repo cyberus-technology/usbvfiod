@@ -49,7 +49,7 @@ impl Response {
     pub fn receive_from_socket(socket: &mut UnixStream) -> Result<Self, io::Error> {
         let mut buf = [0u8; 1];
         socket
-            .read(&mut buf)
+            .read_exact(&mut buf)
             .map(|_| Self::try_from(buf[0]).unwrap())
     }
 
