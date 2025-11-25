@@ -5,7 +5,7 @@ use std::{
 
 use nusb::MaybeFuture;
 use tracing::warn;
-use usbvfiod::hotplug_protocol::command::Command;
+use usbvfiod::hotplug_protocol::{command::Command, response::Response};
 
 use crate::device::pci::{
     nusb::NusbDeviceWrapper, realdevice::IdentifiableRealDevice, xhci::XhciController,
@@ -33,6 +33,15 @@ pub fn run_hotplug_server(socket: UnixListener, xhci_controller: Arc<Mutex<XhciC
                     .unwrap_or_else(|response| response);
                 if let Err(e) = response.send_over_socket(&mut stream) {
                     warn!("Successfully performed hot-plug command, but failed to send the response {}", e);
+                }
+            }
+            Ok(Command::List) => {
+                let devices = xhci_controller.lock().unwrap().attached_devices();
+                if let Err(e) = Response::ListFollowing.send_device_list(devices, &mut stream) {
+                    warn!(
+                        "Failed to send device list as response to a list command {}",
+                        e
+                    );
                 }
             }
             Ok(_) => todo!(),
