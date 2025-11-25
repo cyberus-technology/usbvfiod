@@ -29,8 +29,7 @@ fn main() -> Result<()> {
     let args = Cli::parse();
 
     if let Some(path) = args.attach {
-        let response = attach(path.as_path(), args.socket.as_path())?;
-        println!("{:?}", response);
+        attach(path.as_path(), args.socket.as_path())?;
     } else if let Some(vec) = args.detach {
         // Safety: clap ensures that vec.len() == 2.
         let bus = vec[0];
@@ -44,7 +43,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn attach(device_path: &Path, socket_path: &Path) -> Result<Response> {
+fn attach(device_path: &Path, socket_path: &Path) -> Result<()> {
     let (bus, dev, device_path) = resolve_path(device_path)
         .with_context(|| format!("Failed to resolve device path {:?}", device_path))?;
 
@@ -79,7 +78,9 @@ fn attach(device_path: &Path, socket_path: &Path) -> Result<Response> {
 
     let response = Response::receive_from_socket(&mut socket)
         .context("Failed to receive response over the socket")?;
-    Ok(response)
+    println!("{:?}", response);
+
+    Ok(())
 }
 
 fn detach(bus: u8, dev: u8, socket_path: &Path) -> Result<Response> {
