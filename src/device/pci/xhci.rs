@@ -223,7 +223,7 @@ impl XhciController {
         }
     }
 
-    fn attached_devices(&self) -> Vec<(u8, u8)> {
+    pub fn attached_devices(&self) -> Vec<(u8, u8)> {
         self.devices
             .iter()
             .filter_map(|dev| dev.as_ref())
