@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Parser};
 use nusb::MaybeFuture;
 use usbvfiod::hotplug_protocol::{
@@ -29,8 +29,7 @@ fn main() -> Result<()> {
     let args = Cli::parse();
 
     if let Some(path) = args.attach {
-        let response = attach(path.as_path(), args.socket.as_path())?;
-        println!("{:?}", response);
+        attach(path.as_path(), args.socket.as_path())?;
     } else if let Some(vec) = args.detach {
         // Safety: clap ensures that vec.len() == 2.
         let bus = vec[0];
@@ -38,19 +37,17 @@ fn main() -> Result<()> {
         let response = detach(bus, dev, args.socket.as_path())?;
         println!("{:?}", response);
     } else if args.list {
-        let devices = list_attached(args.socket.as_path())?;
-        println!("Attached devices:");
-        for (bus, dev) in devices {
-            println!("{}:{}", bus, dev);
-        }
+        list_attached(args.socket.as_path())?;
     }
 
     Ok(())
 }
 
-fn attach(device_path: &Path, socket_path: &Path) -> Result<Response> {
+fn attach(device_path: &Path, socket_path: &Path) -> Result<()> {
     let (bus, dev, device_path) = resolve_path(device_path)
         .with_context(|| format!("Failed to resolve device path {:?}", device_path))?;
+
+    println!("Requesting attachment of device {:03}:{:03}", bus, dev);
 
     let open_file = |err_msg: &str| {
         std::fs::OpenOptions::new()
@@ -83,7 +80,9 @@ fn attach(device_path: &Path, socket_path: &Path) -> Result<Response> {
 
     let response = Response::receive_from_socket(&mut socket)
         .context("Failed to receive response over the socket")?;
-    Ok(response)
+    println!("{:?}", response);
+
+    Ok(())
 }
 
 fn detach(bus: u8, dev: u8, socket_path: &Path) -> Result<Response> {
@@ -91,9 +90,39 @@ fn detach(bus: u8, dev: u8, socket_path: &Path) -> Result<Response> {
     todo!();
 }
 
-fn list_attached(socket_path: &Path) -> Result<Vec<(u8, u8)>> {
-    println!("list attached from {:?}", socket_path);
-    todo!();
+fn list_attached(socket_path: &Path) -> Result<()> {
+    let mut socket = UnixStream::connect(socket_path).context("Failed to open socket")?;
+    Command::List
+        .send_over_socket(&socket)
+        .context("Failed to send list command over socket")?;
+
+    let response = Response::receive_from_socket(&mut socket)
+        .context("Failed to receive response over the socket")?;
+
+    if response != Response::ListFollowing {
+        return Err(anyhow!(
+            "Expected the response {:?} but got {:?}",
+            Response::ListFollowing,
+            response
+        ));
+    }
+
+    let device_list = response.receive_devices_list(&mut socket)?;
+    match device_list.len() {
+        0 => println!("No attached devices"),
+        1 => {
+            println!("One attached device:");
+            println!("{:03}:{:03}", device_list[0].0, device_list[0].1);
+        }
+        count => {
+            println!("{} attached devices:", count);
+            for (bus, dev) in device_list {
+                println!("{:03}:{:03}", bus, dev);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Parser, Debug)]
