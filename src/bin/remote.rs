@@ -105,9 +105,18 @@ fn list_attached(socket_path: &Path) -> Result<()> {
     }
 
     let device_list = response.receive_devices_list(&mut socket)?;
-    println!("{} attached devices:", device_list.len());
-    for (bus, dev) in device_list {
-        println!("{}:{}", bus, dev);
+    match device_list.len() {
+        0 => println!("No attached devices"),
+        1 => {
+            println!("One attached device:");
+            println!("{:03}:{:03}", device_list[0].0, device_list[0].1);
+        }
+        count => {
+            println!("{} attached devices:", count);
+            for (bus, dev) in device_list {
+                println!("{:03}:{:03}", bus, dev);
+            }
+        }
     }
 
     Ok(())
