@@ -22,6 +22,30 @@ impl Response {
         socket.write(&[*self as u8]).map(|_| ())
     }
 
+    pub fn send_device_list(
+        &self,
+        devices: Vec<(u8, u8)>,
+        socket: &mut UnixStream,
+    ) -> Result<(), io::Error> {
+        assert_eq!(*self, Self::ListFollowing);
+
+        // send Response
+        self.send_over_socket(socket)?;
+
+        // send list length
+        assert!(devices.len() <= u8::MAX as usize);
+        socket.write_all(&[devices.len() as u8])?;
+
+        // send list data
+        let data = devices
+            .into_iter()
+            .flat_map(|(bus, dev)| [bus, dev])
+            .collect::<Vec<_>>();
+        socket.write_all(&data)?;
+
+        Ok(())
+    }
+
     pub fn receive_from_socket(socket: &mut UnixStream) -> Result<Self, io::Error> {
         let mut buf = [0u8; 1];
         socket
