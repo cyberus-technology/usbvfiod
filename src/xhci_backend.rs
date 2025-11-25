@@ -5,9 +5,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use nusb::MaybeFuture;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use vfio_bindings::bindings::vfio::{
     vfio_region_info, VFIO_PCI_BAR0_REGION_INDEX, VFIO_PCI_BAR1_REGION_INDEX,
@@ -21,15 +21,19 @@ use vfio_user::{IrqInfo, ServerBackend};
 use crate::device::{
     bus::{Request, RequestSize},
     interrupt_line::{DummyInterruptLine, InterruptLine},
-    pci::{nusb::NusbDeviceWrapper, traits::PciDevice, xhci::XhciController},
+    pci::{
+        nusb::NusbDeviceWrapper, realdevice::IdentifiableRealDevice, traits::PciDevice,
+        xhci::XhciController,
+    },
 };
+use usbvfiod::hotplug_protocol::device_paths::resolve_path;
 
 use crate::{dynamic_bus::DynamicBus, memory_segment::MemorySegment};
 
 #[derive(Debug)]
 pub struct XhciBackend {
     dma_bus: Arc<DynamicBus>,
-    controller: Mutex<XhciController>,
+    controller: Arc<Mutex<XhciController>>,
 }
 
 #[derive(Debug)]
@@ -68,34 +72,36 @@ impl XhciBackend {
         let dma_bus = Arc::new(DynamicBus::new());
 
         let backend = Self {
-            controller: Mutex::new(XhciController::new(dma_bus.clone())),
+            controller: Arc::new(Mutex::new(XhciController::new(dma_bus.clone()))),
             dma_bus,
         };
 
         for device in devices {
-            backend.add_device_from_path(device)?;
+            let path = device.as_ref();
+            // if device attachment fails, just warn
+            if let Err(err) = backend.add_device_from_path(path) {
+                warn!("Device attachment failed for {:?}: {}", path, err);
+            }
         }
 
         Ok(backend)
     }
 
-    /// Add a USB device to the virtual XHCI controller.
-    fn add_device(&self, device: nusb::Device) -> Result<()> {
-        // Add the device to the XHCI controller.
-        let wrapped_device = Box::new(NusbDeviceWrapper::new(device));
-        self.controller.lock().unwrap().set_device(wrapped_device);
-
-        Ok(())
+    /// Get access to the XhciController.
+    ///
+    /// This function is intended to hot-attach USB devices.
+    pub fn get_controller(&self) -> Arc<Mutex<XhciController>> {
+        self.controller.clone()
     }
 
     /// Add a USB device via its path in `/dev/bus/usb`.
     pub fn add_device_from_path(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path: &Path = path.as_ref();
+        let (bus, dev, path) = resolve_path(path)?;
         let open_file = |err_msg| {
             std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open(path)
+                .open(&path)
                 .with_context(|| format!("{}: {}", err_msg, path.display()))
         };
 
@@ -106,7 +112,18 @@ impl XhciBackend {
         // After the reset, the device instance is no longer usable and we need
         // to reopen.
         let file = open_file("Failed to open USB device file after device reset")?;
-        self.add_device(nusb::Device::from_fd(file.into()).wait()?)
+        let device = nusb::Device::from_fd(file.into()).wait()?;
+        let wrapped_device = Box::new(NusbDeviceWrapper::new(device));
+        self.controller
+            .lock()
+            .unwrap()
+            .attach_device(IdentifiableRealDevice {
+                bus_number: bus,
+                device_number: dev,
+                real_device: wrapped_device,
+            })
+            .map_err(|response| anyhow!("Error during device attach: {:?}", response))?;
+        Ok(())
     }
 }
 

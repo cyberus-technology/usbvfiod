@@ -44,6 +44,11 @@ pub struct Cli {
     /// See the documentation for how to identify devices.
     #[arg(long = "device", value_name = "PATH")]
     pub devices: Vec<PathBuf>,
+
+    /// The path where to create a listening Unix domain socket and listen
+    /// for hotplug commands.
+    #[arg(long, value_name = "PATH")]
+    pub hotplug_socket_path: Option<PathBuf>,
 }
 
 /// The location of the server socket for the vfio-user client connection.

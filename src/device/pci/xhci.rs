@@ -22,12 +22,13 @@ use crate::device::{
         trb::{CommandTrbVariant, CompletionCode, EventTrb},
     },
 };
+use usbvfiod::hotplug_protocol::response::Response;
 
 use super::{
     config_space::BarInfo,
     constants::xhci::{device_slots::endpoint_state, operational::usbsts, MAX_PORTS},
     device_slots::DeviceSlotManager,
-    realdevice::{EndpointWorkerInfo, RealDevice, Speed},
+    realdevice::{EndpointWorkerInfo, IdentifiableRealDevice, RealDevice, Speed},
     registers::PortscRegister,
     rings::{CommandRing, EventRing},
     trb::{
@@ -56,7 +57,7 @@ impl UsbVersion {
 #[derive(Debug)]
 pub struct XhciController {
     /// real USB devices
-    devices: [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
+    devices: [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
 
     /// Slot-to-port mapping.
     slot_to_port: [Option<usize>; MAX_SLOTS as usize],
@@ -132,7 +133,11 @@ impl XhciController {
         self.slot_to_port
             .get(slot_id as usize - 1)
             .and_then(|slot_id| *slot_id)
-            .and_then(|port_index| self.devices[port_index].as_ref().map(|x| x.as_ref()))
+            .and_then(|port_index| {
+                self.devices[port_index]
+                    .as_ref()
+                    .map(|x| x.real_device.as_ref())
+            })
     }
 
     fn device_by_slot_expect(&self, slot_id: u8) -> &dyn RealDevice {
@@ -143,18 +148,18 @@ impl XhciController {
 
     fn device_by_slot_mut<'a>(
         slot_to_port: &[Option<usize>; MAX_SLOTS as usize],
-        devices: &'a mut [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
+        devices: &'a mut [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
         slot_id: u8,
     ) -> Option<&'a mut Box<dyn RealDevice>> {
         slot_to_port
             .get(slot_id as usize - 1)
             .and_then(|slot_id| *slot_id)
-            .and_then(|port_index| devices[port_index].as_mut())
+            .and_then(|port_index| devices[port_index].as_mut().map(|dev| &mut dev.real_device))
     }
 
     fn device_by_slot_mut_expect<'a>(
         slot_to_port: &[Option<usize>; MAX_SLOTS as usize],
-        devices: &'a mut [Option<Box<dyn RealDevice>>; MAX_PORTS as usize],
+        devices: &'a mut [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
         slot_id: u8,
     ) -> &'a mut Box<dyn RealDevice> {
         Self::device_by_slot_mut(slot_to_port, devices, slot_id).unwrap_or_else(|| {
@@ -171,23 +176,24 @@ impl XhciController {
     /// # Parameters
     ///
     /// * `device` - The real USB device to attach
-    ///
-    /// # Panics
-    ///
-    /// Currently panics if no USB port is available for the device.
-    // TODO: Replace the panic (expect) with logic that does nothing if there is no space
-    // and indicates with the return value that the attachment failed. There is no good reason
-    // for us to crash here, we can continue running as before, it is up to the caller to
-    // decide how to handle the failed attachment attempt.
-    pub fn set_device(&mut self, device: Box<dyn RealDevice>) {
-        if let Some(speed) = device.speed() {
+    pub fn attach_device(&mut self, device: IdentifiableRealDevice) -> Result<Response, Response> {
+        if self
+            .attached_devices()
+            .contains(&(device.bus_number, device.device_number))
+        {
+            return Err(Response::AlreadyAttached);
+        }
+        if let Some(speed) = device.real_device.speed() {
             let version = UsbVersion::from_speed(speed);
-            let available_port_index = (0..MAX_PORTS as usize)
+            let available_port_index = match (0..MAX_PORTS as usize)
                 .find(|&i| {
                     self.devices[i].is_none()
                         && matches!(Self::port_index_to_id(i), Some((v, _)) if v == version)
                 }) // filter USB2/3
-                .unwrap(); // crash if there is no free suitable port
+                {
+                    Some(port) => port,
+                    None => return Err(Response::NoFreePort),
+                };
 
             self.devices[available_port_index] = Some(device);
             self.portsc[available_port_index] = PortscRegister::new(
@@ -206,8 +212,34 @@ impl XhciController {
                 "Attached {} device to {:?} port {}",
                 speed, version, port_id
             );
+
+            // We organize the ports in an array, so we started with index 0.
+            // For the guest driver, the first port is Port 1, so we need to offset our index.
+            self.send_port_status_change_event(available_port_index as u8 + 1);
+            Ok(Response::SuccessfulOperation)
         } else {
             warn!("Failed to attach device: Unable to determine speed");
+            Err(Response::CouldNotDetermineSpeed)
+        }
+    }
+
+    fn attached_devices(&self) -> Vec<(u8, u8)> {
+        self.devices
+            .iter()
+            .filter_map(|dev| dev.as_ref())
+            .map(|dev| (dev.bus_number, dev.device_number))
+            .collect()
+    }
+
+    fn send_port_status_change_event(&self, port: u8) {
+        if self.running {
+            let trb = EventTrb::new_port_status_change_event_trb(port);
+            self.event_ring.lock().unwrap().enqueue(&trb);
+
+            self.interrupt_line.interrupt();
+            debug!("informed the driver about the port change");
+        } else {
+            debug!("controller is not running, not notifying about the port status change");
         }
     }
 
@@ -302,16 +334,27 @@ impl XhciController {
         if self.running {
             debug!("controller started with cmd {usbcmd:#x}");
 
-            // Send a port status change event, which signals the driver to
-            // inspect the PORTSC status register.
-            let trb = EventTrb::new_port_status_change_event_trb(0);
-            self.event_ring.lock().unwrap().enqueue(&trb);
+            // Send a port status change event for every attached device,
+            // signaling the driver to inspect the PORTSC status registers.
+            let ports_with_device = self
+                .devices
+                .iter()
+                .enumerate()
+                .filter(|(_, dev)| dev.is_some())
+                .map(|(index, _)| index as u8 + 1)
+                .collect::<Vec<_>>();
+            let num_devices = ports_with_device.len();
 
-            // XXX: This is just a test to see if we can generate interrupts.
-            // This will be removed once we generate interrupts in the right
-            // place, (e.g. generate a Port Connect Status Event) and test it.
-            self.interrupt_line.interrupt();
-            debug!("signalled a bogus interrupt");
+            for port in ports_with_device {
+                let trb = EventTrb::new_port_status_change_event_trb(port);
+                self.event_ring.lock().unwrap().enqueue(&trb);
+            }
+
+            // if we enqueued an event, we inform the driver with an interrupt.
+            if num_devices > 0 {
+                self.interrupt_line.interrupt();
+                debug!("Enqueue events and signaled interrupt to notify driver of {} attached devices.", num_devices);
+            }
         } else {
             debug!("controller stopped with cmd {usbcmd:#x}");
         }
