@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Parser};
 use nusb::MaybeFuture;
 use usbvfiod::hotplug_protocol::{
@@ -38,11 +38,7 @@ fn main() -> Result<()> {
         let response = detach(bus, dev, args.socket.as_path())?;
         println!("{:?}", response);
     } else if args.list {
-        let devices = list_attached(args.socket.as_path())?;
-        println!("Attached devices:");
-        for (bus, dev) in devices {
-            println!("{}:{}", bus, dev);
-        }
+        list_attached(args.socket.as_path())?;
     }
 
     Ok(())
@@ -91,9 +87,30 @@ fn detach(bus: u8, dev: u8, socket_path: &Path) -> Result<Response> {
     todo!();
 }
 
-fn list_attached(socket_path: &Path) -> Result<Vec<(u8, u8)>> {
-    println!("list attached from {:?}", socket_path);
-    todo!();
+fn list_attached(socket_path: &Path) -> Result<()> {
+    let mut socket = UnixStream::connect(socket_path).context("Failed to open socket")?;
+    Command::List
+        .send_over_socket(&socket)
+        .context("Failed to send list command over socket")?;
+
+    let response = Response::receive_from_socket(&mut socket)
+        .context("Failed to receive response over the socket")?;
+
+    if response != Response::ListFollowing {
+        return Err(anyhow!(
+            "Expected the response {:?} but got {:?}",
+            Response::ListFollowing,
+            response
+        ));
+    }
+
+    let device_list = response.receive_devices_list(&mut socket)?;
+    println!("{} attached devices:", device_list.len());
+    for (bus, dev) in device_list {
+        println!("{}:{}", bus, dev);
+    }
+
+    Ok(())
 }
 
 #[derive(Parser, Debug)]
