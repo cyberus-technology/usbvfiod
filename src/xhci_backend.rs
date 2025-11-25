@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use nusb::MaybeFuture;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 use vfio_bindings::bindings::vfio::{
     vfio_region_info, VFIO_PCI_BAR0_REGION_INDEX, VFIO_PCI_BAR1_REGION_INDEX,
@@ -80,7 +80,7 @@ impl XhciBackend {
             let path = device.as_ref();
             // if device attachment fails, just warn
             if let Err(err) = backend.add_device_from_path(path) {
-                warn!("Device attachment failed for {:?}: {}", path, err);
+                panic!("Device attachment failed for {:?}: {}", path, err);
             }
         }
 

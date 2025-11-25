@@ -459,6 +459,8 @@ let
             serviceConfig = {
               User = "usbaccess";
               Group = "usbaccess";
+              Restart = "on-failure";
+              RestartSec = "2s";
               ExecStart = ''
                 ${lib.getExe usbvfiod} ${if args.debug then "-v" else ""} --socket-path ${usbvfiodSocket} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
               '';
