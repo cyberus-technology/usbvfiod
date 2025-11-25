@@ -28,6 +28,32 @@ impl Response {
             .read(&mut buf)
             .map(|_| Self::try_from(buf[0]).unwrap())
     }
+
+    pub fn receive_devices_list(
+        &self,
+        socket: &mut UnixStream,
+    ) -> Result<Vec<(u8, u8)>, io::Error> {
+        assert_eq!(*self, Self::ListFollowing);
+
+        let mut buf = [0u8; 1];
+        socket.read_exact(&mut buf)?;
+        // bus and device number take one byte each.
+        let len = buf[0] * 2;
+        let mut buf = vec![0u8; len as usize];
+
+        socket.read_exact(&mut buf)?;
+
+        let mut devices = vec![];
+        let mut iter = buf.into_iter();
+
+        // iter's length is a multiple of 2, so we always get either both values
+        // or none.
+        while let (Some(bus), Some(dev)) = (iter.next(), iter.next()) {
+            devices.push((bus, dev));
+        }
+
+        Ok(devices)
+    }
 }
 
 impl TryFrom<u8> for Response {
