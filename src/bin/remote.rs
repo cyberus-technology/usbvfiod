@@ -47,6 +47,8 @@ fn attach(device_path: &Path, socket_path: &Path) -> Result<()> {
     let (bus, dev, device_path) = resolve_path(device_path)
         .with_context(|| format!("Failed to resolve device path {:?}", device_path))?;
 
+    println!("Requesting attachment of device {:03}:{:03}", bus, dev);
+
     let open_file = |err_msg: &str| {
         std::fs::OpenOptions::new()
             .read(true)
