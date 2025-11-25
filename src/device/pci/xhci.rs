@@ -390,7 +390,10 @@ impl XhciController {
                 // testing with unsupported devices.
                 // A known exception is the USB 2.0 protocol with one early
                 // reset being intended behaviour.
-                warn!("device reset! not fully implemented.");
+                warn!(
+                    "device reset on slot {}! not fully implemented.",
+                    data.slot_id
+                );
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
