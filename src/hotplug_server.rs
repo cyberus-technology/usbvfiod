@@ -42,13 +42,14 @@ fn handle_command(
             fd,
         } => handle_attach(bus, dev, fd, socket, xhci_controller)
             .context("Failed to handle attach command")?,
+        Command::Detach { bus, device } => handle_detach(bus, device, socket, xhci_controller)
+            .context("Failed to handle detach command")?,
         Command::List => {
             let devices = xhci_controller.lock().unwrap().attached_devices();
             Response::ListFollowing
                 .send_device_list(devices, socket)
                 .context("Failed to handle list command")?;
         }
-        _ => todo!(),
     }
 
     Ok(())
@@ -77,6 +78,24 @@ fn handle_attach(
     response
         .send_over_socket(socket)
         .context("Successfully performed hot-plug command, but failed to send the response")?;
+
+    Ok(())
+}
+
+fn handle_detach(
+    bus: u8,
+    dev: u8,
+    socket: &mut UnixStream,
+    controller: Arc<Mutex<XhciController>>,
+) -> Result<()> {
+    let response = controller
+        .lock()
+        .unwrap()
+        .detach_device(bus, dev)
+        .unwrap_or_else(|response| response);
+    response
+        .send_over_socket(socket)
+        .context("Successfully performed detach command, but failed to send the response")?;
 
     Ok(())
 }
