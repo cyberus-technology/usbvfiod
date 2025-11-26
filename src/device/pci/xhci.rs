@@ -227,6 +227,45 @@ impl XhciController {
         }
     }
 
+    /// Detach a real USB device from the controller.
+    pub fn detach_device(
+        &mut self,
+        bus_number: u8,
+        device_number: u8,
+    ) -> Result<Response, Response> {
+        // find out on which port the device is connected
+        let index = match self
+            .devices
+            .iter()
+            .enumerate()
+            .filter_map(|(i, dev)| dev.as_ref().map(|d| (i, d)))
+            .filter(|(_, dev)| dev.bus_number == bus_number && dev.device_number == device_number)
+            .map(|(i, _)| i)
+            .next()
+        {
+            Some(i) => i,
+            None => return Err(Response::NoSuchDevice),
+        };
+
+        // update portsc register
+        self.portsc[index] = PortscRegister::new(portsc::PP | portsc::CSC);
+        self.send_port_status_change_event(index as u8 + 1);
+
+        // remove slot-to-port mapping (there might be none if the driver
+        // did not enumerate the device)
+        for mapping in &mut self.slot_to_port {
+            if *mapping == Some(index) {
+                *mapping = None;
+                break;
+            }
+        }
+
+        // remove
+        self.devices[index] = None;
+
+        Ok(Response::SuccessfulOperation)
+    }
+
     const fn port_index_to_id(index: usize) -> Option<(UsbVersion, usize)> {
         match index as u64 {
             0..NUM_USB3_PORTS => Some((UsbVersion::USB3, index + 1)),
@@ -411,13 +450,27 @@ impl XhciController {
                 )
             }
             CommandTrbVariant::ConfigureEndpoint(data) => {
-                self.handle_configure_endpoint(&data);
-                EventTrb::new_command_completion_event_trb(
-                    cmd.address,
-                    0,
-                    CompletionCode::Success,
-                    data.slot_id,
-                )
+                if self
+                    .slot_to_port
+                    .get(data.slot_id as usize - 1)
+                    .map(|mapping| mapping.is_some())
+                    .unwrap_or(false)
+                {
+                    self.handle_configure_endpoint(&data);
+                    EventTrb::new_command_completion_event_trb(
+                        cmd.address,
+                        0,
+                        CompletionCode::Success,
+                        data.slot_id,
+                    )
+                } else {
+                    EventTrb::new_command_completion_event_trb(
+                        cmd.address,
+                        0,
+                        CompletionCode::IncompatibleDeviceError,
+                        data.slot_id,
+                    )
+                }
             }
             CommandTrbVariant::EvaluateContext => todo!(),
             CommandTrbVariant::ResetEndpoint => todo!(),
