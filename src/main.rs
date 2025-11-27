@@ -1,5 +1,6 @@
 //! usbvfiod
 
+mod async_runtime;
 mod cli;
 mod device;
 mod dynamic_bus;
@@ -10,6 +11,7 @@ mod xhci_backend;
 use std::{os::unix::net::UnixListener, thread};
 
 use anyhow::{Context, Result};
+use async_runtime::init_runtime;
 use clap::Parser;
 use cli::Cli;
 use hotplug_server::run_hotplug_server;
@@ -33,6 +35,8 @@ fn main() -> Result<()> {
 
     // Log messages from the log crate as well.
     tracing_log::LogTracer::init()?;
+
+    init_runtime().context("Failed to initialize async runtime")?;
 
     let mut backend = xhci_backend::XhciBackend::new(&args.devices)
         .context("Failed to create virtual XHCI controller")?;
