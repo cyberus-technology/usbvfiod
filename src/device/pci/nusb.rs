@@ -23,7 +23,7 @@ use std::{
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
     interfaces: Vec<nusb::Interface>,
-    endpoints: [Option<Sender<()>>; 30],
+    endpoints: [Option<Sender<()>>; 32],
 }
 
 impl Debug for NusbDeviceWrapper {
@@ -183,7 +183,7 @@ impl RealDevice for NusbDeviceWrapper {
 
     fn transfer(&mut self, endpoint_id: u8) {
         // transfer requires targeted endpoint to be enabled, panic if not
-        match self.endpoints[endpoint_id as usize - 2].as_mut() {
+        match self.endpoints[endpoint_id as usize].as_mut() {
             // Currently we start an endpoint worker once and never stop it,
             // so sending should never fail. When the worker has panicked, it
             // makes sense for us to panic as well.
@@ -202,7 +202,7 @@ impl RealDevice for NusbDeviceWrapper {
             "request to enable invalid endpoint id on nusb device. endpoint_id = {}",
             endpoint_id
         );
-        if self.endpoints[endpoint_id as usize - 2].is_some() {
+        if self.endpoints[endpoint_id as usize].is_some() {
             // endpoint is already enabled.
             //
             // The Linux kernel configures and directly afterwards reconfigures
@@ -291,7 +291,7 @@ impl RealDevice for NusbDeviceWrapper {
                 sender
             }
         };
-        self.endpoints[endpoint_id as usize - 2] = Some(endpoint_sender);
+        self.endpoints[endpoint_id as usize] = Some(endpoint_sender);
         debug!("enabled EP{} on real device", endpoint_id);
     }
 }
