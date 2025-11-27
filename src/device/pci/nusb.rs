@@ -5,6 +5,7 @@ use nusb::transfer::{
 use nusb::{Interface, MaybeFuture};
 use tracing::{debug, trace, warn};
 
+use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
 use crate::device::pci::trb::{CompletionCode, EventTrb};
 
@@ -12,13 +13,13 @@ use super::realdevice::{EndpointType, EndpointWorkerInfo, Speed};
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::{
     fmt::Debug,
     sync::atomic::{fence, Ordering},
     time::Duration,
 };
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
@@ -79,7 +80,6 @@ impl NusbDeviceWrapper {
         &self,
         endpoint_number: u8,
         endpoint_type: EndpointType,
-        name: String,
         worker_info: EndpointWorkerInfo,
         receiver: Receiver<()>,
     ) {
@@ -97,28 +97,19 @@ impl NusbDeviceWrapper {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Bulk, Out>(endpoint_number)
                     .unwrap();
-                thread::Builder::new()
-                    .name(name.clone())
-                    .spawn(move || transfer_out_worker(endpoint, worker_info, receiver))
-                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+                runtime().spawn(transfer_out_worker(endpoint, worker_info, receiver));
             }
             EndpointType::BulkIn => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Bulk, In>(endpoint_number)
                     .unwrap();
-                thread::Builder::new()
-                    .name(name.clone())
-                    .spawn(move || transfer_in_worker::<Bulk>(endpoint, worker_info, receiver))
-                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+                runtime().spawn(transfer_in_worker(endpoint, worker_info, receiver));
             }
             EndpointType::InterruptIn => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Interrupt, In>(endpoint_number)
                     .unwrap();
-                thread::Builder::new()
-                    .name(name.clone())
-                    .spawn(move || transfer_in_worker::<Interrupt>(endpoint, worker_info, receiver))
-                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+                runtime().spawn(transfer_in_worker(endpoint, worker_info, receiver));
             }
             a => {
                 todo!(
@@ -156,7 +147,7 @@ impl RealDevice for NusbDeviceWrapper {
             // makes sense for us to panic as well.
             Some(sender) => {
                 trace!("Sending wake up to worker of ep {}", endpoint_id);
-                sender.send(()).unwrap();
+                runtime().block_on(async move { sender.send(()).await.unwrap() });
             }
             None => panic!("transfer for uninitialized endpoint (EP{})", endpoint_id),
         };
@@ -179,33 +170,26 @@ impl RealDevice for NusbDeviceWrapper {
         }
 
         let endpoint_number = endpoint_id / 2;
-        let name = format!(
-            "worker Slot: {}, Endpoint ID/Device Context Index: {}, EP Number: {}, Type: {:?}",
-            worker_info.slot_id, endpoint_id, endpoint_number, endpoint_type,
-        );
 
         let sender = match endpoint_type {
             EndpointType::Control => {
-                let (sender, receiver) = mpsc::channel();
+                let (sender, receiver) = mpsc::channel(10);
                 let device = self.device.clone();
-                thread::Builder::new()
-                    .name(name.clone())
-                    .spawn(move || control_worker(device, worker_info, receiver))
-                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+                runtime().spawn(control_worker(device, worker_info, receiver));
                 sender
             }
             a => {
-                let (sender, receiver) = mpsc::channel();
+                let (sender, receiver) = mpsc::channel(10);
                 let is_out_endpoint = endpoint_id % 2 == 0;
                 match is_out_endpoint {
                     true => {
-                        self.spawn_endpoint_worker(endpoint_number, a, name, worker_info, receiver);
+                        self.spawn_endpoint_worker(endpoint_number, a, worker_info, receiver);
                     }
                     false => {
                         // set directional bit to make it IN
                         let endpoint_number = 0x80 | endpoint_number;
 
-                        self.spawn_endpoint_worker(endpoint_number, a, name, worker_info, receiver);
+                        self.spawn_endpoint_worker(endpoint_number, a, worker_info, receiver);
                     }
                 }
                 sender
@@ -218,7 +202,11 @@ impl RealDevice for NusbDeviceWrapper {
 
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
-fn control_worker(device: nusb::Device, worker_info: EndpointWorkerInfo, wakeup: Receiver<()>) {
+async fn control_worker(
+    device: nusb::Device,
+    worker_info: EndpointWorkerInfo,
+    mut wakeup: Receiver<()>,
+) {
     let dma_bus = worker_info.dma_bus;
 
     let transfer_ring = worker_info.transfer_ring;
@@ -232,7 +220,7 @@ fn control_worker(device: nusb::Device, worker_info: EndpointWorkerInfo, wakeup:
                 );
                 // We currently assume that the main thread always keeps the
                 // channel open, so unwrap is safe.
-                wakeup.recv().unwrap();
+                wakeup.recv().await.unwrap();
                 trace!(
                     "worker thread ep {}: Received wake up",
                     worker_info.endpoint_id
@@ -366,10 +354,10 @@ fn control_transfer_host_to_device(
 
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
-fn transfer_in_worker<EpType: BulkOrInterrupt>(
+async fn transfer_in_worker<EpType: BulkOrInterrupt>(
     mut endpoint: nusb::Endpoint<EpType, In>,
     worker_info: EndpointWorkerInfo,
-    wakeup: Receiver<()>,
+    mut wakeup: Receiver<()>,
 ) {
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
@@ -381,7 +369,7 @@ fn transfer_in_worker<EpType: BulkOrInterrupt>(
                 );
                 // We currently assume that the main thread always keeps the
                 // channel open, so unwrap is safe.
-                wakeup.recv().unwrap();
+                wakeup.recv().await.unwrap();
                 trace!(
                     "worker thread ep {}: Received wake up",
                     worker_info.endpoint_id
@@ -473,10 +461,10 @@ fn transfer_in_worker<EpType: BulkOrInterrupt>(
 
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
-fn transfer_out_worker(
+async fn transfer_out_worker(
     mut endpoint: nusb::Endpoint<Bulk, Out>,
     worker_info: EndpointWorkerInfo,
-    wakeup: Receiver<()>,
+    mut wakeup: Receiver<()>,
 ) {
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
@@ -488,7 +476,7 @@ fn transfer_out_worker(
                 );
                 // We currently assume that the main thread always keeps the
                 // channel open, so unwrap is safe.
-                wakeup.recv().unwrap();
+                wakeup.recv().await.unwrap();
                 trace!(
                     "worker thread ep {}: Received wake up",
                     worker_info.endpoint_id
