@@ -42,6 +42,7 @@ pub trait RealDevice: Debug + Send {
     fn speed(&self) -> Option<Speed>;
     fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef);
     fn enable_endpoint(&mut self, worker_info: EndpointWorkerInfo, endpoint_type: EndpointType);
+    fn enable_default_control_endpoint(&mut self, worker_info: EndpointWorkerInfo);
     fn transfer(&mut self, endpoint_id: u8);
 }
 

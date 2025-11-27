@@ -20,6 +20,7 @@ use std::{
     time::Duration,
 };
 
+#[derive(Clone)]
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
     interfaces: Vec<nusb::Interface>,
@@ -293,6 +294,100 @@ impl RealDevice for NusbDeviceWrapper {
         };
         self.endpoints[endpoint_id as usize] = Some(endpoint_sender);
         debug!("enabled EP{} on real device", endpoint_id);
+    }
+    fn enable_default_control_endpoint(&mut self, worker_info: EndpointWorkerInfo) {
+        let slot_id: u8 = worker_info.slot_id;
+        // default control endpoint always 1
+        let endpoint_id: u8 = worker_info.endpoint_id;
+
+        let name = format!(
+            "worker Slot {}, EP Number {}, Device Context Index {}, Type {:?}",
+            slot_id,
+            // endpoint number/context per usb default 0
+            // this needs to change if we ever open more than the default control endpoint
+            0_u8,
+            endpoint_id,
+            EndpointType::Control,
+        );
+
+        let (sender, receiver) = mpsc::channel();
+
+        // thread builder
+        let device = self.clone();
+        thread::Builder::new()
+            .name(name.clone())
+            .spawn(move || control_worker(device, worker_info, receiver))
+            .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+
+        self.endpoints[endpoint_id as usize] = Some(sender);
+        debug!("enabled EP{} on real device", endpoint_id);
+    }
+}
+
+// cognitive complexity required because of the high cost of trace! messages
+#[allow(clippy::cognitive_complexity)]
+fn control_worker(
+    device: NusbDeviceWrapper,
+    worker_info: EndpointWorkerInfo,
+    wakeup: Receiver<()>,
+) {
+    let dma_bus = worker_info.dma_bus;
+
+    let transfer_ring = worker_info.transfer_ring;
+
+    loop {
+        let request = match transfer_ring.next_request() {
+            None => {
+                trace!(
+                    "worker thread ep {}: No TRB on transfer ring, going to sleep",
+                    worker_info.endpoint_id
+                );
+                // We currently assume that the main thread always keeps the
+                // channel open, so unwrap is safe.
+                wakeup.recv().unwrap();
+                trace!(
+                    "worker thread ep {}: Received wake up",
+                    worker_info.endpoint_id
+                );
+                continue;
+            }
+            Some(Err(err)) => panic!(
+                "Failed to retrieve request from control transfer ring: {:?}",
+                err
+            ),
+            Some(Ok(res)) => res,
+        };
+
+        debug!(
+            "got request with: request_type={}, request={}, value={}, index={}, length={}, data={:?}",
+            request.request_type,
+            request.request,
+            request.value,
+            request.index,
+            request.length,
+            request.data
+        );
+
+        // forward request to device
+        let direction = request.request_type & 0x80 != 0;
+        match direction {
+            true => device.control_transfer_device_to_host(&request, &dma_bus),
+            false => device.control_transfer_host_to_device(&request, &dma_bus),
+        }
+
+        // send transfer event
+        let trb = EventTrb::new_transfer_event_trb(
+            request.address,
+            0,
+            CompletionCode::Success,
+            false,
+            worker_info.endpoint_id,
+            worker_info.slot_id,
+        );
+
+        worker_info.event_ring.lock().unwrap().enqueue(&trb);
+        worker_info.interrupt_line.interrupt();
+        debug!("sent Transfer Event and signaled interrupt");
     }
 }
 

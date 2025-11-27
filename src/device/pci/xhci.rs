@@ -129,23 +129,6 @@ impl XhciController {
         }
     }
 
-    fn device_by_slot(&self, slot_id: u8) -> Option<&dyn RealDevice> {
-        self.slot_to_port
-            .get(slot_id as usize - 1)
-            .and_then(|slot_id| *slot_id)
-            .and_then(|port_index| {
-                self.devices[port_index]
-                    .as_ref()
-                    .map(|x| x.real_device.as_ref())
-            })
-    }
-
-    fn device_by_slot_expect(&self, slot_id: u8) -> &dyn RealDevice {
-        self.device_by_slot(slot_id).unwrap_or_else(|| {
-            panic!("Trying to access device with slot id {slot_id}, but there is no such device.")
-        })
-    }
-
     fn device_by_slot_mut<'a>(
         slot_to_port: &[Option<usize>; MAX_SLOTS as usize],
         devices: &'a mut [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
@@ -397,6 +380,28 @@ impl XhciController {
             }
             CommandTrbVariant::AddressDevice(data) => {
                 self.handle_address_device(&data);
+
+                let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+
+                // Program requires real USB device for all XHCI operations (pattern used throughout file)
+                let device = Self::device_by_slot_mut_expect(
+                    &self.slot_to_port,
+                    &mut self.devices,
+                    data.slot_id,
+                );
+
+                let worker_info = EndpointWorkerInfo {
+                    slot_id: data.slot_id,
+                    endpoint_id: 1,
+                    transfer_ring: device_context.get_transfer_ring(1),
+                    dma_bus: self.dma_bus.clone(),
+                    event_ring: self.event_ring.clone(),
+                    interrupt_line: self.interrupt_line.clone(),
+                };
+
+                // start control trb worker thread
+                device.enable_default_control_endpoint(worker_info);
+
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
@@ -527,11 +532,9 @@ impl XhciController {
 
         match value {
             ep if ep == 0 || ep > 31 => panic!("invalid value {} on doorbell write", ep),
-            1 => self.check_control_endpoint(slot_id),
             ep => {
-                // When the driver rings the doorbell with a non-control
-                // endpoint id, a lot must have happened before (e.g., descriptor
-                // reads on the control endpoint), so we never reach this point
+                // When the driver rings the doorbell with a endpoint id, a lot
+                // must have happened before, so we never reach this point
                 // when no device is available (except for an invalid doorbell
                 // write, in which case panicking is the right thing to do.
                 assert!(
@@ -544,62 +547,6 @@ impl XhciController {
                 device.transfer(ep as u8);
             }
         };
-    }
-
-    fn check_control_endpoint(&self, slot: u8) {
-        // check request available
-        let transfer_ring = self
-            .device_slot_manager
-            .get_device_context(slot)
-            .get_control_transfer_ring();
-
-        let request = match transfer_ring.next_request() {
-            None => {
-                // XXX currently, we expect that a doorbell ring always
-                // notifies us about a new control request. We want to
-                // clearly see when another case occurs, so we want to panic
-                // here.
-                // Once we know all behaviors, the panic can probably be
-                // removed.
-                panic!(
-                "Device doorbell was rang, but there is no request on the control transfer ring"
-            );
-            }
-            Some(Err(err)) => panic!(
-                "Failed to retrieve request from control transfer ring: {:?}",
-                err
-            ),
-            Some(Ok(res)) => res,
-        };
-
-        debug!(
-            "got request with: request_type={}, request={}, value={}, index={}, length={}, data={:?}",
-            request.request_type,
-            request.request,
-            request.value,
-            request.index,
-            request.length,
-            request.data
-        );
-        // forward request to device
-        // Port status change events are suggestions for the driver to check portsc registers.
-        // If no device is found, the driver won't start device initialization. Therefore,
-        // when we reach this control transfer path, we should assume a device is present.
-        let device = self.device_by_slot_expect(slot);
-        device.control_transfer(&request, &self.dma_bus);
-
-        // send transfer event
-        let trb = EventTrb::new_transfer_event_trb(
-            request.address,
-            0,
-            CompletionCode::Success,
-            false,
-            1,
-            slot,
-        );
-        self.event_ring.lock().unwrap().enqueue(&trb);
-        self.interrupt_line.interrupt();
-        debug!("sent Transfer Event and signaled interrupt");
     }
 }
 
