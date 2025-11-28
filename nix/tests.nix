@@ -1,7 +1,7 @@
 /**
   This file contains integration tests for usbvfiod.
 */
-{ lib, pkgs, usbvfiod }:
+{ lib, pkgs, usbvfiod, remote }:
 let
   # For the VM that we start in Cloud Hypervisor, we re-use the netboot image.
   netbootNixos = debug: lib.nixosSystem {
@@ -93,6 +93,7 @@ let
   # good choice for a production setup, but for this test it works
   # well.
   usbvfiodSocket = "/tmp/usbvfio";
+  usbvfiodSocketHotplug = "/tmp/hotplug";
 
   guestLogFile = "/tmp/console.log";
 
@@ -101,6 +102,7 @@ let
     environment.systemPackages = with pkgs; [
       jq
       usbutils
+      remote
     ];
     users.groups.usbaccess = { };
     users.users.usbaccess = {
@@ -169,8 +171,10 @@ let
           retry(check_success, timeout)
           return(output)
 
-    def search(pattern: str, string: str):
-      if re.search(pattern, string):
+    def search(pattern: str, string: str, exists: bool = True):
+      if re.search(pattern, string) and exists:
+        return
+      elif not re.search(pattern, string) and not exists:
         return
       else:
         raise RequestedAssertionFailed(
@@ -462,7 +466,7 @@ let
               Restart = "on-failure";
               RestartSec = "2s";
               ExecStart = ''
-                ${lib.getExe usbvfiod} ${if args.debug then "-v" else ""} --socket-path ${usbvfiodSocket} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
+                ${lib.getExe usbvfiod} ${if args.debug then "-v" else ""} --socket-path ${usbvfiodSocket} --hotplug-socket-path ${usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
               '';
             };
           };
@@ -647,4 +651,34 @@ in
     '';
   };
 
+  hot-attach = mkUsbTest {
+    name = "hot-attach";
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 1;
+        udevRule.symlink = "usbdevice";
+        attachedOnStartup = "host";
+      }
+    ];
+    testScript = ''
+      # Check no device is attached.
+      out = machine.succeed("remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
+      search("No attached devices", out)
+      print(out)
+
+      # Attach a device.
+      out = machine.succeed("remote --socket ${usbvfiodSocketHotplug} --attach /dev/bus/usb/usbdevice", timeout=60)
+      print(out)
+
+      # Confirm the usb device attached to usbvfiod.
+      out = machine.succeed("remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
+      print(out)
+
+      # Confirm it is known in the guest.
+      out = cloud_hypervisor.wait_until_succeeds('lsblk')
+      search("sda", out, False)
+    '';
+  };
 }
