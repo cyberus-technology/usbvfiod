@@ -311,11 +311,11 @@ impl DeviceContext {
         EndpointContext::new(addr, self.dma_bus.clone())
     }
 
-    pub fn get_transfer_ring(&self, endpoint_index: u64) -> TransferRing {
-        let endpoint_context = self.get_endpoint_context_internal(endpoint_index);
+    pub fn get_transfer_ring(&self, endpoint_id: u64) -> TransferRing {
+        let endpoint_context = self.get_endpoint_context_internal(endpoint_id);
         match endpoint_context.get_state() {
             DISABLED => {
-                panic!("requested transferring for disabled EP{}", endpoint_index)
+                panic!("requested transferring for disabled EP{}", endpoint_id)
             }
             RUNNING => {}
             _ => endpoint_context.set_state(RUNNING),
