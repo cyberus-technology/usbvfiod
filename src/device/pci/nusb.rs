@@ -2,7 +2,7 @@ use nusb::transfer::{
     Buffer, Bulk, BulkOrInterrupt, ControlIn, ControlOut, ControlType, In, Interrupt, Out,
     Recipient,
 };
-use nusb::MaybeFuture;
+use nusb::{Interface, MaybeFuture};
 use tracing::{debug, trace, warn};
 
 use crate::device::bus::BusDeviceRef;
@@ -208,14 +208,6 @@ impl NusbDeviceWrapper {
             }
         }
     }
-
-    fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
-        let direction = request.request_type & 0x80 != 0;
-        match direction {
-            true => self.control_transfer_device_to_host(request, dma_bus),
-            false => self.control_transfer_host_to_device(request, dma_bus),
-        }
-    }
 }
 
 impl From<nusb::Speed> for Speed {
@@ -253,7 +245,7 @@ impl RealDevice for NusbDeviceWrapper {
     fn enable_endpoint(&mut self, worker_info: EndpointWorkerInfo, endpoint_type: EndpointType) {
         let endpoint_id = worker_info.endpoint_id;
         assert!(
-            (2..=31).contains(&endpoint_id),
+            (1..=31).contains(&endpoint_id),
             "request to enable invalid endpoint id on nusb device. endpoint_id = {}",
             endpoint_id
         );
@@ -266,115 +258,41 @@ impl RealDevice for NusbDeviceWrapper {
             return;
         }
 
-        let endpoint_index = endpoint_id / 2;
-        let is_out_endpoint = endpoint_id % 2 == 0;
+        let endpoint_number = endpoint_id / 2;
         let name = format!(
-            "worker Slot {} Endpoint {} (EP{} {}, {:?})",
-            worker_info.slot_id,
-            endpoint_id,
-            endpoint_index,
-            if is_out_endpoint { "OUT" } else { "IN" },
-            endpoint_type,
+            "worker Slot: {}, Endpoint ID/Device Context Index: {}, EP Number: {}, Type: {:?}",
+            worker_info.slot_id, endpoint_id, endpoint_number, endpoint_type,
         );
-        let endpoint_sender = match is_out_endpoint {
-            true => {
-                // unwrap can fail when
-                // - driver asks for invalid endpoint (driver's fault)
-                // - driver switched interfaces to alternate modes, which could
-                //   enable endpoint that we are currently not aware of (TODO)
-                // In both cases, we cannot reasonably continue and want to see
-                // what we encountered, so panicking is the intended behavior.
-                let interface_of_endpoint = &self.interfaces[self
-                    .get_interface_number_containing_endpoint(endpoint_index)
-                    .unwrap()];
-                let endpoint = interface_of_endpoint
-                    .endpoint::<Bulk, Out>(endpoint_index)
-                    .unwrap();
+
+        let sender = match endpoint_type {
+            EndpointType::Control => {
                 let (sender, receiver) = mpsc::channel();
+                let device = self.clone();
                 thread::Builder::new()
                     .name(name.clone())
-                    .spawn(move || transfer_out_worker(endpoint, worker_info, receiver))
+                    .spawn(move || control_worker(device, worker_info, receiver))
                     .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
                 sender
             }
-            false => {
-                let endpoint_index = 0x80 | endpoint_index;
-                // unwrap can fail when
-                // - driver asks for invalid endpoint (driver's fault)
-                // - driver switched interfaces to alternate modes, which could
-                //   enable endpoint that we are currently not aware of (TODO)
-                // In both cases, we cannot reasonably continue and want to see
-                // what we encountered, so panicking is the intended behavior.
-                let interface_of_endpoint = &self.interfaces[self
-                    .get_interface_number_containing_endpoint(endpoint_index)
-                    .unwrap()];
+            a => {
                 let (sender, receiver) = mpsc::channel();
-                match endpoint_type {
-                    EndpointType::BulkIn => {
-                        let endpoint = interface_of_endpoint
-                            .endpoint::<Bulk, In>(endpoint_index)
-                            .unwrap();
-                        thread::Builder::new()
-                            .name(name.clone())
-                            .spawn(move || {
-                                transfer_in_worker::<Bulk>(endpoint, worker_info, receiver)
-                            })
-                            .unwrap_or_else(|_| {
-                                panic!("Failed to launch endpoint worker thread {name}")
-                            });
+                let is_out_endpoint = endpoint_id % 2 == 0;
+                match is_out_endpoint {
+                    true => {
+                        self.spawn_endpoint_worker(endpoint_number, a, name, worker_info, receiver);
                     }
-                    EndpointType::InterruptIn => {
-                        let endpoint = interface_of_endpoint
-                            .endpoint::<Interrupt, In>(endpoint_index)
-                            .unwrap();
-                        thread::Builder::new()
-                            .name(name.clone())
-                            .spawn(move || {
-                                transfer_in_worker::<Interrupt>(endpoint, worker_info, receiver)
-                            })
-                            .unwrap_or_else(|_| {
-                                panic!("Failed to launch endpoint worker thread {name}")
-                            });
-                    }
-                    _ => {
-                        panic!(
-                            "Unexpected endpoint type for IN endpoint: {:?}",
-                            endpoint_type
-                        );
+                    false => {
+                        // set directional bit to make it IN
+                        let endpoint_number = 0x80 | endpoint_number;
+
+                        self.spawn_endpoint_worker(endpoint_number, a, name, worker_info, receiver);
                     }
                 }
                 sender
             }
         };
-        self.endpoints[endpoint_id as usize] = Some(endpoint_sender);
-        debug!("enabled EP{} on real device", endpoint_id);
-    }
-    fn enable_default_control_endpoint(&mut self, worker_info: EndpointWorkerInfo) {
-        let slot_id: u8 = worker_info.slot_id;
-        // default control endpoint always 1
-        let endpoint_id: u8 = worker_info.endpoint_id;
-
-        let name = format!(
-            "worker Slot {}, EP Number {}, Device Context Index {}, Type {:?}",
-            slot_id,
-            // endpoint number/context per usb default 0
-            // this needs to change if we ever open more than the default control endpoint
-            0_u8,
-            endpoint_id,
-            EndpointType::Control,
-        );
-
-        let (sender, receiver) = mpsc::channel();
-
-        // thread builder
-        let device = self.clone();
-        thread::Builder::new()
-            .name(name.clone())
-            .spawn(move || control_worker(device, worker_info, receiver))
-            .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
-
         self.endpoints[endpoint_id as usize] = Some(sender);
-        debug!("enabled EP{} on real device", endpoint_id);
+        debug!("enabled Endpoint ID/DCI: {} on real device", endpoint_id);
     }
 }
 

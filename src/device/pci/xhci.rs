@@ -18,6 +18,7 @@ use crate::device::{
             capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS, NUM_USB3_PORTS,
             OP_BASE, RUN_BASE,
         },
+        realdevice::EndpointType,
         traits::PciDevice,
         trb::{CommandTrbVariant, CompletionCode, EventTrb},
     },
@@ -400,7 +401,7 @@ impl XhciController {
                 };
 
                 // start control trb worker thread
-                device.enable_default_control_endpoint(worker_info);
+                device.enable_endpoint(worker_info, EndpointType::Control);
 
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
