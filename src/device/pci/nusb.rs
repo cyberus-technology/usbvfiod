@@ -154,6 +154,68 @@ impl NusbDeviceWrapper {
                 .any(|ep| ep.address() == endpoint_id)
         })
     }
+
+    fn spawn_endpoint_worker(
+        &self,
+        endpoint_number: u8,
+        endpoint_type: EndpointType,
+        name: String,
+        worker_info: EndpointWorkerInfo,
+        receiver: Receiver<()>,
+    ) {
+        // unwrap can fail when
+        // - driver asks for invalid endpoint (driver's fault)
+        // - driver switched interfaces to alternate modes, which could
+        //   enable endpoint that we are currently not aware of (TODO)
+        // In both cases, we cannot reasonably continue and want to see
+        // what we encountered, so panicking is the intended behavior.
+        let interface_of_endpoint: &Interface = &self.interfaces[self
+            .get_interface_number_containing_endpoint(endpoint_number)
+            .unwrap()];
+        match endpoint_type {
+            EndpointType::BulkOut => {
+                let endpoint = interface_of_endpoint
+                    .endpoint::<Bulk, Out>(endpoint_number)
+                    .unwrap();
+                thread::Builder::new()
+                    .name(name.clone())
+                    .spawn(move || transfer_out_worker(endpoint, worker_info, receiver))
+                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+            }
+            EndpointType::BulkIn => {
+                let endpoint = interface_of_endpoint
+                    .endpoint::<Bulk, In>(endpoint_number)
+                    .unwrap();
+                thread::Builder::new()
+                    .name(name.clone())
+                    .spawn(move || transfer_in_worker::<Bulk>(endpoint, worker_info, receiver))
+                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+            }
+            EndpointType::InterruptIn => {
+                let endpoint = interface_of_endpoint
+                    .endpoint::<Interrupt, In>(endpoint_number)
+                    .unwrap();
+                thread::Builder::new()
+                    .name(name.clone())
+                    .spawn(move || transfer_in_worker::<Interrupt>(endpoint, worker_info, receiver))
+                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+            }
+            a => {
+                todo!(
+                    "can not enable endpoint type {:?}; worker not yet implemented",
+                    a
+                )
+            }
+        }
+    }
+
+    fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
+        let direction = request.request_type & 0x80 != 0;
+        match direction {
+            true => self.control_transfer_device_to_host(request, dma_bus),
+            false => self.control_transfer_host_to_device(request, dma_bus),
+        }
+    }
 }
 
 impl From<nusb::Speed> for Speed {
@@ -172,14 +234,6 @@ impl From<nusb::Speed> for Speed {
 impl RealDevice for NusbDeviceWrapper {
     fn speed(&self) -> Option<Speed> {
         self.device.speed().map(|speed| speed.into())
-    }
-
-    fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
-        let direction = request.request_type & 0x80 != 0;
-        match direction {
-            true => self.control_transfer_device_to_host(request, dma_bus),
-            false => self.control_transfer_host_to_device(request, dma_bus),
-        }
     }
 
     fn transfer(&mut self, endpoint_id: u8) {
