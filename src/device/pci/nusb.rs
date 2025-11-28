@@ -245,8 +245,8 @@ async fn control_worker(
         // forward request to device
         let direction = request.request_type & 0x80 != 0;
         match direction {
-            true => control_transfer_device_to_host(device.clone(), &request, &dma_bus),
-            false => control_transfer_host_to_device(device.clone(), &request, &dma_bus),
+            true => control_transfer_device_to_host(device.clone(), &request, &dma_bus).await,
+            false => control_transfer_host_to_device(device.clone(), &request, &dma_bus).await,
         }
 
         // send transfer event
@@ -281,7 +281,7 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
     (recipient, control_type)
 }
 
-fn control_transfer_device_to_host(
+async fn control_transfer_device_to_host(
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
@@ -297,10 +297,7 @@ fn control_transfer_device_to_host(
     };
 
     debug!("sending control in request to device");
-    let data = match device
-        .control_in(control, Duration::from_millis(200))
-        .wait()
-    {
+    let data = match device.control_in(control, Duration::from_millis(200)).await {
         Ok(data) => {
             debug!("control in data {:?}", data);
             data
@@ -320,7 +317,7 @@ fn control_transfer_device_to_host(
     fence(Ordering::Release);
 }
 
-fn control_transfer_host_to_device(
+async fn control_transfer_host_to_device(
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
@@ -343,7 +340,7 @@ fn control_transfer_host_to_device(
     debug!("sending control out request to device");
     match device
         .control_out(control, Duration::from_millis(200))
-        .wait()
+        .await
     {
         Ok(_) => debug!("control out success"),
         Err(error) => warn!("control out request failed: {:?}", error),
@@ -387,10 +384,7 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
-        // We do not want to time out on requests. We should probably use async
-        // because nusb supports either async requests or synchronous variants
-        // with timeouts. Manually implementing polling seems overkill here.
-        let buffer = endpoint.wait_next_complete(Duration::MAX).unwrap();
+        let buffer = endpoint.next_complete().await;
         let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
             Greater => {
                 // Got more data than requested. We must not write more data than
@@ -496,8 +490,7 @@ async fn transfer_out_worker(
             debug!("OUT data: {:?}", data);
         }
         endpoint.submit(data.into());
-        // Timeout indicates device unresponsive - no reasonable recovery possible
-        endpoint.wait_next_complete(Duration::MAX).unwrap();
+        endpoint.next_complete().await;
 
         if !normal_data.interrupt_on_completion {
             trace!("Processed TRB without IOC flag; sending no transfer event");
