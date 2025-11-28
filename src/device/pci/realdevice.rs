@@ -1,9 +1,6 @@
 use crate::device::{bus::BusDeviceRef, interrupt_line::InterruptLine};
 
-use super::{
-    rings::{EventRing, TransferRing},
-    usbrequest::UsbRequest,
-};
+use super::rings::{EventRing, TransferRing};
 use std::{
     fmt::{self, Debug},
     sync::{Arc, Mutex},
@@ -40,7 +37,6 @@ impl fmt::Display for Speed {
 
 pub trait RealDevice: Debug + Send {
     fn speed(&self) -> Option<Speed>;
-    fn control_transfer(&self, request: &UsbRequest, dma_bus: &BusDeviceRef);
     fn enable_endpoint(&mut self, worker_info: EndpointWorkerInfo, endpoint_type: EndpointType);
     fn transfer(&mut self, endpoint_id: u8);
 }

@@ -311,26 +311,11 @@ impl DeviceContext {
         EndpointContext::new(addr, self.dma_bus.clone())
     }
 
-    /// Give access to context of the default control endpoint.
-    ///
-    /// Endpoint 0 is a special endpoint. It always exists and it is bi-directional.
-    fn get_control_endpoint_context(&self) -> EndpointContext {
-        // internal index 1 refers to the context of endpoint 0
-        self.get_endpoint_context_internal(1)
-    }
-
-    /// Give access to the transfer ring of the default control endpoint.
-    ///
-    /// Endpoint 0 is a special endpoint. It always exists and it is bi-directional.
-    pub fn get_control_transfer_ring(&self) -> TransferRing {
-        TransferRing::new(self.get_control_endpoint_context(), self.dma_bus.clone())
-    }
-
-    pub fn get_transfer_ring(&self, endpoint_index: u64) -> TransferRing {
-        let endpoint_context = self.get_endpoint_context_internal(endpoint_index);
+    pub fn get_transfer_ring(&self, endpoint_id: u64) -> TransferRing {
+        let endpoint_context = self.get_endpoint_context_internal(endpoint_id);
         match endpoint_context.get_state() {
             DISABLED => {
-                panic!("requested transferring for disabled EP{}", endpoint_index)
+                panic!("requested transferring for disabled EP{}", endpoint_id)
             }
             RUNNING => {}
             _ => endpoint_context.set_state(RUNNING),
