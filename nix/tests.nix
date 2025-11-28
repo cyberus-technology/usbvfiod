@@ -681,4 +681,52 @@ in
       cloud_hypervisor.wait_until_succeeds('lsblk /dev/sda')
     '';
   };
+
+  graceful-attach-detach = mkUsbTest {
+    name = "graceful-attach-detach";
+    debug = false;
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 1;
+        udevRule.symlink = "usbdevice";
+        attachedOnStartup = "host";
+      }
+    ];
+    testScript = ''
+      # TODO check from within the guest
+      # Confirm the boot blockdevice is the only one in cloud-hypervisor.
+
+      # run attach detach actions a few times
+      # currently assumes it will again attach at /dev/sda on the second, third, ...
+      for i in range(1,10):
+        # List and print all attached devices.
+        out = machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
+        search("No attached devices", out)
+
+        # Attach a device.
+        out = machine.succeed("remote --socket ${usbvfiodSocketHotplug} --attach /dev/bus/usb/usbdevice", timeout=60)
+        print(out)
+
+        # Confirm the usb device attached to usbvfiod.
+        out = machine.succeed("remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
+        devices = re.findall(r'\b\d{3}:\d{3}\b', out)
+        search("attached device", out)
+        search(r"\d+:\d+", out)
+        print(out)
+
+        # Confirm it is known in the guest.
+        cloud_hypervisor.wait_until_succeeds('lsblk /dev/sda')
+        cloud_hypervisor.succeed("lsblk")
+
+        # Detach all devices (incredibly overshooting the single device environment it currently is).
+        for device in devices:
+          busnr, devicenr = device.split(":")
+          out = machine.succeed(f"remote --socket ${usbvfiodSocketHotplug} --detach {busnr} {devicenr}", timeout=60)
+          print(out)
+
+        cloud_hypervisor.succeed('! lsblk /dev/sda', timeout = 60)
+    '';
+  };
 }
