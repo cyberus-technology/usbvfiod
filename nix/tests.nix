@@ -681,4 +681,51 @@ in
       search("sda", out, False)
     '';
   };
+
+  graceful-attach-detach = mkUsbTest {
+    name = "graceful-attach-detach";
+    debug = false;
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 1;
+        udevRule.symlink = "usbdevice";
+        attachedOnStartup = "host";
+      }
+    ];
+    testScript = ''
+      # TODO check from within the guest
+      # Confirm the boot blockdevice is the only one in cloud-hypervisor.
+
+      # run attach detach actions a few times
+      for i in range(1,10):
+        # List and print all attached devices.
+        out = machine.wait_until_succeeds("remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
+        print(out)
+
+        # Attach a device.
+        out = machine.succeed("remote --socket ${usbvfiodSocketHotplug} --attach /dev/bus/usb/usbdevice", timeout=60)
+        print(out)
+
+        # Confirm the usb device attached to usbvfiod.
+        out = machine.succeed("remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
+        print(out)
+
+        # Confirm it is known in the guest.
+        cloud_hypervisor.wait_until_succeeds('lsblk | grep -q "sda"')
+        cloud_hypervisor.succeed("sleep 3")
+
+        # Detach a device.
+        devices = re.findall(r'\b\d{3}:\d{3}\b', out)
+        for device in devices:
+          busnr, devicenr = device.split(":")
+          out = machine.succeed(f"remote --socket ${usbvfiodSocketHotplug} --detach {busnr} {devicenr}", timeout=60)
+          print(out)
+
+        # Check for remnants i.e. if the detach was actually graceful.
+        # TODO
+
+    '';
+  };
 }
