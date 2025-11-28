@@ -3,6 +3,7 @@ use nusb::transfer::{
     Recipient,
 };
 use nusb::{Interface, MaybeFuture};
+use tokio::sync::Notify;
 use tracing::{debug, trace, warn};
 
 use crate::async_runtime::runtime;
@@ -13,18 +14,17 @@ use super::realdevice::{EndpointType, EndpointWorkerInfo, Speed};
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
-use std::thread;
+use std::sync::Arc;
 use std::{
     fmt::Debug,
     sync::atomic::{fence, Ordering},
     time::Duration,
 };
-use tokio::sync::mpsc::{self, Receiver, Sender};
 
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
     interfaces: Vec<nusb::Interface>,
-    endpoints: [Option<Sender<()>>; 32],
+    endpoints: [Option<Arc<Notify>>; 30],
 }
 
 impl Debug for NusbDeviceWrapper {
@@ -81,7 +81,7 @@ impl NusbDeviceWrapper {
         endpoint_number: u8,
         endpoint_type: EndpointType,
         worker_info: EndpointWorkerInfo,
-        receiver: Receiver<()>,
+        receiver: Arc<Notify>,
     ) {
         // unwrap can fail when
         // - driver asks for invalid endpoint (driver's fault)
@@ -145,9 +145,9 @@ impl RealDevice for NusbDeviceWrapper {
             // Currently we start an endpoint worker once and never stop it,
             // so sending should never fail. When the worker has panicked, it
             // makes sense for us to panic as well.
-            Some(sender) => {
+            Some(worker_notifier) => {
                 trace!("Sending wake up to worker of ep {}", endpoint_id);
-                runtime().block_on(async move { sender.send(()).await.unwrap() });
+                worker_notifier.notify_one();
             }
             None => panic!("transfer for uninitialized endpoint (EP{})", endpoint_id),
         };
@@ -171,31 +171,31 @@ impl RealDevice for NusbDeviceWrapper {
 
         let endpoint_number = endpoint_id / 2;
 
-        let sender = match endpoint_type {
+        let wakeup = match endpoint_type {
             EndpointType::Control => {
-                let (sender, receiver) = mpsc::channel(10);
+                let wakeup = Arc::new(Notify::new());
                 let device = self.device.clone();
-                runtime().spawn(control_worker(device, worker_info, receiver));
-                sender
+                runtime().spawn(control_worker(device, worker_info, wakeup.clone()));
+                wakeup
             }
             a => {
-                let (sender, receiver) = mpsc::channel(10);
+                let wakeup = Arc::new(Notify::new());
                 let is_out_endpoint = endpoint_id % 2 == 0;
                 match is_out_endpoint {
                     true => {
-                        self.spawn_endpoint_worker(endpoint_number, a, worker_info, receiver);
+                        self.spawn_endpoint_worker(endpoint_number, a, worker_info, wakeup.clone());
                     }
                     false => {
                         // set directional bit to make it IN
                         let endpoint_number = 0x80 | endpoint_number;
 
-                        self.spawn_endpoint_worker(endpoint_number, a, worker_info, receiver);
+                        self.spawn_endpoint_worker(endpoint_number, a, worker_info, wakeup.clone());
                     }
                 }
-                sender
+                wakeup
             }
         };
-        self.endpoints[endpoint_id as usize] = Some(sender);
+        self.endpoints[endpoint_id as usize] = Some(wakeup);
         debug!("enabled Endpoint ID/DCI: {} on real device", endpoint_id);
     }
 }
@@ -205,7 +205,7 @@ impl RealDevice for NusbDeviceWrapper {
 async fn control_worker(
     device: nusb::Device,
     worker_info: EndpointWorkerInfo,
-    mut wakeup: Receiver<()>,
+    wakeup: Arc<Notify>,
 ) {
     let dma_bus = worker_info.dma_bus;
 
@@ -218,9 +218,7 @@ async fn control_worker(
                     "worker thread ep {}: No TRB on transfer ring, going to sleep",
                     worker_info.endpoint_id
                 );
-                // We currently assume that the main thread always keeps the
-                // channel open, so unwrap is safe.
-                wakeup.recv().await.unwrap();
+                wakeup.notified().await;
                 trace!(
                     "worker thread ep {}: Received wake up",
                     worker_info.endpoint_id
@@ -357,7 +355,7 @@ fn control_transfer_host_to_device(
 async fn transfer_in_worker<EpType: BulkOrInterrupt>(
     mut endpoint: nusb::Endpoint<EpType, In>,
     worker_info: EndpointWorkerInfo,
-    mut wakeup: Receiver<()>,
+    wakeup: Arc<Notify>,
 ) {
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
@@ -367,9 +365,7 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
                     "worker thread ep {}: No TRB on transfer ring, going to sleep",
                     worker_info.endpoint_id
                 );
-                // We currently assume that the main thread always keeps the
-                // channel open, so unwrap is safe.
-                wakeup.recv().await.unwrap();
+                wakeup.notified().await;
                 trace!(
                     "worker thread ep {}: Received wake up",
                     worker_info.endpoint_id
@@ -464,7 +460,7 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
 async fn transfer_out_worker(
     mut endpoint: nusb::Endpoint<Bulk, Out>,
     worker_info: EndpointWorkerInfo,
-    mut wakeup: Receiver<()>,
+    wakeup: Arc<Notify>,
 ) {
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
@@ -474,9 +470,7 @@ async fn transfer_out_worker(
                     "worker thread ep {}: No TRB on transfer ring, going to sleep",
                     worker_info.endpoint_id
                 );
-                // We currently assume that the main thread always keeps the
-                // channel open, so unwrap is safe.
-                wakeup.recv().await.unwrap();
+                wakeup.notified().await;
                 trace!(
                     "worker thread ep {}: Received wake up",
                     worker_info.endpoint_id
