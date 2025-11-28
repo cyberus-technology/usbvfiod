@@ -77,6 +77,13 @@
             mainProgram = "usbvfiod";
           };
         });
+        remote = craneLib.buildPackage (commonArgs // {
+          inherit cargoArtifacts;
+
+          meta = {
+            mainProgram = "remote";
+          };
+        });
       in
       {
         checks = {
@@ -92,7 +99,7 @@
           };
 
           # Build the crate as part of `nix flake check` for convenience
-          inherit usbvfiod;
+          inherit usbvfiod remote;
 
           # Run clippy (and deny all warnings) on the crate source,
           # again, reusing the dependency artifacts from above.
@@ -140,11 +147,11 @@
             cargoNextestPartitionsExtraArgs = "--no-tests=pass";
           });
         } // (import ./nix/tests.nix {
-          inherit lib pkgs;
-          usbvfiod = self.packages.default;
+          inherit lib pkgs usbvfiod remote;
         });
 
         packages = {
+          inherit usbvfiod remote;
           default = usbvfiod;
         } // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
           usbvfiod-llvm-coverage = craneLibLLvmTools.cargoLlvmCov (commonArgs // {
