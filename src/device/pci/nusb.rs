@@ -20,7 +20,6 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone)]
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
     interfaces: Vec<nusb::Interface>,
@@ -63,85 +62,6 @@ impl NusbDeviceWrapper {
             device,
             interfaces,
             endpoints: std::array::from_fn(|_| None),
-        }
-    }
-
-    fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
-        let recipient = match request_type & 0x1f {
-            0 => Recipient::Device,
-            1 => Recipient::Interface,
-            2 => Recipient::Endpoint,
-            val => panic!("invalid recipient {}", val),
-        };
-        let control_type = match (request_type >> 5) & 0x3 {
-            0 => ControlType::Standard,
-            1 => ControlType::Class,
-            2 => ControlType::Vendor,
-            val => panic!("invalid type {}", val),
-        };
-        (recipient, control_type)
-    }
-
-    fn control_transfer_device_to_host(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
-        let (recipient, control_type) = Self::extract_recipient_and_type(request.request_type);
-        let control = ControlIn {
-            control_type,
-            recipient,
-            request: request.request,
-            value: request.value,
-            index: request.index,
-            length: request.length,
-        };
-
-        debug!("sending control in request to device");
-        let data = match self
-            .device
-            .control_in(control, Duration::from_millis(200))
-            .wait()
-        {
-            Ok(data) => {
-                debug!("control in data {:?}", data);
-                data
-            }
-            Err(error) => {
-                warn!("control in request failed: {:?}", error);
-                vec![0; 0]
-            }
-        };
-
-        // TODO: ideally the control transfer targets the right location for us and we get rid
-        // of the additional DMA write here.
-        dma_bus.write_bulk(request.data.unwrap(), &data);
-
-        // Ensure the data copy to guest memory completes before the subsequent
-        // transfer event write completes.
-        fence(Ordering::Release);
-    }
-
-    fn control_transfer_host_to_device(&self, request: &UsbRequest, dma_bus: &BusDeviceRef) {
-        let data = request.data.map_or_else(Vec::new, |addr| {
-            let mut data = vec![0; request.length as usize];
-            dma_bus.read_bulk(addr, &mut data);
-            data
-        });
-        let (recipient, control_type) = Self::extract_recipient_and_type(request.request_type);
-        let control = ControlOut {
-            control_type,
-            recipient,
-            request: request.request,
-            value: request.value,
-            index: request.index,
-            data: &data,
-        };
-
-        debug!("sending control out request to device");
-        match self
-            .device
-            .control_out(control, Duration::from_millis(200))
-            .wait()
-        {
-            Ok(_) => debug!("control out success"),
-            Err(error) => warn!("control out request failed: {:?}", error),
         }
     }
 
@@ -267,7 +187,7 @@ impl RealDevice for NusbDeviceWrapper {
         let sender = match endpoint_type {
             EndpointType::Control => {
                 let (sender, receiver) = mpsc::channel();
-                let device = self.clone();
+                let device = self.device.clone();
                 thread::Builder::new()
                     .name(name.clone())
                     .spawn(move || control_worker(device, worker_info, receiver))
@@ -298,11 +218,7 @@ impl RealDevice for NusbDeviceWrapper {
 
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
-fn control_worker(
-    device: NusbDeviceWrapper,
-    worker_info: EndpointWorkerInfo,
-    wakeup: Receiver<()>,
-) {
+fn control_worker(device: nusb::Device, worker_info: EndpointWorkerInfo, wakeup: Receiver<()>) {
     let dma_bus = worker_info.dma_bus;
 
     let transfer_ring = worker_info.transfer_ring;
@@ -343,8 +259,8 @@ fn control_worker(
         // forward request to device
         let direction = request.request_type & 0x80 != 0;
         match direction {
-            true => device.control_transfer_device_to_host(&request, &dma_bus),
-            false => device.control_transfer_host_to_device(&request, &dma_bus),
+            true => control_transfer_device_to_host(device.clone(), &request, &dma_bus),
+            false => control_transfer_host_to_device(device.clone(), &request, &dma_bus),
         }
 
         // send transfer event
@@ -360,6 +276,91 @@ fn control_worker(
         worker_info.event_ring.lock().unwrap().enqueue(&trb);
         worker_info.interrupt_line.interrupt();
         debug!("sent Transfer Event and signaled interrupt");
+    }
+}
+
+fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
+    let recipient = match request_type & 0x1f {
+        0 => Recipient::Device,
+        1 => Recipient::Interface,
+        2 => Recipient::Endpoint,
+        val => panic!("invalid recipient {}", val),
+    };
+    let control_type = match (request_type >> 5) & 0x3 {
+        0 => ControlType::Standard,
+        1 => ControlType::Class,
+        2 => ControlType::Vendor,
+        val => panic!("invalid type {}", val),
+    };
+    (recipient, control_type)
+}
+
+fn control_transfer_device_to_host(
+    device: nusb::Device,
+    request: &UsbRequest,
+    dma_bus: &BusDeviceRef,
+) {
+    let (recipient, control_type) = extract_recipient_and_type(request.request_type);
+    let control = ControlIn {
+        control_type,
+        recipient,
+        request: request.request,
+        value: request.value,
+        index: request.index,
+        length: request.length,
+    };
+
+    debug!("sending control in request to device");
+    let data = match device
+        .control_in(control, Duration::from_millis(200))
+        .wait()
+    {
+        Ok(data) => {
+            debug!("control in data {:?}", data);
+            data
+        }
+        Err(error) => {
+            warn!("control in request failed: {:?}", error);
+            vec![0; 0]
+        }
+    };
+
+    // TODO: ideally the control transfer targets the right location for us and we get rid
+    // of the additional DMA write here.
+    dma_bus.write_bulk(request.data.unwrap(), &data);
+
+    // Ensure the data copy to guest memory completes before the subsequent
+    // transfer event write completes.
+    fence(Ordering::Release);
+}
+
+fn control_transfer_host_to_device(
+    device: nusb::Device,
+    request: &UsbRequest,
+    dma_bus: &BusDeviceRef,
+) {
+    let data = request.data.map_or_else(Vec::new, |addr| {
+        let mut data = vec![0; request.length as usize];
+        dma_bus.read_bulk(addr, &mut data);
+        data
+    });
+    let (recipient, control_type) = extract_recipient_and_type(request.request_type);
+    let control = ControlOut {
+        control_type,
+        recipient,
+        request: request.request,
+        value: request.value,
+        index: request.index,
+        data: &data,
+    };
+
+    debug!("sending control out request to device");
+    match device
+        .control_out(control, Duration::from_millis(200))
+        .wait()
+    {
+        Ok(_) => debug!("control out success"),
+        Err(error) => warn!("control out request failed: {:?}", error),
     }
 }
 
