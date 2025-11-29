@@ -9,18 +9,21 @@ use std::sync::{
 };
 use tracing::{debug, info, trace, warn};
 
-use crate::device::{
-    bus::{BusDeviceRef, Request, SingleThreadedBusDevice},
-    interrupt_line::{DummyInterruptLine, InterruptLine},
-    pci::{
-        config_space::{ConfigSpace, ConfigSpaceBuilder},
-        constants::xhci::{
-            capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS, NUM_USB3_PORTS,
-            OP_BASE, RUN_BASE,
+use crate::{
+    async_runtime::runtime,
+    device::{
+        bus::{BusDeviceRef, Request, SingleThreadedBusDevice},
+        interrupt_line::{DummyInterruptLine, InterruptLine},
+        pci::{
+            config_space::{ConfigSpace, ConfigSpaceBuilder},
+            constants::xhci::{
+                capability, offset, operational::portsc, runtime, MAX_INTRS, MAX_SLOTS,
+                NUM_USB3_PORTS, OP_BASE, RUN_BASE,
+            },
+            realdevice::EndpointType,
+            traits::PciDevice,
+            trb::{CommandTrbVariant, CompletionCode, EventTrb},
         },
-        realdevice::EndpointType,
-        traits::PciDevice,
-        trb::{CommandTrbVariant, CompletionCode, EventTrb},
     },
 };
 use usbvfiod::hotplug_protocol::response::Response;
@@ -160,7 +163,11 @@ impl XhciController {
     /// # Parameters
     ///
     /// * `device` - The real USB device to attach
-    pub fn attach_device(&mut self, device: IdentifiableRealDevice) -> Result<Response, Response> {
+    pub fn attach_device(
+        &mut self,
+        device: IdentifiableRealDevice,
+        controller: Arc<Mutex<XhciController>>,
+    ) -> Result<Response, Response> {
         if self
             .attached_devices()
             .contains(&(device.bus_number, device.device_number))
@@ -179,6 +186,9 @@ impl XhciController {
                     None => return Err(Response::NoFreePort),
                 };
 
+            let bus = device.bus_number;
+            let dev = device.device_number;
+            let cancel = device.real_device.cancelled();
             self.devices[available_port_index] = Some(device);
             self.portsc[available_port_index] = PortscRegister::new(
                 portsc::CCS
@@ -196,6 +206,12 @@ impl XhciController {
                 "Attached {} device to {:?} port {}",
                 speed, version, port_id
             );
+
+            runtime().spawn(async move {
+                cancel.cancelled().await;
+                debug!("device was cancelled, detaching");
+                let _ = controller.lock().unwrap().detach_device(bus, dev);
+            });
 
             // We organize the ports in an array, so we started with index 0.
             // For the guest driver, the first port is Port 1, so we need to offset our index.

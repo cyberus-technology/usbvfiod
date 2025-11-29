@@ -27,7 +27,7 @@ pub struct NusbDeviceWrapper {
     device: nusb::Device,
     interfaces: Vec<nusb::Interface>,
     endpoints: [Option<Arc<Notify>>; 30],
-    cancel: CancellationToken,
+    pub cancel: CancellationToken,
 }
 
 impl Drop for NusbDeviceWrapper {
@@ -229,6 +229,10 @@ impl RealDevice for NusbDeviceWrapper {
         self.endpoints[endpoint_id as usize] = Some(wakeup);
         debug!("enabled Endpoint ID/DCI: {} on real device", endpoint_id);
     }
+
+    fn cancelled(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
 }
 
 // cognitive complexity required because of the high cost of trace! messages
@@ -259,7 +263,7 @@ async fn control_worker(
                         continue;
                     }
                     _ = cancel.cancelled() => {
-                        warn!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
+                        debug!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
                         return;
                     }
                 }
@@ -411,7 +415,7 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
                         continue;
                     }
                     _ = cancel.cancelled() => {
-                        warn!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
+                        debug!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
                         return;
                     }
                 }
@@ -432,6 +436,14 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
         let buffer = endpoint.next_complete().await;
+        if buffer.status.is_err() {
+            debug!(
+                "ep {} encountered {:?}. cancelling",
+                worker_info.endpoint_id, buffer.status
+            );
+            cancel.cancel();
+            return;
+        }
         let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
             Greater => {
                 // Got more data than requested. We must not write more data than
@@ -521,7 +533,7 @@ async fn transfer_out_worker(
                         continue;
                     }
                     _ = cancel.cancelled() => {
-                        warn!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
+                        debug!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
                         return;
                     }
                 }
@@ -545,7 +557,15 @@ async fn transfer_out_worker(
             debug!("OUT data: {:?}", data);
         }
         endpoint.submit(data.into());
-        endpoint.next_complete().await;
+        let completion = endpoint.next_complete().await;
+        if completion.status.is_err() {
+            debug!(
+                "ep {} encountered {:?}. cancelling",
+                worker_info.endpoint_id, completion.status
+            );
+            cancel.cancel();
+            return;
+        }
 
         if !normal_data.interrupt_on_completion {
             trace!("Processed TRB without IOC flag; sending no transfer event");

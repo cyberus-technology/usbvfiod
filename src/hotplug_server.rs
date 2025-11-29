@@ -69,11 +69,14 @@ fn handle_attach(
     let response = controller
         .lock()
         .unwrap()
-        .attach_device(IdentifiableRealDevice {
-            bus_number: bus,
-            device_number: dev,
-            real_device: wrapped_device,
-        })
+        .attach_device(
+            IdentifiableRealDevice {
+                bus_number: bus,
+                device_number: dev,
+                real_device: wrapped_device,
+            },
+            controller.clone(),
+        )
         .unwrap_or_else(|response| response);
     response
         .send_over_socket(socket)

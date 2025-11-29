@@ -1,3 +1,5 @@
+use tokio_util::sync::CancellationToken;
+
 use crate::device::{bus::BusDeviceRef, interrupt_line::InterruptLine};
 
 use super::rings::{EventRing, TransferRing};
@@ -39,6 +41,7 @@ pub trait RealDevice: Debug + Send {
     fn speed(&self) -> Option<Speed>;
     fn enable_endpoint(&mut self, worker_info: EndpointWorkerInfo, endpoint_type: EndpointType);
     fn transfer(&mut self, endpoint_id: u8);
+    fn cancelled(&self) -> CancellationToken;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

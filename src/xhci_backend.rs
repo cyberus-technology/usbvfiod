@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use nusb::MaybeFuture;
 use tracing::{debug, info, trace};
 
@@ -21,10 +21,7 @@ use vfio_user::{IrqInfo, ServerBackend};
 use crate::device::{
     bus::{Request, RequestSize},
     interrupt_line::{DummyInterruptLine, InterruptLine},
-    pci::{
-        nusb::NusbDeviceWrapper, realdevice::IdentifiableRealDevice, traits::PciDevice,
-        xhci::XhciController,
-    },
+    pci::{nusb::NusbDeviceWrapper, traits::PciDevice, xhci::XhciController},
 };
 use usbvfiod::hotplug_protocol::device_paths::resolve_path;
 
@@ -114,16 +111,7 @@ impl XhciBackend {
         let file = open_file("Failed to open USB device file after device reset")?;
         let device = nusb::Device::from_fd(file.into()).wait()?;
         let wrapped_device = Box::new(NusbDeviceWrapper::new(device));
-        self.controller
-            .lock()
-            .unwrap()
-            .attach_device(IdentifiableRealDevice {
-                bus_number: bus,
-                device_number: dev,
-                real_device: wrapped_device,
-            })
-            .map_err(|response| anyhow!("Error during device attach: {:?}", response))?;
-        Ok(())
+        todo!("{:?}", (bus, dev, wrapped_device));
     }
 }
 
