@@ -152,9 +152,16 @@
           });
         };
 
-        apps.default = {
-          type = "app";
-          program = "${usbvfiod}/bin/usbvfiod";
+        apps = {
+          default = self.apps.usbvfiod;
+          usbvfiod = {
+            type = "app";
+            program = "${usbvfiod}/bin/usbvfiod";
+          };
+          remote = {
+            type = "app";
+            program = "${usbvfiod}/bin/remote";
+          };
         };
 
         devShells.default = craneLib.devShell {

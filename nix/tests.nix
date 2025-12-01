@@ -93,6 +93,7 @@ let
   # good choice for a production setup, but for this test it works
   # well.
   usbvfiodSocket = "/tmp/usbvfio";
+  usbvfiodSocketHotplug = "/tmp/hotplug";
 
   guestLogFile = "/tmp/console.log";
 
@@ -462,7 +463,7 @@ let
               Restart = "on-failure";
               RestartSec = "2s";
               ExecStart = ''
-                ${lib.getExe usbvfiod} ${if args.debug then "-v" else ""} --socket-path ${usbvfiodSocket} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
+                ${lib.getExe usbvfiod} ${if args.debug then "-v" else ""} --socket-path ${usbvfiodSocket} --hotplug-socket-path ${usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
               '';
             };
           };
@@ -647,4 +648,37 @@ in
     '';
   };
 
+  hot-attach = mkUsbTest {
+    name = "hot-attach";
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 1;
+        udevRule.symlink = "usbdevice";
+        attachedOnStartup = "host";
+      }
+    ];
+    testScript = ''
+      # Check no device is attached.
+      out = machine.succeed("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
+      search("No attached devices", out)
+      print(out)
+
+      cloud_hypervisor.succeed('! lsblk /dev/sda', timeout = 60)
+
+      # Attach a device.
+      out = machine.succeed("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --attach /dev/bus/usb/usbdevice", timeout=60)
+      print(out)
+
+      # Confirm the usb device attached to usbvfiod.
+      out = machine.succeed("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
+      search("One attached device:", out)
+      search(r"\d+:\d+", out)
+      print(out)
+
+      # Confirm it is known in the guest.
+      cloud_hypervisor.wait_until_succeeds('lsblk /dev/sda')
+    '';
+  };
 }
