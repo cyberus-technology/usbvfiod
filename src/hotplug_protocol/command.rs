@@ -20,16 +20,15 @@ impl Command {
     pub fn send_over_socket(self, socket: &UnixStream) -> Result<(), CommandSendError> {
         let id = self.variant_to_id();
         let (buf, fd) = match &self {
-            Command::Attach { bus, device, fd } => ([id, *bus, *device], Some(fd.as_raw_fd())),
-            Command::Detach { bus, device } => ([id, *bus, *device], None),
-            Command::List => ([id, 0, 0], None),
+            Self::Attach { bus, device, fd } => ([id, *bus, *device], Some(fd.as_raw_fd())),
+            Self::Detach { bus, device } => ([id, *bus, *device], None),
+            Self::List => ([id, 0, 0], None),
         };
 
-        let transmitted = if let Some(fd) = fd {
-            socket.send_with_fd(&buf[..], fd)
-        } else {
-            socket.send_with_fds(&[&buf[..]], &[])
-        }?;
+        let transmitted = fd.map_or_else(
+            || socket.send_with_fds(&[&buf[..]], &[]),
+            |fd| socket.send_with_fd(&buf[..], fd),
+        )?;
 
         // TODO implement a transmission loop to be safe (we should not run
         // into problems with how little data we send, though).
@@ -47,31 +46,31 @@ impl Command {
             return Err(CommandReceiveError::NotEnoughData(buf.len(), bytes_read));
         }
         match (buf[0], file) {
-            (COMMAND_ATTACH, Some(file)) => Ok(Command::Attach {
+            (COMMAND_ATTACH, Some(file)) => Ok(Self::Attach {
                 bus: buf[1],
                 device: buf[2],
                 fd: file,
             }),
             (COMMAND_ATTACH, None) => Err(CommandReceiveError::MissingFd),
-            (COMMAND_DETACH, None) => Ok(Command::Detach {
+            (COMMAND_DETACH, None) => Ok(Self::Detach {
                 bus: buf[1],
                 device: buf[2],
             }),
-            (COMMAND_LIST, None) => Ok(Command::List {}),
+            (COMMAND_LIST, None) => Ok(Self::List {}),
             (command, None) => Err(CommandReceiveError::UnknownCommand(command)),
             (_, Some(_)) => Err(CommandReceiveError::UnexpectedFd),
         }
     }
 
-    fn variant_to_id(&self) -> u8 {
+    const fn variant_to_id(&self) -> u8 {
         match self {
-            Command::Attach {
+            Self::Attach {
                 bus: _,
                 device: _,
                 fd: _,
             } => COMMAND_ATTACH,
-            Command::Detach { bus: _, device: _ } => COMMAND_DETACH,
-            Command::List => COMMAND_LIST,
+            Self::Detach { bus: _, device: _ } => COMMAND_DETACH,
+            Self::List => COMMAND_LIST,
         }
     }
 }

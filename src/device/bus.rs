@@ -235,7 +235,7 @@ pub trait BusDevice: Debug {
             self.write(
                 Request::new(offset.overflowing_add(cur_u64).0, RequestSize::Size1),
                 value.into(),
-            )
+            );
         }
     }
 
@@ -288,7 +288,7 @@ impl<T: SingleThreadedBusDevice + Debug + Send> BusDevice for std::sync::Mutex<T
     }
 
     fn write(&self, req: Request, value: u64) {
-        self.lock().unwrap().write(req, value)
+        self.lock().unwrap().write(req, value);
     }
 
     fn read(&self, req: Request) -> u64 {
@@ -664,14 +664,14 @@ impl BusDevice for Bus {
     fn read_bulk(&self, offset: u64, data: &mut [u8]) {
         self.iter_bulk_request(offset, data).for_each(|breq| {
             breq.device
-                .read_bulk(breq.device_offset, &mut data[breq.data_range])
+                .read_bulk(breq.device_offset, &mut data[breq.data_range]);
         });
     }
 
     fn write_bulk(&self, offset: u64, data: &[u8]) {
         self.iter_bulk_request(offset, data).for_each(|breq| {
             breq.device
-                .write_bulk(breq.device_offset, &data[breq.data_range])
+                .write_bulk(breq.device_offset, &data[breq.data_range]);
         });
     }
 }
@@ -694,11 +694,11 @@ pub mod testutils {
         }
 
         pub fn read_bulk(&self, offset: u64, data: &mut [u8]) {
-            <Self as BusDevice>::read_bulk(self, offset, data)
+            <Self as BusDevice>::read_bulk(self, offset, data);
         }
 
         pub fn write_bulk(&self, offset: u64, data: &[u8]) {
-            <Self as BusDevice>::write_bulk(self, offset, data)
+            <Self as BusDevice>::write_bulk(self, offset, data);
         }
     }
 
@@ -741,12 +741,12 @@ pub mod testutils {
 
         fn read_bulk(&self, offset: u64, data: &mut [u8]) {
             let offset: usize = offset.try_into().unwrap();
-            data.copy_from_slice(&self.data.lock().unwrap()[offset..(offset + data.len())])
+            data.copy_from_slice(&self.data.lock().unwrap()[offset..(offset + data.len())]);
         }
 
         fn write_bulk(&self, offset: u64, data: &[u8]) {
             let offset: usize = offset.try_into().unwrap();
-            self.data.lock().unwrap()[offset..(offset + data.len())].copy_from_slice(data)
+            self.data.lock().unwrap()[offset..(offset + data.len())].copy_from_slice(data);
         }
     }
 }
@@ -866,7 +866,7 @@ mod tests {
         }
 
         fn write(&self, _: Request, value: u64) {
-            assert_eq!(value, self.value)
+            assert_eq!(value, self.value);
         }
 
         fn read(&self, _: Request) -> u64 {
@@ -951,12 +951,12 @@ mod tests {
 
         fn read_bulk(&self, offset: u64, data: &mut [u8]) {
             let offset: usize = offset.try_into().unwrap();
-            data.copy_from_slice(&self.data.lock().unwrap()[offset..(offset + data.len())])
+            data.copy_from_slice(&self.data.lock().unwrap()[offset..(offset + data.len())]);
         }
 
         fn write_bulk(&self, offset: u64, data: &[u8]) {
             let offset: usize = offset.try_into().unwrap();
-            self.data.lock().unwrap()[offset..(offset + data.len())].copy_from_slice(data)
+            self.data.lock().unwrap()[offset..(offset + data.len())].copy_from_slice(data);
         }
     }
 
@@ -1025,7 +1025,7 @@ mod tests {
         }
 
         fn write(&self, req: Request, _: u64) {
-            assert!(req.addr == self.expected_address)
+            assert!(req.addr == self.expected_address);
         }
 
         fn read(&self, req: Request) -> u64 {

@@ -479,7 +479,7 @@ impl SingleThreadedBusDevice for ConfigSpace {
     }
 
     fn write(&mut self, req: Request, value: u64) {
-        self.config_space.write(req, value)
+        self.config_space.write(req, value);
     }
 }
 
@@ -555,7 +555,7 @@ mod tests {
             cfg_space.read(Request::new(offset::HEADER_TYPE as u64, RequestSize::Size1))
                 & u64::from(header_type::MULTIFUNCTION),
             0
-        )
+        );
     }
 
     #[test]
@@ -566,7 +566,7 @@ mod tests {
             cfg_space.read(Request::new(offset::HEADER_TYPE as u64, RequestSize::Size1))
                 & u64::from(header_type::MULTIFUNCTION),
             u64::from(header_type::MULTIFUNCTION)
-        )
+        );
     }
 
     #[test]
@@ -594,7 +594,7 @@ mod tests {
         assert_eq!(
             cfg_space.read(Request::new(offset::REVISION as u64, RequestSize::Size1)),
             0
-        )
+        );
     }
 
     #[test]
@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(
             cfg_space.read(Request::new(offset::REVISION as u64, RequestSize::Size1)),
             u64::from(example_revision)
-        )
+        );
     }
 
     #[test]

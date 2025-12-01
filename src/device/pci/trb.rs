@@ -330,9 +330,7 @@ where
     I: TrbData,
     F: Fn(I) -> O,
 {
-    I::parse(trb_bytes)
-        .map(variant_constructor)
-        .unwrap_or_else(|err| O::unrecognized(trb_bytes, err))
+    I::parse(trb_bytes).map_or_else(|err| O::unrecognized(trb_bytes, err), variant_constructor)
 }
 
 /// Represents a TRB that the driver can place on the command ring.
@@ -452,8 +450,7 @@ impl TrbData for LinkTrbData {
         assert_eq!(
             trb_types::LINK,
             trb_type,
-            "LinkTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
-            trb_type
+            "LinkTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
         );
 
         // SAFETY: range matches array length
@@ -502,8 +499,7 @@ impl TrbData for AddressDeviceCommandTrbData {
         assert_eq!(
             trb_types::ADDRESS_DEVICE_COMMAND,
             trb_type,
-            "AddressDeviceCommandTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
-            trb_type
+            "AddressDeviceCommandTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
         );
 
         // SAFETY: range matches array length
@@ -551,8 +547,7 @@ impl TrbData for ConfigureEndpointCommandTrbData {
         assert_eq!(
             trb_types::CONFIGURE_ENDPOINT_COMMAND,
             trb_type,
-            "ConfigureEndpointCommandTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
-            trb_type
+            "ConfigureEndpointCommandTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
         );
 
         // SAFETY: range matches array length
@@ -601,8 +596,7 @@ impl TrbData for StopEndpointCommandTrbData {
         assert_eq!(
             trb_types::STOP_ENDPOINT_COMMAND,
             trb_type,
-            "StopEndpointCommandTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
-            trb_type
+            "StopEndpointCommandTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
         );
 
         let endpoint_id = trb_bytes[14] & 0x1f;
@@ -638,8 +632,7 @@ impl TrbData for ResetDeviceCommandTrbData {
         assert_eq!(
             trb_types::RESET_DEVICE_COMMAND,
             trb_type,
-            "ResetDeviceCommandTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
-            trb_type
+            "ResetDeviceCommandTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
         );
 
         let slot_id = trb_bytes[15];
@@ -729,8 +722,7 @@ impl TrbData for NormalTrbData {
         assert_eq!(
             trb_types::NORMAL,
             trb_type,
-            "SetupStageTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
-            trb_type
+            "SetupStageTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
         );
 
         // SAFETY: range matches array length
@@ -778,8 +770,7 @@ impl TrbData for SetupStageTrbData {
         assert_eq!(
             trb_types::SETUP_STAGE,
             trb_type,
-            "SetupStageTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
-            trb_type
+            "SetupStageTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
         );
 
         let request_type = trb_bytes[0];
@@ -821,8 +812,7 @@ impl TrbData for DataStageTrbData {
         assert_eq!(
             trb_types::DATA_STAGE,
             trb_type,
-            "DataStageTrbData::parse called on TRB data with incorrect TRB type ({:#x})",
-            trb_type
+            "DataStageTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
         );
 
         // SAFETY: range matches array length
@@ -931,7 +921,7 @@ mod tests {
                 0x00, 0x02,
             ],
             trb.to_bytes(true),
-        )
+        );
     }
 
     #[test]
@@ -943,7 +933,7 @@ mod tests {
                 0x00, 0x00,
             ],
             trb.to_bytes(true),
-        )
+        );
     }
 
     #[test]

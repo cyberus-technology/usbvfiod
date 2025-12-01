@@ -73,7 +73,7 @@ impl<const SIZE: usize> RegisterSetBuilder<SIZE> {
                 value_bytes[offset],
                 write_mask_bytes[offset],
                 w1c_mask_bytes[offset],
-            )
+            );
         }
     }
 

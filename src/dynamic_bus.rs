@@ -52,15 +52,15 @@ impl BusDevice for DynamicBus {
     }
 
     fn write(&self, req: Request, value: u64) {
-        self.bus.load().write(req, value)
+        self.bus.load().write(req, value);
     }
 
     fn read_bulk(&self, offset: u64, data: &mut [u8]) {
-        self.bus.load().read_bulk(offset, data)
+        self.bus.load().read_bulk(offset, data);
     }
 
     fn write_bulk(&self, offset: u64, data: &[u8]) {
-        self.bus.load().write_bulk(offset, data)
+        self.bus.load().write_bulk(offset, data);
     }
 
     fn compare_exchange_request(&self, req: Request, current: u64, new: u64) -> Result<u64, u64> {

@@ -119,7 +119,7 @@ impl<const VECTORS: usize> SingleThreadedBusDevice for MsixTable<VECTORS> {
     }
 
     fn write(&mut self, req: Request, value: u64) {
-        self.registers.write(req, value)
+        self.registers.write(req, value);
     }
 }
 

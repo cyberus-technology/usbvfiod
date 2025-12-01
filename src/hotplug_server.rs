@@ -49,7 +49,7 @@ fn handle_command(
                 .context("Failed to handle list command")?;
         }
         _ => todo!(),
-    };
+    }
 
     Ok(())
 }
