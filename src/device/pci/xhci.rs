@@ -269,9 +269,10 @@ impl XhciController {
 
         // remove slot-to-port mapping (there might be none if the driver
         // did not enumerate the device)
-        for mapping in &mut self.slot_to_port {
+        for (i, mapping) in self.slot_to_port.iter_mut().enumerate() {
             if *mapping == Some(index) {
                 *mapping = None;
+                self.device_slot_manager.free_slot(i as u64 + 1);
                 break;
             }
         }

@@ -88,6 +88,10 @@ impl DeviceSlotManager {
         available_slot_id
     }
 
+    pub fn free_slot(&mut self, slot: u64) {
+        self.used_slots.retain(|s| *s != slot);
+    }
+
     /// Retrieve a device context abstraction.
     ///
     /// Device context are referenced by the DCBAA and indexed by the slot ID.
