@@ -120,9 +120,6 @@ impl EventRing {
     /// # Parameters
     ///
     /// - `erstba`: base address of the Event Ring Segment Table (ERST).
-    // clippy does not complain with the last three debug logs disabled,
-    // so it's okay to allow. Reevaluate when changing this function!
-    #[allow(clippy::cognitive_complexity)]
     pub fn configure(&mut self, erstba: u64) {
         assert_eq!(erstba & 0x3f, 0, "unaligned event ring base address");
 
@@ -370,7 +367,7 @@ impl CommandRing {
                     warn!(
                         "received useless write to CRCR while running {:#x}",
                         ignored
-                    )
+                    );
                 }
             }
         } else {
@@ -765,8 +762,7 @@ mod tests {
         let cycle_bit = buf[12] & 0x1 != 0;
         assert_eq!(
             cycle_bit, cycle_state,
-            "TRB not written at address {:#x}",
-            addr
+            "TRB not written at address {addr:#x}"
         );
     }
 
@@ -1015,8 +1011,7 @@ mod tests {
         let trb = command_ring.next_command_trb();
         assert!(
             trb.is_none(),
-            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {:?}",
-            trb
+            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {trb:?}"
         );
 
         // place a noop command in the first TRB slot
@@ -1035,8 +1030,7 @@ mod tests {
         let trb = command_ring.next_command_trb();
         assert!(
             trb.is_none(),
-            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {:?}",
-            trb
+            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {trb:?}"
         );
 
         // place two noop commands
@@ -1063,8 +1057,7 @@ mod tests {
         let trb = command_ring.next_command_trb();
         assert!(
             trb.is_none(),
-            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {:?}",
-            trb
+            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {trb:?}"
         );
 
         // place link TRB back to the start of the memory segment
@@ -1079,8 +1072,7 @@ mod tests {
         let trb = command_ring.next_command_trb();
         assert!(
             trb.is_none(),
-            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {:?}",
-            trb
+            "When no fresh command is on the command ring, next_command_trb should return None, instead got: {trb:?}"
         );
 
         // make noop command fresh by toggling the cycle bit
@@ -1138,8 +1130,7 @@ mod tests {
         let request = transfer_ring.next_request();
         assert!(
             request.is_none(),
-            "When no fresh request is on the transfer ring, next_request should return None, instead got: {:?}",
-            request
+            "When no fresh request is on the transfer ring, next_request should return None, instead got: {request:?}"
         );
 
         // place first request
@@ -1172,8 +1163,7 @@ mod tests {
         let request = transfer_ring.next_request();
         assert!(
             request.is_none(),
-            "When no fresh request is on the transfer ring, next_request should return None, instead got: {:?}",
-            request
+            "When no fresh request is on the transfer ring, next_request should return None, instead got: {request:?}"
         );
 
         // place second request (include link TRB because the ring needs to
@@ -1209,8 +1199,7 @@ mod tests {
         let request = transfer_ring.next_request();
         assert!(
             request.is_none(),
-            "When no fresh request is on the transfer ring, next_request should return None, instead got: {:?}",
-            request
+            "When no fresh request is on the transfer ring, next_request should return None, instead got: {request:?}"
         );
     }
 }

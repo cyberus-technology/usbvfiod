@@ -80,7 +80,7 @@ impl XhciBackend {
             let path = device.as_ref();
             // if device attachment fails, just warn
             if let Err(err) = backend.add_device_from_path(path) {
-                panic!("Device attachment failed for {:?}: {}", path, err);
+                panic!("Device attachment failed for {path:?}: {err}");
             }
         }
 
@@ -122,7 +122,7 @@ impl XhciBackend {
                 device_number: dev,
                 real_device: wrapped_device,
             })
-            .map_err(|response| anyhow!("Error during device attach: {:?}", response))?;
+            .map_err(|response| anyhow!("Error during device attach: {response:?}"))?;
         Ok(())
     }
 }

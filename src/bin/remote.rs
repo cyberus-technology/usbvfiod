@@ -35,7 +35,7 @@ fn main() -> Result<()> {
         let bus = vec[0];
         let dev = vec[1];
         let response = detach(bus, dev, args.socket.as_path())?;
-        println!("{:?}", response);
+        println!("{response:?}");
     } else if args.list {
         list_attached(args.socket.as_path())?;
     }
@@ -45,9 +45,9 @@ fn main() -> Result<()> {
 
 fn attach(device_path: &Path, socket_path: &Path) -> Result<()> {
     let (bus, dev, device_path) = resolve_path(device_path)
-        .with_context(|| format!("Failed to resolve device path {:?}", device_path))?;
+        .with_context(|| format!("Failed to resolve device path {device_path:?}"))?;
 
-    println!("Requesting attachment of device {:03}:{:03}", bus, dev);
+    println!("Requesting attachment of device {bus:03}:{dev:03}");
 
     let open_file = |err_msg: &str| {
         std::fs::OpenOptions::new()
@@ -80,13 +80,13 @@ fn attach(device_path: &Path, socket_path: &Path) -> Result<()> {
 
     let response = Response::receive_from_socket(&mut socket)
         .context("Failed to receive response over the socket")?;
-    println!("{:?}", response);
+    println!("{response:?}");
 
     Ok(())
 }
 
 fn detach(bus: u8, dev: u8, socket_path: &Path) -> Result<Response> {
-    println!("detach {}:{} from {:?}", bus, dev, socket_path);
+    println!("detach {bus}:{dev} from {socket_path:?}");
     todo!();
 }
 
@@ -115,9 +115,9 @@ fn list_attached(socket_path: &Path) -> Result<()> {
             println!("{:03}:{:03}", device_list[0].0, device_list[0].1);
         }
         count => {
-            println!("{} attached devices:", count);
+            println!("{count} attached devices:");
             for (bus, dev) in device_list {
-                println!("{:03}:{:03}", bus, dev);
+                println!("{bus:03}:{dev:03}");
             }
         }
     }

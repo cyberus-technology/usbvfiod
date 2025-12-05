@@ -491,10 +491,7 @@ impl XhciController {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         let root_hub_port_number = device_context.initialize(data.input_context_pointer);
         if root_hub_port_number < 1 || root_hub_port_number as u64 > MAX_PORTS {
-            panic!(
-                "address device reported invalid root hub port number: {}",
-                root_hub_port_number
-            );
+            panic!("address device reported invalid root hub port number: {root_hub_port_number}");
         }
         let port_index = root_hub_port_number as usize - 1;
         self.slot_to_port[data.slot_id as usize - 1] = Some(port_index);
@@ -532,7 +529,7 @@ impl XhciController {
         debug!("Ding Dong Device Slot {} with value {}!", slot_id, value);
 
         match value {
-            ep if ep == 0 || ep > 31 => panic!("invalid value {} on doorbell write", ep),
+            ep if ep == 0 || ep > 31 => panic!("invalid value {ep} on doorbell write"),
             ep => {
                 // When the driver rings the doorbell with a endpoint id, a lot
                 // must have happened before, so we never reach this point
@@ -540,14 +537,13 @@ impl XhciController {
                 // write, in which case panicking is the right thing to do.
                 assert!(
                     u64::from(slot_id) <= MAX_SLOTS,
-                    "invalid slot_id {} in doorbell",
-                    slot_id
+                    "invalid slot_id {slot_id} in doorbell"
                 );
                 let device =
                     Self::device_by_slot_mut_expect(&self.slot_to_port, &mut self.devices, slot_id);
                 device.transfer(ep as u8);
             }
-        };
+        }
     }
 }
 
@@ -560,7 +556,6 @@ impl PciDevice for Mutex<XhciController> {
         self.lock().unwrap().config_space.read(req)
     }
 
-    #[allow(clippy::cognitive_complexity)]
     fn write_io(&self, region: u32, req: Request, value: u64) {
         // The XHCI Controller has a single MMIO BAR.
         assert_eq!(region, 0);

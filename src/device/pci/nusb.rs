@@ -158,16 +158,15 @@ impl RealDevice for NusbDeviceWrapper {
                 trace!("Sending wake up to worker of ep {}", endpoint_id);
                 sender.send(()).unwrap();
             }
-            None => panic!("transfer for uninitialized endpoint (EP{})", endpoint_id),
-        };
+            None => panic!("transfer for uninitialized endpoint (EP{endpoint_id})"),
+        }
     }
 
     fn enable_endpoint(&mut self, worker_info: EndpointWorkerInfo, endpoint_type: EndpointType) {
         let endpoint_id = worker_info.endpoint_id;
         assert!(
             (1..=31).contains(&endpoint_id),
-            "request to enable invalid endpoint id on nusb device. endpoint_id = {}",
-            endpoint_id
+            "request to enable invalid endpoint id on nusb device. endpoint_id = {endpoint_id}"
         );
         if self.endpoints[endpoint_id as usize].is_some() {
             // endpoint is already enabled.
@@ -239,10 +238,9 @@ fn control_worker(device: nusb::Device, worker_info: EndpointWorkerInfo, wakeup:
                 );
                 continue;
             }
-            Some(Err(err)) => panic!(
-                "Failed to retrieve request from control transfer ring: {:?}",
-                err
-            ),
+            Some(Err(err)) => {
+                panic!("Failed to retrieve request from control transfer ring: {err:?}")
+            }
             Some(Ok(res)) => res,
         };
 
@@ -284,13 +282,13 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
         0 => Recipient::Device,
         1 => Recipient::Interface,
         2 => Recipient::Endpoint,
-        val => panic!("invalid recipient {}", val),
+        val => panic!("invalid recipient {val}"),
     };
     let control_type = match (request_type >> 5) & 0x3 {
         0 => ControlType::Standard,
         1 => ControlType::Class,
         2 => ControlType::Vendor,
-        val => panic!("invalid type {}", val),
+        val => panic!("invalid type {val}"),
     };
     (recipient, control_type)
 }
@@ -391,8 +389,7 @@ fn transfer_in_worker<EpType: BulkOrInterrupt>(
         };
         assert!(
             matches!(trb.variant, TransferTrbVariant::Normal(_)),
-            "Expected Normal TRB but got {:?}",
-            trb
+            "Expected Normal TRB but got {trb:?}"
         );
 
         // The assertion above guarantees that the TRB is a normal TRB. A wrong
@@ -498,8 +495,7 @@ fn transfer_out_worker(
         };
         assert!(
             matches!(trb.variant, TransferTrbVariant::Normal(_)),
-            "Expected Normal TRB but got {:?}",
-            trb
+            "Expected Normal TRB but got {trb:?}"
         );
 
         // The assertion above guarantees that the TRB is a normal TRB. A wrong

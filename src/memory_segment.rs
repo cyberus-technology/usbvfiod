@@ -203,7 +203,7 @@ impl BusDevice for MemorySegment {
                 // SAFETY: See above.
                 let atomic = unsafe { &*(ptr as *const AtomicU64) };
 
-                atomic.store(value, Ordering::Relaxed)
+                atomic.store(value, Ordering::Relaxed);
             }
         }
     }
@@ -222,6 +222,7 @@ mod tests {
     use super::*;
 
     fn create_memfd(size: u64) -> Result<File, std::io::Error> {
+        // SAFETY: syscall with valid parameters.
         let fd = unsafe { libc::memfd_create(CString::new("unittest").unwrap().as_ptr(), 0) };
 
         if fd < 0 {

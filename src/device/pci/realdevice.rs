@@ -31,7 +31,7 @@ impl fmt::Display for Speed {
             Self::Super => "SuperSpeed (5 Gbps)",
             Self::SuperPlus => "SuperSpeed+ (10/20 Gbps)",
         };
-        write!(f, "{}", name)
+        write!(f, "{name}")
     }
 }
 

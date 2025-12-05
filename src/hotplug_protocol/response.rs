@@ -39,7 +39,7 @@ impl Response {
         // send list data
         let data = devices
             .into_iter()
-            .flat_map(|(bus, dev)| [bus, dev])
+            .flat_map(<[u8; 2]>::from)
             .collect::<Vec<_>>();
         socket.write_all(&data)?;
 

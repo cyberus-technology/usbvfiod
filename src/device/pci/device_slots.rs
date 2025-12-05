@@ -315,11 +315,11 @@ impl DeviceContext {
         let endpoint_context = self.get_endpoint_context_internal(endpoint_id);
         match endpoint_context.get_state() {
             DISABLED => {
-                panic!("requested transferring for disabled EP{}", endpoint_id)
+                panic!("requested transferring for disabled EP{endpoint_id}")
             }
             RUNNING => {}
             _ => endpoint_context.set_state(RUNNING),
-        };
+        }
         TransferRing::new(endpoint_context, self.dma_bus.clone())
     }
 }
@@ -373,7 +373,7 @@ impl EndpointContext {
         self.dma_bus.write(
             Request::new(self.address.wrapping_add(8), RequestSize::Size8),
             dequeue_pointer | cycle_state as u64,
-        )
+        );
     }
 
     fn get_state(&self) -> u8 {
