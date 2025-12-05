@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use nusb::MaybeFuture;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use usbvfiod::hotplug_protocol::{command::Command, response::Response};
 
 use crate::device::pci::{
@@ -65,17 +65,20 @@ fn handle_attach(
     let device = nusb::Device::from_fd(fd.into())
         .wait()
         .context("Failed to open nusb device from the supplied file descriptor")?;
+    info!("wait for device open done");
     let wrapped_device = Box::new(NusbDeviceWrapper::new(device));
-    let response = controller
-        .lock()
-        .unwrap()
+    let controller_clone = controller.clone();
+    info!("controller cloned");
+    let mut guard = controller.lock().unwrap();
+    info!("Guard acquired");
+    let response = guard
         .attach_device(
             IdentifiableRealDevice {
                 bus_number: bus,
                 device_number: dev,
                 real_device: wrapped_device,
             },
-            controller.clone(),
+            controller_clone,
         )
         .unwrap_or_else(|response| response);
     response

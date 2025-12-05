@@ -144,16 +144,6 @@ impl XhciController {
             .and_then(|port_index| devices[port_index].as_mut().map(|dev| &mut dev.real_device))
     }
 
-    fn device_by_slot_mut_expect<'a>(
-        slot_to_port: &[Option<usize>; MAX_SLOTS as usize],
-        devices: &'a mut [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
-        slot_id: u8,
-    ) -> &'a mut Box<dyn RealDevice> {
-        Self::device_by_slot_mut(slot_to_port, devices, slot_id).unwrap_or_else(|| {
-            panic!("Trying to access device with slot id {slot_id}, but there is no such device.")
-        })
-    }
-
     /// Attach a real USB device to the controller.
     ///
     /// The device is connected to the first available USB port and becomes available
@@ -168,12 +158,14 @@ impl XhciController {
         device: IdentifiableRealDevice,
         controller: Arc<Mutex<XhciController>>,
     ) -> Result<Response, Response> {
+        info!("check already attached");
         if self
             .attached_devices()
             .contains(&(device.bus_number, device.device_number))
         {
             return Err(Response::AlreadyAttached);
         }
+        info!("if block");
         if let Some(speed) = device.real_device.speed() {
             let version = UsbVersion::from_speed(speed);
             let available_port_index = match (0..MAX_PORTS as usize)
@@ -190,6 +182,7 @@ impl XhciController {
             let dev = device.device_number;
             let cancel = device.real_device.cancelled();
             self.devices[available_port_index] = Some(device);
+            info!("stored in devices");
             self.portsc[available_port_index] = PortscRegister::new(
                 portsc::CCS
                     | portsc::PED
@@ -441,39 +434,38 @@ impl XhciController {
                 let device_context = self.device_slot_manager.get_device_context(data.slot_id);
 
                 // Program requires real USB device for all XHCI operations (pattern used throughout file)
-                let device = Self::device_by_slot_mut_expect(
-                    &self.slot_to_port,
-                    &mut self.devices,
-                    data.slot_id,
-                );
+                if let Some(device) =
+                    Self::device_by_slot_mut(&self.slot_to_port, &mut self.devices, data.slot_id)
+                {
+                    let worker_info = EndpointWorkerInfo {
+                        slot_id: data.slot_id,
+                        endpoint_id: 1,
+                        transfer_ring: device_context.get_transfer_ring(1),
+                        dma_bus: self.dma_bus.clone(),
+                        event_ring: self.event_ring.clone(),
+                        interrupt_line: self.interrupt_line.clone(),
+                    };
 
-                let worker_info = EndpointWorkerInfo {
-                    slot_id: data.slot_id,
-                    endpoint_id: 1,
-                    transfer_ring: device_context.get_transfer_ring(1),
-                    dma_bus: self.dma_bus.clone(),
-                    event_ring: self.event_ring.clone(),
-                    interrupt_line: self.interrupt_line.clone(),
-                };
+                    // start control trb worker thread
+                    device.enable_endpoint(worker_info, EndpointType::Control);
 
-                // start control trb worker thread
-                device.enable_endpoint(worker_info, EndpointType::Control);
-
-                EventTrb::new_command_completion_event_trb(
-                    cmd.address,
-                    0,
-                    CompletionCode::Success,
-                    data.slot_id,
-                )
+                    EventTrb::new_command_completion_event_trb(
+                        cmd.address,
+                        0,
+                        CompletionCode::Success,
+                        data.slot_id,
+                    )
+                } else {
+                    EventTrb::new_command_completion_event_trb(
+                        cmd.address,
+                        0,
+                        CompletionCode::IncompatibleDeviceError,
+                        data.slot_id,
+                    )
+                }
             }
             CommandTrbVariant::ConfigureEndpoint(data) => {
-                if self
-                    .slot_to_port
-                    .get(data.slot_id as usize - 1)
-                    .map(|mapping| mapping.is_some())
-                    .unwrap_or(false)
-                {
-                    self.handle_configure_endpoint(&data);
+                if self.handle_configure_endpoint(&data) {
                     EventTrb::new_command_completion_event_trb(
                         cmd.address,
                         0,
@@ -570,26 +562,30 @@ impl XhciController {
         self.slot_to_port[data.slot_id as usize - 1] = Some(port_index);
     }
 
-    fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) {
+    fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) -> bool {
         if data.deconfigure {
             todo!("encountered Configure Endpoint Command with deconfigure set");
         }
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         // Program requires real USB device for all XHCI operations (pattern used throughout file)
-        let device =
-            Self::device_by_slot_mut_expect(&self.slot_to_port, &mut self.devices, data.slot_id);
-
-        for (i, ep_type) in enabled_endpoints {
-            let worker_info = EndpointWorkerInfo {
-                slot_id: data.slot_id,
-                endpoint_id: i,
-                transfer_ring: device_context.get_transfer_ring(i as u64),
-                dma_bus: self.dma_bus.clone(),
-                event_ring: self.event_ring.clone(),
-                interrupt_line: self.interrupt_line.clone(),
-            };
-            device.enable_endpoint(worker_info, ep_type);
+        if let Some(device) =
+            Self::device_by_slot_mut(&self.slot_to_port, &mut self.devices, data.slot_id)
+        {
+            for (i, ep_type) in enabled_endpoints {
+                let worker_info = EndpointWorkerInfo {
+                    slot_id: data.slot_id,
+                    endpoint_id: i,
+                    transfer_ring: device_context.get_transfer_ring(i as u64),
+                    dma_bus: self.dma_bus.clone(),
+                    event_ring: self.event_ring.clone(),
+                    interrupt_line: self.interrupt_line.clone(),
+                };
+                device.enable_endpoint(worker_info, ep_type);
+            }
+            true
+        } else {
+            false
         }
     }
 
@@ -613,9 +609,11 @@ impl XhciController {
                     "invalid slot_id {} in doorbell",
                     slot_id
                 );
-                let device =
-                    Self::device_by_slot_mut_expect(&self.slot_to_port, &mut self.devices, slot_id);
-                device.transfer(ep as u8);
+                if let Some(device) =
+                    Self::device_by_slot_mut(&self.slot_to_port, &mut self.devices, slot_id)
+                {
+                    device.transfer(ep as u8);
+                }
             }
         };
     }

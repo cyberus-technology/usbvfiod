@@ -6,7 +6,7 @@ use nusb::{Interface, MaybeFuture};
 use tokio::select;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
@@ -54,10 +54,12 @@ impl NusbDeviceWrapper {
         // when we cannot get the active configuration, i.e., not properly talk
         // to the device, panicking is currently the desired behavior to
         // identify the situation in which the problem occurred.
+        info!("requesting config");
         let desc = device.active_configuration().unwrap();
+        info!("requested config");
         for interface in desc.interfaces() {
             let interface_number = interface.interface_number();
-            debug!("Enabling interface {}", interface_number);
+            info!("Enabling interface {}", interface_number);
             // when we cannot claim an interface of the device, panicking is
             // currently the desired behavior to identify the situation in which
             // the problem occurred.
@@ -67,6 +69,7 @@ impl NusbDeviceWrapper {
                     .wait()
                     .unwrap(),
             );
+            info!("Enabled");
         }
 
         Self {
@@ -288,8 +291,12 @@ async fn control_worker(
         // forward request to device
         let direction = request.request_type & 0x80 != 0;
         match direction {
-            true => control_transfer_device_to_host(device.clone(), &request, &dma_bus).await,
-            false => control_transfer_host_to_device(device.clone(), &request, &dma_bus).await,
+            true => {
+                control_transfer_device_to_host(device.clone(), &request, &dma_bus, &cancel).await
+            }
+            false => {
+                control_transfer_host_to_device(device.clone(), &request, &dma_bus, &cancel).await
+            }
         }
 
         // send transfer event
@@ -328,6 +335,7 @@ async fn control_transfer_device_to_host(
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
+    cancel: &CancellationToken,
 ) {
     let (recipient, control_type) = extract_recipient_and_type(request.request_type);
     let control = ControlIn {
@@ -346,6 +354,7 @@ async fn control_transfer_device_to_host(
             data
         }
         Err(error) => {
+            cancel.cancel();
             warn!("control in request failed: {:?}", error);
             vec![0; 0]
         }
@@ -364,6 +373,7 @@ async fn control_transfer_host_to_device(
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
+    cancel: &CancellationToken,
 ) {
     let data = request.data.map_or_else(Vec::new, |addr| {
         let mut data = vec![0; request.length as usize];
@@ -386,7 +396,10 @@ async fn control_transfer_host_to_device(
         .await
     {
         Ok(_) => debug!("control out success"),
-        Err(error) => warn!("control out request failed: {:?}", error),
+        Err(error) => {
+            warn!("control out request failed: {:?}", error);
+            cancel.cancel();
+        }
     }
 }
 
@@ -435,7 +448,10 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
-        let buffer = endpoint.next_complete().await;
+        let buffer = select! {
+            buf =  endpoint.next_complete() => {buf}
+            _ = cancel.cancelled() => {return}
+        };
         if buffer.status.is_err() {
             debug!(
                 "ep {} encountered {:?}. cancelling",
