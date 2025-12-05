@@ -40,7 +40,7 @@ let
         boot.consoleLogLevel = lib.mkIf debug 8;
 
         # Convenience packages for interactive use
-        environment.systemPackages = with pkgs; [ pciutils usbutils ];
+        environment.systemPackages = with pkgs; [ pciutils usbutils hyperfine ];
 
         # network configuration for interactive debugging
         networking.interfaces."ens2" = {
@@ -679,6 +679,33 @@ in
 
       # Confirm it is known in the guest.
       cloud_hypervisor.wait_until_succeeds('lsblk /dev/sda')
+    '';
+  };
+
+  hyperfine = mkUsbTest {
+    name = "hyperfine";
+    debug = false;
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 1;
+        udevRule.symlink = "usb3";
+      }
+    ];
+    testScript = ''
+      # test with I/O write buffer at:
+      # 10KB
+      # 200KB
+      # 2MB
+      buffersize = [ "10000", "200000", "2000000" ]
+
+      for size in buffersize:
+        cloud_hypervisor.succeed("echo " + size + " > /proc/sys/vm/dirty_bytes", timeout=60)
+        print("io write buffer set to (bytes): " + size)
+
+        out = cloud_hypervisor.succeed("""hyperfine "dd if=/dev/random of=/dev/sda bs=1M oflag=direct" --ignore-failure""", timeout=60)
+        print(out)
     '';
   };
 }
