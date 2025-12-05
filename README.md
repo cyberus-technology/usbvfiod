@@ -6,7 +6,7 @@
 passthrough to [Cloud
 Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor)
 virtual machines using the [vfio-user
-protocol](https://github.com/tmakatos/qemu/blob/master/docs/devel/vfio-user.rst). Other
+protocol](https://www.qemu.org/docs/master/interop/vfio-user.html). Other
 VMMs might also work, but but are currently not the main target.
 
 This project is still under active development. We are planning to work on this
