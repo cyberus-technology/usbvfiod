@@ -637,14 +637,14 @@ in
       search(r'Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M', out)
 
       out = cloud_hypervisor.succeed("lsblk", timeout=10)
-      search(r'sda     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
-      search(r'sdb     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
-      search(r'sdc     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
-      search(r'sdd     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
-      search(r'sde     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
-      search(r'sdf     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
-      search(r'sdg     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
-      search(r'sdh     \b(\d+:\d+)\b\s+0     8M  0 disk', out)
+      search(r'sda\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
+      search(r'sdb\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
+      search(r'sdc\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
+      search(r'sdd\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
+      search(r'sde\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
+      search(r'sdf\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
+      search(r'sdg\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
+      search(r'sdh\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
     '';
   };
 
