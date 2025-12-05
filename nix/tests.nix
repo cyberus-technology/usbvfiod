@@ -40,7 +40,7 @@ let
         boot.consoleLogLevel = lib.mkIf debug 8;
 
         # Convenience packages for interactive use
-        environment.systemPackages = with pkgs; [ pciutils usbutils ];
+        environment.systemPackages = with pkgs; [ pciutils usbutils hyperfine ];
 
         # network configuration for interactive debugging
         networking.interfaces."ens2" = {
@@ -254,7 +254,7 @@ let
     ''
       os.system("rm ${filepath}")
       print("Creating file image at ${filepath}")
-      os.system("dd bs=1  count=1 seek=${imageSize} if=/dev/zero of=${filepath}")
+      os.system("dd bs=1 count=1 seek=${imageSize} if=/dev/zero of=${filepath}")
     '';
 
   # Decide if a virtual device needs a backing image file.
@@ -679,6 +679,32 @@ in
 
       # Confirm it is known in the guest.
       cloud_hypervisor.wait_until_succeeds('lsblk /dev/sda')
+    '';
+  };
+
+  hyperfine = mkUsbTest {
+    name = "hyperfine";
+    debug = true;
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 1;
+        udevRule.symlink = "usb3";
+      }
+    ];
+    testScript = ''
+      machine.succeed("mkdir -p metrics")
+
+      # benchmark dd command with hyperfine
+      out = cloud_hypervisor.succeed("""hyperfine --export-json metrics.json --ignore-failure "dd if=/dev/random of=/dev/sda bs=1M oflag=direct" """, timeout=60)
+      print(out)
+
+      # metrics from cloud_hypervisor to qemu
+      machine.succeed("scp -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2:/root/metrics.json metrics/metrics.json")
+
+      # metrics from qemu to $out
+      machine.copy_from_vm("/tmp/metrics/", "")
     '';
   };
 }
