@@ -103,10 +103,6 @@ impl DeviceSlotManager {
     ///
     /// - slot_id: the slot ID for which the DeviceContext is requested.
     pub fn get_device_context(&self, slot_id: u8) -> DeviceContext {
-        assert!(
-            self.used_slots.contains(&(slot_id as u64)),
-            "requested DeviceContext for unassigned slot_id"
-        );
         // lookup address of device context in device context base address array
         let device_context_address = self.dma_bus.read(Request::new(
             self.dcbaap.wrapping_add(slot_id as u64 * 8),
