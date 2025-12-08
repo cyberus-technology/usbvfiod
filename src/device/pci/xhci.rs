@@ -451,13 +451,26 @@ impl XhciController {
                 )
             }
             CommandTrbVariant::ConfigureEndpoint(data) => {
-                self.handle_configure_endpoint(&data);
-                EventTrb::new_command_completion_event_trb(
-                    cmd.address,
-                    0,
-                    CompletionCode::Success,
-                    data.slot_id,
-                )
+                if self
+                    .slot_to_port
+                    .get(data.slot_id as usize - 1)
+                    .is_some_and(|mapping| mapping.is_some())
+                {
+                    self.handle_configure_endpoint(&data);
+                    EventTrb::new_command_completion_event_trb(
+                        cmd.address,
+                        0,
+                        CompletionCode::Success,
+                        data.slot_id,
+                    )
+                } else {
+                    EventTrb::new_command_completion_event_trb(
+                        cmd.address,
+                        0,
+                        CompletionCode::IncompatibleDeviceError,
+                        data.slot_id,
+                    )
+                }
             }
             CommandTrbVariant::EvaluateContext => todo!(),
             CommandTrbVariant::ResetEndpoint => todo!(),
