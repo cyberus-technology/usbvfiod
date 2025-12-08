@@ -3,7 +3,9 @@ use nusb::transfer::{
     Recipient,
 };
 use nusb::{Interface, MaybeFuture};
+use tokio::select;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use crate::async_runtime::runtime;
@@ -25,6 +27,14 @@ pub struct NusbDeviceWrapper {
     device: nusb::Device,
     interfaces: Vec<nusb::Interface>,
     endpoints: [Option<Arc<Notify>>; 32],
+    cancel: CancellationToken,
+}
+
+impl Drop for NusbDeviceWrapper {
+    fn drop(&mut self) {
+        debug!("NusbDeviceWrapper dropped, stopping all endpoints");
+        self.cancel.cancel();
+    }
 }
 
 impl Debug for NusbDeviceWrapper {
@@ -63,6 +73,7 @@ impl NusbDeviceWrapper {
             device,
             interfaces,
             endpoints: std::array::from_fn(|_| None),
+            cancel: CancellationToken::new(),
         }
     }
 
@@ -97,19 +108,34 @@ impl NusbDeviceWrapper {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Bulk, Out>(endpoint_number)
                     .unwrap();
-                runtime().spawn(transfer_out_worker(endpoint, worker_info, receiver));
+                runtime().spawn(transfer_out_worker(
+                    endpoint,
+                    worker_info,
+                    receiver,
+                    self.cancel.clone(),
+                ));
             }
             EndpointType::BulkIn => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Bulk, In>(endpoint_number)
                     .unwrap();
-                runtime().spawn(transfer_in_worker(endpoint, worker_info, receiver));
+                runtime().spawn(transfer_in_worker(
+                    endpoint,
+                    worker_info,
+                    receiver,
+                    self.cancel.clone(),
+                ));
             }
             EndpointType::InterruptIn => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Interrupt, In>(endpoint_number)
                     .unwrap();
-                runtime().spawn(transfer_in_worker(endpoint, worker_info, receiver));
+                runtime().spawn(transfer_in_worker(
+                    endpoint,
+                    worker_info,
+                    receiver,
+                    self.cancel.clone(),
+                ));
             }
             endpoint_type => {
                 todo!(
@@ -171,7 +197,12 @@ impl RealDevice for NusbDeviceWrapper {
             EndpointType::Control => {
                 let wakeup = Arc::new(Notify::new());
                 let device = self.device.clone();
-                runtime().spawn(control_worker(device, worker_info, wakeup.clone()));
+                runtime().spawn(control_worker(
+                    device,
+                    worker_info,
+                    wakeup.clone(),
+                    self.cancel.clone(),
+                ));
                 wakeup
             }
             endpoint_type => {
@@ -212,6 +243,7 @@ async fn control_worker(
     device: nusb::Device,
     worker_info: EndpointWorkerInfo,
     wakeup: Arc<Notify>,
+    cancel: CancellationToken,
 ) {
     let dma_bus = worker_info.dma_bus;
 
@@ -224,12 +256,19 @@ async fn control_worker(
                     "worker thread ep {}: No TRB on transfer ring, going to sleep",
                     worker_info.endpoint_id
                 );
-                wakeup.notified().await;
-                trace!(
-                    "worker thread ep {}: Received wake up",
-                    worker_info.endpoint_id
-                );
-                continue;
+                select! {
+                    _ = wakeup.notified() => {
+                        trace!(
+                            "worker thread ep {}: Received wake up",
+                            worker_info.endpoint_id
+                        );
+                        continue;
+                    }
+                    _ = cancel.cancelled() => {
+                        debug!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
+                        return;
+                    }
+                }
             }
             Some(Err(err)) => {
                 panic!("Failed to retrieve request from control transfer ring: {err:?}")
@@ -358,6 +397,7 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
     mut endpoint: nusb::Endpoint<EpType, In>,
     worker_info: EndpointWorkerInfo,
     wakeup: Arc<Notify>,
+    cancel: CancellationToken,
 ) {
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
@@ -367,12 +407,19 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
                     "worker thread ep {}: No TRB on transfer ring, going to sleep",
                     worker_info.endpoint_id
                 );
-                wakeup.notified().await;
-                trace!(
-                    "worker thread ep {}: Received wake up",
-                    worker_info.endpoint_id
-                );
-                continue;
+                select! {
+                    _ = wakeup.notified() => {
+                        trace!(
+                            "worker thread ep {}: Received wake up",
+                            worker_info.endpoint_id
+                        );
+                        continue;
+                    }
+                    _ = cancel.cancelled() => {
+                        debug!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
+                        return;
+                    }
+                }
             }
         };
         assert!(
@@ -388,7 +435,10 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
-        let buffer = endpoint.next_complete().await;
+        let buffer = select! {
+            buf =  endpoint.next_complete() => {buf}
+            _ = cancel.cancelled() => {return}
+        };
         let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
             Greater => {
                 // Got more data than requested. We must not write more data than
@@ -459,6 +509,7 @@ async fn transfer_out_worker(
     mut endpoint: nusb::Endpoint<Bulk, Out>,
     worker_info: EndpointWorkerInfo,
     wakeup: Arc<Notify>,
+    cancel: CancellationToken,
 ) {
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
@@ -468,12 +519,19 @@ async fn transfer_out_worker(
                     "worker thread ep {}: No TRB on transfer ring, going to sleep",
                     worker_info.endpoint_id
                 );
-                wakeup.notified().await;
-                trace!(
-                    "worker thread ep {}: Received wake up",
-                    worker_info.endpoint_id
-                );
-                continue;
+                select! {
+                    _ = wakeup.notified() => {
+                        trace!(
+                            "worker thread ep {}: Received wake up",
+                            worker_info.endpoint_id
+                        );
+                        continue;
+                    }
+                    _ = cancel.cancelled() => {
+                        debug!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
+                        return;
+                    }
+                }
             }
         };
         assert!(
