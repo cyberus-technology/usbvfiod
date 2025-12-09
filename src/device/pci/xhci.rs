@@ -61,7 +61,7 @@ pub struct XhciController {
     devices: [Option<IdentifiableRealDevice>; (MAX_PORTS + 1) as usize],
 
     /// Slot-to-port mapping.
-    slot_to_port: [Option<usize>; MAX_SLOTS as usize],
+    slot_to_port: [Option<usize>; (MAX_SLOTS + 1) as usize],
 
     /// A reference to the VM memory to perform DMA on.
     #[allow(unused)]
@@ -110,7 +110,7 @@ impl XhciController {
 
         Self {
             devices: [const { None }; (MAX_PORTS + 1) as usize],
-            slot_to_port: [None; MAX_SLOTS as usize],
+            slot_to_port: [None; (MAX_SLOTS + 1) as usize],
             dma_bus,
             config_space: ConfigSpaceBuilder::new(vendor::REDHAT, device::REDHAT_XHCI)
                 .class(class::SERIAL, subclass::SERIAL_USB, progif::USB_XHCI)
@@ -131,18 +131,18 @@ impl XhciController {
     }
 
     fn device_by_slot_mut<'a>(
-        slot_to_port: &[Option<usize>; MAX_SLOTS as usize],
+        slot_to_port: &[Option<usize>; (MAX_SLOTS + 1) as usize],
         devices: &'a mut [Option<IdentifiableRealDevice>; (MAX_PORTS + 1) as usize],
         slot_id: u8,
     ) -> Option<&'a mut Box<dyn RealDevice>> {
         slot_to_port
-            .get(slot_id as usize - 1)
+            .get(slot_id as usize)
             .and_then(|port_id| *port_id)
             .and_then(|port_id| devices[port_id].as_mut().map(|dev| &mut dev.real_device))
     }
 
     fn device_by_slot_mut_expect<'a>(
-        slot_to_port: &[Option<usize>; MAX_SLOTS as usize],
+        slot_to_port: &[Option<usize>; (MAX_SLOTS + 1) as usize],
         devices: &'a mut [Option<IdentifiableRealDevice>; (MAX_PORTS + 1) as usize],
         slot_id: u8,
     ) -> &'a mut Box<dyn RealDevice> {
@@ -254,7 +254,7 @@ impl XhciController {
         for (i, mapping) in self.slot_to_port.iter_mut().enumerate() {
             if *mapping == Some(port_id) {
                 *mapping = None;
-                self.device_slot_manager.free_slot(i as u64 + 1);
+                self.device_slot_manager.free_slot(i as u64);
                 break;
             }
         }
@@ -463,7 +463,7 @@ impl XhciController {
             CommandTrbVariant::ConfigureEndpoint(data) => {
                 if self
                     .slot_to_port
-                    .get(data.slot_id as usize - 1)
+                    .get(data.slot_id as usize)
                     .is_some_and(|mapping| mapping.is_some())
                 {
                     self.handle_configure_endpoint(&data);
@@ -557,7 +557,7 @@ impl XhciController {
             panic!("address device reported invalid root hub port number: {root_hub_port_number}");
         }
         let port_id = root_hub_port_number as usize;
-        self.slot_to_port[data.slot_id as usize - 1] = Some(port_id);
+        self.slot_to_port[data.slot_id as usize] = Some(port_id);
     }
 
     fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) {
