@@ -58,7 +58,7 @@ impl UsbVersion {
 #[derive(Debug)]
 pub struct XhciController {
     /// real USB devices
-    devices: [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
+    devices: [Option<IdentifiableRealDevice>; (MAX_PORTS + 1) as usize],
 
     /// Slot-to-port mapping.
     slot_to_port: [Option<usize>; MAX_SLOTS as usize],
@@ -92,7 +92,7 @@ pub struct XhciController {
     interrupt_line: Arc<dyn InterruptLine>,
 
     /// PORTSC registers array
-    portsc: [PortscRegister; MAX_PORTS as usize],
+    portsc: [PortscRegister; (MAX_PORTS + 1) as usize],
 }
 
 impl XhciController {
@@ -109,7 +109,7 @@ impl XhciController {
         let dma_bus_for_device_slot_manager = dma_bus.clone();
 
         Self {
-            devices: [const { None }; MAX_PORTS as usize],
+            devices: [const { None }; (MAX_PORTS + 1) as usize],
             slot_to_port: [None; MAX_SLOTS as usize],
             dma_bus,
             config_space: ConfigSpaceBuilder::new(vendor::REDHAT, device::REDHAT_XHCI)
@@ -126,24 +126,24 @@ impl XhciController {
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
-            portsc: [PortscRegister::new(portsc::PP); MAX_PORTS as usize],
+            portsc: [PortscRegister::new(portsc::PP); (MAX_PORTS + 1) as usize],
         }
     }
 
     fn device_by_slot_mut<'a>(
         slot_to_port: &[Option<usize>; MAX_SLOTS as usize],
-        devices: &'a mut [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
+        devices: &'a mut [Option<IdentifiableRealDevice>; (MAX_PORTS + 1) as usize],
         slot_id: u8,
     ) -> Option<&'a mut Box<dyn RealDevice>> {
         slot_to_port
             .get(slot_id as usize - 1)
-            .and_then(|slot_id| *slot_id)
-            .and_then(|port_index| devices[port_index].as_mut().map(|dev| &mut dev.real_device))
+            .and_then(|port_id| *port_id)
+            .and_then(|port_id| devices[port_id].as_mut().map(|dev| &mut dev.real_device))
     }
 
     fn device_by_slot_mut_expect<'a>(
         slot_to_port: &[Option<usize>; MAX_SLOTS as usize],
-        devices: &'a mut [Option<IdentifiableRealDevice>; MAX_PORTS as usize],
+        devices: &'a mut [Option<IdentifiableRealDevice>; (MAX_PORTS + 1) as usize],
         slot_id: u8,
     ) -> &'a mut Box<dyn RealDevice> {
         Self::device_by_slot_mut(slot_to_port, devices, slot_id).unwrap_or_else(|| {
@@ -169,18 +169,18 @@ impl XhciController {
         }
         if let Some(speed) = device.real_device.speed() {
             let version = UsbVersion::from_speed(speed);
-            let available_port_index = match (0..MAX_PORTS as usize)
+            let available_port_id = match (1..=MAX_PORTS as usize)
                 .find(|&i| {
                     self.devices[i].is_none()
-                        && matches!(Self::port_index_to_id(i), Some((v, _)) if v == version)
+                        && matches!(Self::version_relative_id(i), Some((v, _)) if v == version)
                 }) // filter USB2/3
                 {
                     Some(port) => port,
                     None => return Err(Response::NoFreePort),
                 };
 
-            self.devices[available_port_index] = Some(device);
-            self.portsc[available_port_index] = PortscRegister::new(
+            self.devices[available_port_id] = Some(device);
+            self.portsc[available_port_id] = PortscRegister::new(
                 portsc::CCS
                     | portsc::PED
                     | portsc::PP
@@ -190,16 +190,14 @@ impl XhciController {
                     | (speed as u64) << 10,
             );
 
-            // Safety: the call for the same index succeeded before in the filter.
-            let port_id = Self::port_index_to_id(available_port_index).unwrap().1;
+            // Safety: the call for the same id succeeded before in the filter.
+            let port_id = Self::version_relative_id(available_port_id).unwrap().1;
             info!(
                 "Attached {} device to {:?} port {}",
                 speed, version, port_id
             );
 
-            // We organize the ports in an array, so we started with index 0.
-            // For the guest driver, the first port is Port 1, so we need to offset our index.
-            self.send_port_status_change_event(available_port_index as u8 + 1);
+            self.send_port_status_change_event(available_port_id as u8);
             Ok(Response::SuccessfulOperation)
         } else {
             warn!("Failed to attach device: Unable to determine speed");
@@ -234,7 +232,7 @@ impl XhciController {
         device_number: u8,
     ) -> Result<Response, Response> {
         // find out on which port the device is connected
-        let index = match self
+        let port_id = match self
             .devices
             .iter()
             .enumerate()
@@ -248,13 +246,13 @@ impl XhciController {
         };
 
         // update portsc register
-        self.portsc[index] = PortscRegister::new(portsc::PP | portsc::CSC);
-        self.send_port_status_change_event(index as u8 + 1);
+        self.portsc[port_id] = PortscRegister::new(portsc::PP | portsc::CSC);
+        self.send_port_status_change_event(port_id as u8 + 1);
 
         // remove slot-to-port mapping (there might be none if the driver
         // did not enumerate the device)
         for (i, mapping) in self.slot_to_port.iter_mut().enumerate() {
-            if *mapping == Some(index) {
+            if *mapping == Some(port_id) {
                 *mapping = None;
                 self.device_slot_manager.free_slot(i as u64 + 1);
                 break;
@@ -262,16 +260,28 @@ impl XhciController {
         }
 
         // remove
-        self.devices[index] = None;
+        self.devices[port_id] = None;
 
         Ok(Response::SuccessfulOperation)
     }
 
-    const fn port_index_to_id(index: usize) -> Option<(UsbVersion, usize)> {
-        match index as u64 {
-            0..NUM_USB3_PORTS => Some((UsbVersion::USB3, index + 1)),
-            NUM_USB3_PORTS..MAX_PORTS => {
-                Some((UsbVersion::USB2, index - NUM_USB3_PORTS as usize + 1))
+    /// Get USB version and version-relative id for a port.
+    ///
+    /// Example: We have 3 USB3 ports and 3 USB2 ports.
+    ///
+    /// port id    version  relative id
+    /// 1          USB 3    1
+    /// 2          USB 3    2
+    /// 3          USB 3    3
+    /// 4          USB 2    1
+    /// 5          USB 2    2
+    /// 6          USB 2    3
+    const fn version_relative_id(port_id: usize) -> Option<(UsbVersion, usize)> {
+        let first_usb2_id = NUM_USB3_PORTS + 1;
+        match port_id as u64 {
+            1..=NUM_USB3_PORTS => Some((UsbVersion::USB3, port_id)),
+            port_id if first_usb2_id <= port_id && port_id <= MAX_PORTS => {
+                Some((UsbVersion::USB2, (port_id - NUM_USB3_PORTS) as usize))
             }
             _ => None,
         }
@@ -304,10 +314,10 @@ impl XhciController {
         Self::get_port_index_from_addr(addr, offset::PORTSC, MAX_PORTS, 0x8)
     }
 
-    fn write_portsc(&mut self, port_index: usize, value: u64) {
-        self.portsc[port_index].write(value);
+    fn write_portsc(&mut self, port_id: usize, value: u64) {
+        self.portsc[port_id].write(value);
         let status = Self::describe_portsc_status(value);
-        let (version, id) = Self::port_index_to_id(port_index).unwrap();
+        let (version, id) = Self::version_relative_id(port_id).unwrap();
         trace!("{:?} port {} status: {}", version, id, status);
     }
 
@@ -546,8 +556,8 @@ impl XhciController {
         if root_hub_port_number < 1 || root_hub_port_number as u64 > MAX_PORTS {
             panic!("address device reported invalid root hub port number: {root_hub_port_number}");
         }
-        let port_index = root_hub_port_number as usize - 1;
-        self.slot_to_port[data.slot_id as usize - 1] = Some(port_index);
+        let port_id = root_hub_port_number as usize;
+        self.slot_to_port[data.slot_id as usize - 1] = Some(port_id);
     }
 
     fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) {
@@ -649,8 +659,10 @@ impl PciDevice for Mutex<XhciController> {
 
             addr if guard.get_portsc_index(addr).is_some() => {
                 // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
-                let port_idx = guard.get_portsc_index(addr).unwrap();
-                guard.write_portsc(port_idx, value);
+                let port_index = guard.get_portsc_index(addr).unwrap();
+                // port ids start at 1, so we have to convert the MMIO address offset to the id
+                let port_id = port_index + 1;
+                guard.write_portsc(port_id, value);
             }
             addr => {
                 todo!("unknown write {}", addr);
@@ -709,8 +721,10 @@ impl PciDevice for Mutex<XhciController> {
             // Port Status and Control Register (PORTSC)
             addr if guard.get_portsc_index(addr).is_some() => {
                 // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
-                let port_idx = guard.get_portsc_index(addr).unwrap();
-                guard.portsc[port_idx].read()
+                let port_index = guard.get_portsc_index(addr).unwrap();
+                // port ids start at 1, so we have to convert the MMIO address offset to the id
+                let port_id = port_index + 1;
+                guard.portsc[port_id].read()
             }
             // Port Link Info Register (PORTLI_USB3)
             addr if guard.get_portli_index(addr).is_some() => 0,
