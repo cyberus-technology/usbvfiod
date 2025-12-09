@@ -34,8 +34,7 @@ fn main() -> Result<()> {
         // Safety: clap ensures that vec.len() == 2.
         let bus = vec[0];
         let dev = vec[1];
-        let response = detach(bus, dev, args.socket.as_path())?;
-        println!("{response:?}");
+        detach(bus, dev, args.socket.as_path())?;
     } else if args.list {
         list_attached(args.socket.as_path())?;
     }
@@ -85,9 +84,20 @@ fn attach(device_path: &Path, socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn detach(bus: u8, dev: u8, socket_path: &Path) -> Result<Response> {
-    println!("detach {bus}:{dev} from {socket_path:?}");
-    todo!();
+fn detach(bus: u8, dev: u8, socket_path: &Path) -> Result<()> {
+    println!("Requesting detach of device {bus:03}:{dev:03}");
+
+    let command = Command::Detach { bus, device: dev };
+    let mut socket = UnixStream::connect(socket_path).context("Failed to open socket")?;
+    command
+        .send_over_socket(&socket)
+        .context("Failed to send detach command over the socket")?;
+
+    let response = Response::receive_from_socket(&mut socket)
+        .context("Failed to receive response over the socket")?;
+    println!("{response:?}");
+
+    Ok(())
 }
 
 fn list_attached(socket_path: &Path) -> Result<()> {

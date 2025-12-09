@@ -3,8 +3,12 @@ use nusb::transfer::{
     Recipient,
 };
 use nusb::{Interface, MaybeFuture};
+use tokio::select;
+use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
+use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
 use crate::device::pci::trb::{CompletionCode, EventTrb};
 
@@ -12,8 +16,7 @@ use super::realdevice::{EndpointType, EndpointWorkerInfo, Speed};
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
+use std::sync::Arc;
 use std::{
     fmt::Debug,
     sync::atomic::{fence, Ordering},
@@ -23,7 +26,15 @@ use std::{
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
     interfaces: Vec<nusb::Interface>,
-    endpoints: [Option<Sender<()>>; 32],
+    endpoints: [Option<Arc<Notify>>; 32],
+    cancel: CancellationToken,
+}
+
+impl Drop for NusbDeviceWrapper {
+    fn drop(&mut self) {
+        debug!("NusbDeviceWrapper dropped, stopping all endpoints");
+        self.cancel.cancel();
+    }
 }
 
 impl Debug for NusbDeviceWrapper {
@@ -62,6 +73,7 @@ impl NusbDeviceWrapper {
             device,
             interfaces,
             endpoints: std::array::from_fn(|_| None),
+            cancel: CancellationToken::new(),
         }
     }
 
@@ -79,9 +91,8 @@ impl NusbDeviceWrapper {
         &self,
         endpoint_number: u8,
         endpoint_type: EndpointType,
-        name: String,
         worker_info: EndpointWorkerInfo,
-        receiver: Receiver<()>,
+        receiver: Arc<Notify>,
     ) {
         // unwrap can fail when
         // - driver asks for invalid endpoint (driver's fault)
@@ -97,33 +108,39 @@ impl NusbDeviceWrapper {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Bulk, Out>(endpoint_number)
                     .unwrap();
-                thread::Builder::new()
-                    .name(name.clone())
-                    .spawn(move || transfer_out_worker(endpoint, worker_info, receiver))
-                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+                runtime().spawn(transfer_out_worker(
+                    endpoint,
+                    worker_info,
+                    receiver,
+                    self.cancel.clone(),
+                ));
             }
             EndpointType::BulkIn => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Bulk, In>(endpoint_number)
                     .unwrap();
-                thread::Builder::new()
-                    .name(name.clone())
-                    .spawn(move || transfer_in_worker::<Bulk>(endpoint, worker_info, receiver))
-                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+                runtime().spawn(transfer_in_worker(
+                    endpoint,
+                    worker_info,
+                    receiver,
+                    self.cancel.clone(),
+                ));
             }
             EndpointType::InterruptIn => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Interrupt, In>(endpoint_number)
                     .unwrap();
-                thread::Builder::new()
-                    .name(name.clone())
-                    .spawn(move || transfer_in_worker::<Interrupt>(endpoint, worker_info, receiver))
-                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
+                runtime().spawn(transfer_in_worker(
+                    endpoint,
+                    worker_info,
+                    receiver,
+                    self.cancel.clone(),
+                ));
             }
-            a => {
+            endpoint_type => {
                 todo!(
                     "can not enable endpoint type {:?}; worker not yet implemented",
-                    a
+                    endpoint_type
                 )
             }
         }
@@ -151,12 +168,9 @@ impl RealDevice for NusbDeviceWrapper {
     fn transfer(&mut self, endpoint_id: u8) {
         // transfer requires targeted endpoint to be enabled, panic if not
         match self.endpoints[endpoint_id as usize].as_mut() {
-            // Currently we start an endpoint worker once and never stop it,
-            // so sending should never fail. When the worker has panicked, it
-            // makes sense for us to panic as well.
-            Some(sender) => {
+            Some(worker_notifier) => {
                 trace!("Sending wake up to worker of ep {}", endpoint_id);
-                sender.send(()).unwrap();
+                worker_notifier.notify_one();
             }
             None => panic!("transfer for uninitialized endpoint (EP{endpoint_id})"),
         }
@@ -178,46 +192,59 @@ impl RealDevice for NusbDeviceWrapper {
         }
 
         let endpoint_number = endpoint_id / 2;
-        let name = format!(
-            "worker Slot: {}, Endpoint ID/Device Context Index: {}, EP Number: {}, Type: {:?}",
-            worker_info.slot_id, endpoint_id, endpoint_number, endpoint_type,
-        );
 
-        let sender = match endpoint_type {
+        let wakeup = match endpoint_type {
             EndpointType::Control => {
-                let (sender, receiver) = mpsc::channel();
+                let wakeup = Arc::new(Notify::new());
                 let device = self.device.clone();
-                thread::Builder::new()
-                    .name(name.clone())
-                    .spawn(move || control_worker(device, worker_info, receiver))
-                    .unwrap_or_else(|_| panic!("Failed to launch endpoint worker thread {name}"));
-                sender
+                runtime().spawn(control_worker(
+                    device,
+                    worker_info,
+                    wakeup.clone(),
+                    self.cancel.clone(),
+                ));
+                wakeup
             }
-            a => {
-                let (sender, receiver) = mpsc::channel();
+            endpoint_type => {
+                let wakeup = Arc::new(Notify::new());
                 let is_out_endpoint = endpoint_id % 2 == 0;
                 match is_out_endpoint {
                     true => {
-                        self.spawn_endpoint_worker(endpoint_number, a, name, worker_info, receiver);
+                        self.spawn_endpoint_worker(
+                            endpoint_number,
+                            endpoint_type,
+                            worker_info,
+                            wakeup.clone(),
+                        );
                     }
                     false => {
                         // set directional bit to make it IN
                         let endpoint_number = 0x80 | endpoint_number;
 
-                        self.spawn_endpoint_worker(endpoint_number, a, name, worker_info, receiver);
+                        self.spawn_endpoint_worker(
+                            endpoint_number,
+                            endpoint_type,
+                            worker_info,
+                            wakeup.clone(),
+                        );
                     }
                 }
-                sender
+                wakeup
             }
         };
-        self.endpoints[endpoint_id as usize] = Some(sender);
+        self.endpoints[endpoint_id as usize] = Some(wakeup);
         debug!("enabled Endpoint ID/DCI: {} on real device", endpoint_id);
     }
 }
 
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
-fn control_worker(device: nusb::Device, worker_info: EndpointWorkerInfo, wakeup: Receiver<()>) {
+async fn control_worker(
+    device: nusb::Device,
+    worker_info: EndpointWorkerInfo,
+    wakeup: Arc<Notify>,
+    cancel: CancellationToken,
+) {
     let dma_bus = worker_info.dma_bus;
 
     let transfer_ring = worker_info.transfer_ring;
@@ -229,14 +256,19 @@ fn control_worker(device: nusb::Device, worker_info: EndpointWorkerInfo, wakeup:
                     "worker thread ep {}: No TRB on transfer ring, going to sleep",
                     worker_info.endpoint_id
                 );
-                // We currently assume that the main thread always keeps the
-                // channel open, so unwrap is safe.
-                wakeup.recv().unwrap();
-                trace!(
-                    "worker thread ep {}: Received wake up",
-                    worker_info.endpoint_id
-                );
-                continue;
+                select! {
+                    _ = wakeup.notified() => {
+                        trace!(
+                            "worker thread ep {}: Received wake up",
+                            worker_info.endpoint_id
+                        );
+                        continue;
+                    }
+                    _ = cancel.cancelled() => {
+                        debug!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
+                        return;
+                    }
+                }
             }
             Some(Err(err)) => {
                 panic!("Failed to retrieve request from control transfer ring: {err:?}")
@@ -257,8 +289,8 @@ fn control_worker(device: nusb::Device, worker_info: EndpointWorkerInfo, wakeup:
         // forward request to device
         let direction = request.request_type & 0x80 != 0;
         match direction {
-            true => control_transfer_device_to_host(device.clone(), &request, &dma_bus),
-            false => control_transfer_host_to_device(device.clone(), &request, &dma_bus),
+            true => control_transfer_device_to_host(device.clone(), &request, &dma_bus).await,
+            false => control_transfer_host_to_device(device.clone(), &request, &dma_bus).await,
         }
 
         // send transfer event
@@ -293,7 +325,7 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
     (recipient, control_type)
 }
 
-fn control_transfer_device_to_host(
+async fn control_transfer_device_to_host(
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
@@ -309,10 +341,7 @@ fn control_transfer_device_to_host(
     };
 
     debug!("sending control in request to device");
-    let data = match device
-        .control_in(control, Duration::from_millis(200))
-        .wait()
-    {
+    let data = match device.control_in(control, Duration::from_millis(200)).await {
         Ok(data) => {
             debug!("control in data {:?}", data);
             data
@@ -332,7 +361,7 @@ fn control_transfer_device_to_host(
     fence(Ordering::Release);
 }
 
-fn control_transfer_host_to_device(
+async fn control_transfer_host_to_device(
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
@@ -355,7 +384,7 @@ fn control_transfer_host_to_device(
     debug!("sending control out request to device");
     match device
         .control_out(control, Duration::from_millis(200))
-        .wait()
+        .await
     {
         Ok(_) => debug!("control out success"),
         Err(error) => warn!("control out request failed: {:?}", error),
@@ -364,10 +393,11 @@ fn control_transfer_host_to_device(
 
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
-fn transfer_in_worker<EpType: BulkOrInterrupt>(
+async fn transfer_in_worker<EpType: BulkOrInterrupt>(
     mut endpoint: nusb::Endpoint<EpType, In>,
     worker_info: EndpointWorkerInfo,
-    wakeup: Receiver<()>,
+    wakeup: Arc<Notify>,
+    cancel: CancellationToken,
 ) {
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
@@ -377,14 +407,19 @@ fn transfer_in_worker<EpType: BulkOrInterrupt>(
                     "worker thread ep {}: No TRB on transfer ring, going to sleep",
                     worker_info.endpoint_id
                 );
-                // We currently assume that the main thread always keeps the
-                // channel open, so unwrap is safe.
-                wakeup.recv().unwrap();
-                trace!(
-                    "worker thread ep {}: Received wake up",
-                    worker_info.endpoint_id
-                );
-                continue;
+                select! {
+                    _ = wakeup.notified() => {
+                        trace!(
+                            "worker thread ep {}: Received wake up",
+                            worker_info.endpoint_id
+                        );
+                        continue;
+                    }
+                    _ = cancel.cancelled() => {
+                        debug!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
+                        return;
+                    }
+                }
             }
         };
         assert!(
@@ -400,10 +435,10 @@ fn transfer_in_worker<EpType: BulkOrInterrupt>(
         let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
-        // We do not want to time out on requests. We should probably use async
-        // because nusb supports either async requests or synchronous variants
-        // with timeouts. Manually implementing polling seems overkill here.
-        let buffer = endpoint.wait_next_complete(Duration::MAX).unwrap();
+        let buffer = select! {
+            buf =  endpoint.next_complete() => {buf}
+            _ = cancel.cancelled() => {return}
+        };
         let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
             Greater => {
                 // Got more data than requested. We must not write more data than
@@ -470,10 +505,11 @@ fn transfer_in_worker<EpType: BulkOrInterrupt>(
 
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
-fn transfer_out_worker(
+async fn transfer_out_worker(
     mut endpoint: nusb::Endpoint<Bulk, Out>,
     worker_info: EndpointWorkerInfo,
-    wakeup: Receiver<()>,
+    wakeup: Arc<Notify>,
+    cancel: CancellationToken,
 ) {
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
@@ -483,14 +519,19 @@ fn transfer_out_worker(
                     "worker thread ep {}: No TRB on transfer ring, going to sleep",
                     worker_info.endpoint_id
                 );
-                // We currently assume that the main thread always keeps the
-                // channel open, so unwrap is safe.
-                wakeup.recv().unwrap();
-                trace!(
-                    "worker thread ep {}: Received wake up",
-                    worker_info.endpoint_id
-                );
-                continue;
+                select! {
+                    _ = wakeup.notified() => {
+                        trace!(
+                            "worker thread ep {}: Received wake up",
+                            worker_info.endpoint_id
+                        );
+                        continue;
+                    }
+                    _ = cancel.cancelled() => {
+                        debug!("worker thread ep {}: Stopped by cancel token", worker_info.endpoint_id);
+                        return;
+                    }
+                }
             }
         };
         assert!(
@@ -510,8 +551,7 @@ fn transfer_out_worker(
             debug!("OUT data: {:?}", data);
         }
         endpoint.submit(data.into());
-        // Timeout indicates device unresponsive - no reasonable recovery possible
-        endpoint.wait_next_complete(Duration::MAX).unwrap();
+        endpoint.next_complete().await;
 
         if !normal_data.interrupt_on_completion {
             trace!("Processed TRB without IOC flag; sending no transfer event");
