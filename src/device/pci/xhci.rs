@@ -100,7 +100,6 @@ pub struct XhciController {
     slot_to_port: OneIndexed<Option<usize>, { MAX_SLOTS as usize }>,
 
     /// A reference to the VM memory to perform DMA on.
-    #[allow(unused)]
     dma_bus: BusDeviceRef,
 
     /// The PCI Configuration Space of the controller.
