@@ -54,17 +54,52 @@ impl UsbVersion {
     }
 }
 
+/// Make a fixed size array index start at one (instead of zero).
+/// This is a common pattern within XHCI for port and slot IDs, and
+/// manually handling the difference is error-prone.
+#[derive(Debug)]
+struct OneIndexed<T, const S: usize> {
+    array: [T; S],
+}
+
+impl<T, const S: usize> OneIndexed<T, S> {
+    fn iter(&self) -> impl Iterator<Item = &T> {
+        self.array.iter()
+    }
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.array.iter_mut()
+    }
+    fn get(&self, index: usize) -> Option<&T> {
+        self.array.get(index.wrapping_sub(1))
+    }
+}
+impl<T, const S: usize> std::convert::From<[T; S]> for OneIndexed<T, S> {
+    fn from(val: [T; S]) -> Self {
+        Self { array: val }
+    }
+}
+impl<T, const S: usize> std::ops::Index<usize> for OneIndexed<T, S> {
+    type Output = T;
+    fn index(&self, index: usize) -> &T {
+        &self.array[index.wrapping_sub(1)]
+    }
+}
+impl<T, const S: usize> std::ops::IndexMut<usize> for OneIndexed<T, S> {
+    fn index_mut(&mut self, index: usize) -> &mut T {
+        &mut self.array[index.wrapping_sub(1)]
+    }
+}
+
 /// The emulation of a XHCI controller.
 #[derive(Debug)]
 pub struct XhciController {
     /// real USB devices
-    devices: [Option<IdentifiableRealDevice>; (MAX_PORTS + 1) as usize],
+    devices: OneIndexed<Option<IdentifiableRealDevice>, { MAX_PORTS as usize }>,
 
     /// Slot-to-port mapping.
-    slot_to_port: [Option<usize>; (MAX_SLOTS + 1) as usize],
+    slot_to_port: OneIndexed<Option<usize>, { MAX_SLOTS as usize }>,
 
     /// A reference to the VM memory to perform DMA on.
-    #[allow(unused)]
     dma_bus: BusDeviceRef,
 
     /// The PCI Configuration Space of the controller.
@@ -92,7 +127,7 @@ pub struct XhciController {
     interrupt_line: Arc<dyn InterruptLine>,
 
     /// PORTSC registers array
-    portsc: [PortscRegister; (MAX_PORTS + 1) as usize],
+    portsc: OneIndexed<PortscRegister, { MAX_PORTS as usize }>,
 }
 
 impl XhciController {
@@ -109,8 +144,8 @@ impl XhciController {
         let dma_bus_for_device_slot_manager = dma_bus.clone();
 
         Self {
-            devices: [const { None }; (MAX_PORTS + 1) as usize],
-            slot_to_port: [None; (MAX_SLOTS + 1) as usize],
+            devices: [const { None }; MAX_PORTS as usize].into(),
+            slot_to_port: [None; MAX_SLOTS as usize].into(),
             dma_bus,
             config_space: ConfigSpaceBuilder::new(vendor::REDHAT, device::REDHAT_XHCI)
                 .class(class::SERIAL, subclass::SERIAL_USB, progif::USB_XHCI)
@@ -126,13 +161,13 @@ impl XhciController {
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
-            portsc: [PortscRegister::new(portsc::PP); (MAX_PORTS + 1) as usize],
+            portsc: [PortscRegister::new(portsc::PP); MAX_PORTS as usize].into(),
         }
     }
 
     fn device_by_slot_mut<'a>(
-        slot_to_port: &[Option<usize>; (MAX_SLOTS + 1) as usize],
-        devices: &'a mut [Option<IdentifiableRealDevice>; (MAX_PORTS + 1) as usize],
+        slot_to_port: &OneIndexed<Option<usize>, { MAX_SLOTS as usize }>,
+        devices: &'a mut OneIndexed<Option<IdentifiableRealDevice>, { MAX_PORTS as usize }>,
         slot_id: u8,
     ) -> Option<&'a mut Box<dyn RealDevice>> {
         slot_to_port
@@ -142,8 +177,8 @@ impl XhciController {
     }
 
     fn device_by_slot_mut_expect<'a>(
-        slot_to_port: &[Option<usize>; (MAX_SLOTS + 1) as usize],
-        devices: &'a mut [Option<IdentifiableRealDevice>; (MAX_PORTS + 1) as usize],
+        slot_to_port: &OneIndexed<Option<usize>, { MAX_SLOTS as usize }>,
+        devices: &'a mut OneIndexed<Option<IdentifiableRealDevice>, { MAX_PORTS as usize }>,
         slot_id: u8,
     ) -> &'a mut Box<dyn RealDevice> {
         Self::device_by_slot_mut(slot_to_port, devices, slot_id).unwrap_or_else(|| {
