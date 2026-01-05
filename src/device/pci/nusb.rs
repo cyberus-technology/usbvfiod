@@ -207,7 +207,7 @@ impl RealDevice for NusbDeviceWrapper {
             }
             endpoint_type => {
                 let wakeup = Arc::new(Notify::new());
-                let is_out_endpoint = endpoint_id % 2 == 0;
+                let is_out_endpoint = endpoint_id.is_multiple_of(2);
                 match is_out_endpoint {
                     true => {
                         self.spawn_endpoint_worker(
