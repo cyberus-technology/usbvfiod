@@ -5,7 +5,7 @@
 let
   # For the VM that we start in Cloud Hypervisor, we re-use the netboot image.
   netbootNixos = debug: lib.nixosSystem {
-    inherit (pkgs) system;
+    inherit (pkgs.stdenv.hostPlatform) system;
 
     modules = [
       "${pkgs.path}/nixos/modules/installer/netboot/netboot-minimal.nix"
@@ -195,7 +195,7 @@ let
       # The build might be working, but after a 1 hour timeout, the machine barely gets into stage-2.
       # So for now, skip running the actual test.
       "aarch64-linux" = true;
-    }.${pkgs.system} or true /* Also ignore failure on any systems not otherwise listed. */;
+    }.${pkgs.stdenv.hostPlatform.system} or true /* Also ignore failure on any systems not otherwise listed. */;
   };
 
   # Some static values for ...
@@ -318,7 +318,7 @@ let
 
   /**
     Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
-    The Functions purpose is to remove dupicated lines, make comparing tests easier and write new tests with less boilerplate.
+    The Functions purpose is to remove duplicated lines, make comparing tests easier and write new tests with less boilerplate.
 
     # Inputs
 
