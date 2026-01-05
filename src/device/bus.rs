@@ -249,6 +249,7 @@ pub trait BusDevice: Debug {
     /// The access width of the operation is encoded in the `size`-field of a [`Request`].
     ///
     /// See [`std::sync::atomic::AtomicU64::compare_exchange`].
+    #[allow(dead_code)]
     fn compare_exchange_request(&self, req: Request, current: u64, new: u64) -> Result<u64, u64> {
         warn!(
             "Atomic compare-exchange executed non-atomically for access to {:016x}",
