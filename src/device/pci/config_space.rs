@@ -387,16 +387,6 @@ impl ConfigSpaceBuilder {
     }
 }
 
-/// The result of matching a request against a BAR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BarMatch {
-    /// A request relative to the BAR itself.
-    pub request: Request,
-
-    /// The index of the BAR that matched.
-    pub bar_no: u8,
-}
-
 /// The Configuration Space of a PCI device.
 ///
 /// Use [`ConfigSpaceBuilder`] to construct this.
