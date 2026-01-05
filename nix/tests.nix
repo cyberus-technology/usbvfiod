@@ -318,7 +318,7 @@ let
 
   /**
     Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
-    The Functions purpose is to remove dupicated lines, make comparing tests easier and write new tests with less boilerplate.
+    The Functions purpose is to remove duplicated lines, make comparing tests easier and write new tests with less boilerplate.
 
     # Inputs
 
