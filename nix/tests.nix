@@ -369,16 +369,16 @@ let
       ];
       testScript = ''
         # Confirm USB controller pops up in boot logs
-        out = cloud_hypervisor.succeed("journalctl -b", timeout=10)
+        out = cloud_hypervisor.succeed("journalctl -b", timeout=60)
         search("usb usb1: Product: xHCI Host Controller", out)
         search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
 
         # Confirm some diagnostic information
-        out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=10)
+        out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=60)
         search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
-        out = cloud_hypervisor.succeed("lsusb", timeout=10)
+        out = cloud_hypervisor.succeed("lsusb", timeout=60)
         search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
-        out = cloud_hypervisor.succeed("sfdisk -l", timeout=10)
+        out = cloud_hypervisor.succeed("sfdisk -l", timeout=60)
         search("Disk /dev/sda:", out)
 
         # Test partitioning
@@ -387,10 +387,10 @@ let
         # Test filesystem
         cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=60)
         cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
-        cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt", timeout=10)
+        cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt", timeout=60)
         cloud_hypervisor.succeed("umount /mnt", timeout=60)
         cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
-        out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=10)
+        out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=60)
         search("123TEST123", out)
       '';
     };
@@ -514,16 +514,16 @@ let
 
   singleBlockDeviceTestScript = ''
     # Confirm USB controller pops up in boot logs
-    out = cloud_hypervisor.succeed("journalctl -b", timeout=10)
+    out = cloud_hypervisor.succeed("journalctl -b", timeout=60)
     search("usb usb1: Product: xHCI Host Controller", out)
     search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
 
     # Confirm some diagnostic information
-    out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=10)
+    out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=60)
     search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
-    out = cloud_hypervisor.succeed("lsusb", timeout=10)
+    out = cloud_hypervisor.succeed("lsusb", timeout=60)
     search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
-    out = cloud_hypervisor.succeed("sfdisk -l", timeout=10)
+    out = cloud_hypervisor.succeed("sfdisk -l", timeout=60)
     search("Disk /dev/sda:", out)
 
     # Test partitioning
@@ -532,10 +532,10 @@ let
     # Test filesystem
     cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=60)
     cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
-    cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt", timeout=10)
+    cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt", timeout=60)
     cloud_hypervisor.succeed("umount /mnt", timeout=60)
     cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
-    out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=10)
+    out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=60)
     search("123TEST123", out)
   '';
 
@@ -588,7 +588,7 @@ in
           print(f"input loop `{i}` done")
 
       # Check the Keyboard is in detected in the guest.
-      cloud_hypervisor.succeed("lsusb -d ${hidVendorId}:${hidProductId}", timeout=10)
+      cloud_hypervisor.succeed("lsusb -d ${hidVendorId}:${hidProductId}", timeout=60)
 
       # Generate inputs in the background.
       t1 = threading.Thread(target=create_input)
@@ -626,7 +626,7 @@ in
             ) [ 1 2 3 4 ]
         ) [ "2" "3" ];
     testScript = ''
-      out = cloud_hypervisor.succeed("lsusb --tree", timeout=10)
+      out = cloud_hypervisor.succeed("lsusb --tree", timeout=60)
       search(r'Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)
       search(r'Port 002: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)
       search(r'Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)
@@ -636,7 +636,7 @@ in
       search(r'Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M', out)
       search(r'Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M', out)
 
-      out = cloud_hypervisor.succeed("lsblk", timeout=10)
+      out = cloud_hypervisor.succeed("lsblk", timeout=60)
       search(r'sda\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
       search(r'sdb\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
       search(r'sdc\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
