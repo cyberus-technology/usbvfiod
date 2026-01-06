@@ -644,17 +644,15 @@ impl XhciController {
         match value {
             ep if ep == 0 || ep > 31 => panic!("invalid value {ep} on doorbell write"),
             ep => {
-                // When the driver rings the doorbell with a endpoint id, a lot
-                // must have happened before, so we never reach this point
-                // when no device is available (except for an invalid doorbell
-                // write, in which case panicking is the right thing to do.
                 assert!(
                     u64::from(slot_id) <= MAX_SLOTS,
                     "invalid slot_id {slot_id} in doorbell"
                 );
-                let device =
-                    Self::device_by_slot_mut_expect(&self.slot_to_port, &mut self.devices, slot_id);
-                device.transfer(ep as u8);
+                if let Some(device) =
+                    Self::device_by_slot_mut(&self.slot_to_port, &mut self.devices, slot_id)
+                {
+                    device.transfer(ep as u8);
+                }
             }
         }
     }
