@@ -66,11 +66,24 @@ impl<T, const S: usize> OneIndexed<T, S> {
     fn iter(&self) -> impl Iterator<Item = &T> {
         self.array.iter()
     }
+    #[allow(unused)]
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.array.iter_mut()
     }
     fn get(&self, index: usize) -> Option<&T> {
         self.array.get(index.wrapping_sub(1))
+    }
+    /// Enumerating elements with correct index.
+    ///
+    /// Using some_one_indexed.iter().enumerate() generates an iterator like
+    /// (0, some_one_indexed[1]), (1, some_one_indexed[2]), ...
+    /// some_one_indexed.enumerate instead generates an iterator like
+    /// (1, some_one_indexed[1]), (2, some_one_indexed[2]), ...
+    ///
+    /// This method is useful for avoiding manual "one-shifting" when trying to
+    /// filter for the indices of items with specific properties.
+    fn enumerate(&self) -> impl Iterator<Item = (usize, &T)> {
+        self.array.iter().enumerate().map(|(i, e)| (i + 1, e))
     }
 }
 impl<T, const S: usize> std::convert::From<[T; S]> for OneIndexed<T, S> {
@@ -269,7 +282,6 @@ impl XhciController {
         // find out on which port the device is connected
         let port_id = match self
             .devices
-            .iter()
             .enumerate()
             .filter_map(|(i, dev)| dev.as_ref().map(|d| (i, d)))
             .filter(|(_, dev)| dev.bus_number == bus_number && dev.device_number == device_number)
@@ -282,16 +294,19 @@ impl XhciController {
 
         // update portsc register
         self.portsc[port_id] = PortscRegister::new(portsc::PP | portsc::CSC);
-        self.send_port_status_change_event(port_id as u8 + 1);
+        self.send_port_status_change_event(port_id as u8);
 
         // remove slot-to-port mapping (there might be none if the driver
         // did not enumerate the device)
-        for (i, mapping) in self.slot_to_port.iter_mut().enumerate() {
-            if *mapping == Some(port_id) {
-                *mapping = None;
-                self.device_slot_manager.free_slot(i as u64);
-                break;
-            }
+        let slot_id = self
+            .slot_to_port
+            .enumerate()
+            .filter(|(_, mapping)| **mapping == Some(port_id))
+            .map(|(slot_id, _)| slot_id)
+            .next();
+        if let Some(slot_id) = slot_id {
+            self.slot_to_port[slot_id] = None;
+            self.device_slot_manager.free_slot(slot_id as u64);
         }
 
         // remove
