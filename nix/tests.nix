@@ -612,6 +612,7 @@ in
 
   multiple-blockdevices = mkUsbTest {
     name = "multiple-blockdevices";
+    debug = false;
     virtualDevices =
       builtins.concatMap
         (usb:
