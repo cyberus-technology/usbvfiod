@@ -413,26 +413,34 @@ let
       nodes.machine = _: {
         imports = [ basicMachineConfig ];
 
-        # Create a udev rule for every device listed that enables it.
-        services.udev.extraRules =
-          lib.concatStrings (
-            builtins.map
-              (device:
-                if device.udevRule.enable then
-                  let
-                    controller = { "2" = ehciProductName; "3" = xhciProductName; }.${device.usbVersion};
-                    usbPort = builtins.toString device.usbPort;
-                  in
-                  if (usbPort == "" || device.udevRule.symlink == "")
-                  then abort "A udev rules requires to set a usbPort and a symlink string"
-                  else
-                    ''
-                      ${mkUdevRule controller usbPort device.udevRule.symlink}
-                    ''
-                else ""
-              )
-              args.virtualDevices)
-        ;
+        services = {
+          # The framework automatically forwards all journal output to ttyS0,
+          # slowing down the test significantly if there is a lot of logs.
+          journald.extraConfig = lib.mkForce ''
+            ForwardToConsole=yes
+            TTYPath=/dev/hvc1
+          '';
+          # Create a udev rule for every device listed that enables it.
+          udev.extraRules =
+            lib.concatStrings (
+              builtins.map
+                (device:
+                  if device.udevRule.enable then
+                    let
+                      controller = { "2" = ehciProductName; "3" = xhciProductName; }.${device.usbVersion};
+                      usbPort = builtins.toString device.usbPort;
+                    in
+                    if (usbPort == "" || device.udevRule.symlink == "")
+                    then abort "A udev rules requires to set a usbPort and a symlink string"
+                    else
+                      ''
+                        ${mkUdevRule controller usbPort device.udevRule.symlink}
+                      ''
+                  else ""
+                )
+                args.virtualDevices)
+          ;
+        };
 
         virtualisation = {
           cores = 2;
@@ -445,6 +453,13 @@ let
 
             # Add the ehci controller to use USB 2.0.
             "-device usb-ehci,id=ehci,addr=11"
+
+            # Add a virtio-console device to use it for bulk logs instead of serial.
+            # Set a addr to have the test-frameworks default virtio-console remain
+            # at hvc0 and not accidentally switch hvc0 and hvc1 thus breaking the test.
+            "-device virtio-serial,addr=12"
+            "-chardev file,id=char42,path=${qemuLogFile}"
+            "-device virtconsole,chardev=char42"
 
             # Enable the QEMU QMP interface to trigger HID events or plug blockdevices at runtime.
             "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
@@ -492,6 +507,7 @@ let
         };
       };
 
+
       testScript = ''
         ${nestedPythonClass}
         import os
@@ -511,6 +527,7 @@ let
         ${args.testScript}
       '';
     };
+
 
   singleBlockDeviceTestScript = ''
     # Confirm USB controller pops up in boot logs
