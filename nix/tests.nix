@@ -96,6 +96,7 @@ let
   usbvfiodSocketHotplug = "/tmp/hotplug";
 
   guestLogFile = "/tmp/console.log";
+  qemuLogFile = "/tmp/qemu-vc.log";
 
   # Will very likely be used in every test.
   basicMachineConfig = {
@@ -524,6 +525,16 @@ let
 
         cloud_hypervisor = Nested(vm_host=machine)
 
+        code = r''''${args.testScript}''''
+
+        try:
+          exec(code, globals(), locals())
+        finally:
+          logs = open("${qemuLogFile}", "r").read()
+          print(f'\n<<<<<MACHINE LOGS>>>>>\n{logs}\n<<<<<END MACHINE LOGS>>>>>\n')
+
+        # Include the provided script verbatim as dead code for the linter checks.
+        raise SystemExit
         ${args.testScript}
       '';
     };
