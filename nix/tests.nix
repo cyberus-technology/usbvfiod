@@ -253,6 +253,7 @@ let
       filepath = "${imagePathPart}-${testname}-${device.udevRule.symlink}.img";
     in
     ''
+      import os
       os.system("rm ${filepath}")
       print("Creating file image at ${filepath}")
       os.system("dd bs=1  count=1 seek=${imageSize} if=/dev/zero of=${filepath}")
@@ -511,7 +512,6 @@ let
 
       testScript = ''
         ${nestedPythonClass}
-        import os
 
         # prepare blockdevice images if necessary
         ${lib.concatStringsSep "\n" (builtins.map (mkPrepareBlockdeviceImages args.name) args.virtualDevices)}
@@ -605,6 +605,7 @@ in
       }
     ];
     testScript = ''
+      import os
       import time
       import threading
 
