@@ -546,6 +546,9 @@ let
     # Test partitioning
     cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda", timeout=60)
 
+    # The Script is sometimes too fast for the nested guest to detect the new partition.
+    cloud_hypervisor.wait_until_succeeds("lsblk /dev/sda1", timeout=60)
+
     # Test filesystem
     cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=60)
     cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
