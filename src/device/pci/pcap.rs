@@ -1,4 +1,12 @@
+#![allow(dead_code)]
+
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::SystemTime;
+
+use tracing::warn;
 
 const LINKTYPE_USB_LINUX: u32 = 189;
 const PCAP_MAGIC: u32 = 0xa1b2c3d4;
@@ -105,4 +113,122 @@ pub fn pcap_record_bytes(
     record.extend_from_slice(&link_header);
     record.extend_from_slice(payload);
     record
+}
+
+/// Opens the file and emits the global header on first use.
+///
+/// This keeps capture formatting pure while allowing optional file output.
+/// On the first successful write, the parent directory is created (if needed),
+/// the file is opened, and the PCAP global header is written. Any subsequent
+/// I/O errors only disable PCAP logging and emit a warning; they do not stop
+/// the overall process.
+///
+/// The file and header layout are based on the official PCAP specification,
+/// so per-field details are not duplicated in this comment.
+pub struct PcapManager {
+    path: Option<PathBuf>,
+    writer: Option<BufWriter<File>>,
+    warned: bool,
+}
+
+impl PcapManager {
+    pub const fn new(path: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            writer: None,
+            warned: false,
+        }
+    }
+
+    fn ensure_writer(&mut self) -> Option<&mut BufWriter<File>> {
+        let file_path = self.path.clone()?;
+
+        if self.writer.is_some() {
+            return self.writer.as_mut();
+        }
+
+        if let Some(parent) = file_path.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                if !self.warned {
+                    warn!(
+                        "Disabling USB PCAP logging after failing to create {}: {}",
+                        parent.display(),
+                        error
+                    );
+                    self.warned = true;
+                }
+                self.path = None;
+                return None;
+            }
+        }
+
+        let mut writer = match File::create(&file_path).map(BufWriter::new) {
+            Ok(writer) => writer,
+            Err(error) => {
+                if !self.warned {
+                    warn!(
+                        "Disabling USB PCAP logging after failing to open {}: {}",
+                        file_path.display(),
+                        error
+                    );
+                    self.warned = true;
+                }
+                self.path = None;
+                return None;
+            }
+        };
+
+        if let Err(error) = writer.write_all(&pcap_global_header_bytes()) {
+            if !self.warned {
+                warn!(
+                    "Disabling USB PCAP logging after failing to write header to {}: {}",
+                    file_path.display(),
+                    error
+                );
+                self.warned = true;
+            }
+            self.path = None;
+            return None;
+        }
+
+        self.writer = Some(writer);
+        self.writer.as_mut()
+    }
+
+    pub fn write_record(&mut self, record: &[u8]) {
+        let writer = match self.ensure_writer() {
+            Some(writer) => writer,
+            None => return,
+        };
+
+        if let Err(error) = writer.write_all(record).and_then(|_| writer.flush()) {
+            if !self.warned {
+                warn!("Failed to write USB PCAP record: {}", error);
+                self.warned = true;
+            }
+            self.path = None;
+            self.writer = None;
+        }
+    }
+}
+
+static MANAGER: Mutex<Option<PcapManager>> = Mutex::new(None);
+
+/// Global holder for an optional PCAP manager.
+///
+/// This provides a single synchronized entry point for PCAP output so callers
+/// do not need to store writers themselves. The manager is optional to allow
+/// USB PCAP logging to be enabled or disabled at runtime.
+pub struct UsbPcapManager;
+
+impl UsbPcapManager {
+    pub fn init(path: Option<PathBuf>) {
+        *MANAGER.lock().unwrap() = Some(PcapManager::new(path));
+    }
+
+    pub fn write_record(record: &[u8]) {
+        if let Some(manager) = MANAGER.lock().unwrap().as_mut() {
+            manager.write_record(record);
+        }
+    }
 }
