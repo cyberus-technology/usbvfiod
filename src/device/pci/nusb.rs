@@ -11,6 +11,7 @@ use tracing::{debug, trace, warn};
 
 use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
+use crate::device::pci::pcap::{log_control_completion, log_control_submission, UsbDirection};
 use crate::device::pci::trb::{CompletionCode, EventTrb};
 
 use super::realdevice::{EndpointType, EndpointWorkerInfo, Speed};
@@ -283,8 +284,24 @@ async fn control_worker(
         // forward request to device
         let direction = request.request_type & 0x80 != 0;
         match direction {
-            true => control_transfer_device_to_host(device.clone(), &request, &dma_bus).await,
-            false => control_transfer_host_to_device(device.clone(), &request, &dma_bus).await,
+            true => {
+                control_transfer_device_to_host(
+                    worker_info.slot_id,
+                    device.clone(),
+                    &request,
+                    &dma_bus,
+                )
+                .await;
+            }
+            false => {
+                control_transfer_host_to_device(
+                    worker_info.slot_id,
+                    device.clone(),
+                    &request,
+                    &dma_bus,
+                )
+                .await;
+            }
         }
 
         // send transfer event
@@ -320,6 +337,7 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
 }
 
 async fn control_transfer_device_to_host(
+    slot_id: u8,
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
@@ -333,18 +351,35 @@ async fn control_transfer_device_to_host(
         index: request.index,
         length: request.length,
     };
+    log_control_submission(
+        slot_id,
+        crate::device::pci::pcap::DEFAULT_BUS_NUMBER,
+        request,
+        UsbDirection::DeviceToHost,
+        &[],
+    );
 
     debug!("sending control in request to device");
-    let data = match device.control_in(control, Duration::from_millis(200)).await {
+    let (data, status) = match device.control_in(control, Duration::from_millis(200)).await {
         Ok(data) => {
             debug!("control in data {:?}", data);
-            data
+            (data, 0)
         }
         Err(error) => {
             warn!("control in request failed: {:?}", error);
-            vec![0; 0]
+            (vec![0; 0], -1)
         }
     };
+
+    log_control_completion(
+        request.address,
+        slot_id,
+        crate::device::pci::pcap::DEFAULT_BUS_NUMBER,
+        UsbDirection::DeviceToHost,
+        status,
+        data.len() as u32,
+        &data,
+    );
 
     // TODO: ideally the control transfer targets the right location for us and we get rid
     // of the additional DMA write here.
@@ -356,6 +391,7 @@ async fn control_transfer_device_to_host(
 }
 
 async fn control_transfer_host_to_device(
+    slot_id: u8,
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
@@ -374,15 +410,38 @@ async fn control_transfer_host_to_device(
         index: request.index,
         data: &data,
     };
+    log_control_submission(
+        slot_id,
+        crate::device::pci::pcap::DEFAULT_BUS_NUMBER,
+        request,
+        UsbDirection::HostToDevice,
+        &data,
+    );
 
     debug!("sending control out request to device");
-    match device
+    let status = match device
         .control_out(control, Duration::from_millis(200))
         .await
     {
-        Ok(_) => debug!("control out success"),
-        Err(error) => warn!("control out request failed: {:?}", error),
-    }
+        Ok(_) => {
+            debug!("control out success");
+            0
+        }
+        Err(error) => {
+            warn!("control out request failed: {:?}", error);
+            -1
+        }
+    };
+
+    log_control_completion(
+        request.address,
+        slot_id,
+        crate::device::pci::pcap::DEFAULT_BUS_NUMBER,
+        UsbDirection::HostToDevice,
+        status,
+        u32::from(request.length),
+        &[],
+    );
 }
 
 // cognitive complexity required because of the high cost of trace! messages
