@@ -27,6 +27,7 @@ use std::{
 
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
+    bus_number: u8,
     interfaces: Vec<nusb::Interface>,
     endpoints: [Option<Arc<Notify>>; 32],
     cancel: CancellationToken,
@@ -45,14 +46,15 @@ impl Debug for NusbDeviceWrapper {
         // for unconfigured devices. There is no I/O for this.
         f.debug_struct("NusbDeviceWrapper")
             .field("device", &self.device.active_configuration())
+            .field("bus_number", &self.bus_number)
             .finish()
     }
 }
 
-impl TryFrom<nusb::Device> for NusbDeviceWrapper {
+impl TryFrom<(nusb::Device, u8)> for NusbDeviceWrapper {
     type Error = Error;
 
-    fn try_from(device: nusb::Device) -> Result<Self, Error> {
+    fn try_from((device, bus_number): (nusb::Device, u8)) -> Result<Self, Error> {
         // Claim all interfaces
         let mut interfaces = vec![];
         let desc = device.active_configuration()?;
@@ -64,13 +66,13 @@ impl TryFrom<nusb::Device> for NusbDeviceWrapper {
 
         Ok(Self {
             device,
+            bus_number,
             interfaces,
             endpoints: std::array::from_fn(|_| None),
             cancel: CancellationToken::new(),
         })
     }
 }
-
 impl NusbDeviceWrapper {
     fn get_interface_number_containing_endpoint(&self, endpoint_id: u8) -> Option<usize> {
         self.interfaces.iter().position(|interface| {
@@ -283,10 +285,12 @@ async fn control_worker(
 
         // forward request to device
         let direction = request.request_type & 0x80 != 0;
+        let bus_number = u16::from(worker_info.bus_number);
         match direction {
             true => {
                 control_transfer_device_to_host(
                     worker_info.slot_id,
+                    bus_number,
                     device.clone(),
                     &request,
                     &dma_bus,
@@ -296,6 +300,7 @@ async fn control_worker(
             false => {
                 control_transfer_host_to_device(
                     worker_info.slot_id,
+                    bus_number,
                     device.clone(),
                     &request,
                     &dma_bus,
@@ -338,6 +343,7 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
 
 async fn control_transfer_device_to_host(
     slot_id: u8,
+    bus_number: u16,
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
@@ -353,7 +359,7 @@ async fn control_transfer_device_to_host(
     };
     log_control_submission(
         slot_id,
-        crate::device::pci::pcap::DEFAULT_BUS_NUMBER,
+        bus_number,
         request,
         UsbDirection::DeviceToHost,
         &[],
@@ -374,7 +380,7 @@ async fn control_transfer_device_to_host(
     log_control_completion(
         request.address,
         slot_id,
-        crate::device::pci::pcap::DEFAULT_BUS_NUMBER,
+        bus_number,
         UsbDirection::DeviceToHost,
         status,
         data.len() as u32,
@@ -392,6 +398,7 @@ async fn control_transfer_device_to_host(
 
 async fn control_transfer_host_to_device(
     slot_id: u8,
+    bus_number: u16,
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
@@ -412,7 +419,7 @@ async fn control_transfer_host_to_device(
     };
     log_control_submission(
         slot_id,
-        crate::device::pci::pcap::DEFAULT_BUS_NUMBER,
+        bus_number,
         request,
         UsbDirection::HostToDevice,
         &data,
@@ -436,7 +443,7 @@ async fn control_transfer_host_to_device(
     log_control_completion(
         request.address,
         slot_id,
-        crate::device::pci::pcap::DEFAULT_BUS_NUMBER,
+        bus_number,
         UsbDirection::HostToDevice,
         status,
         u32::from(request.length),
