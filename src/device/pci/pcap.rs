@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use crate::device::pci::usbrequest::UsbRequest;
 use tracing::warn;
 
 const LINKTYPE_USB_LINUX: u32 = 189;
@@ -13,6 +14,60 @@ const PCAP_MAGIC: u32 = 0xa1b2c3d4;
 const PCAP_MAJOR: u16 = 2;
 const PCAP_MINOR: u16 = 4;
 const SNAPLEN: u32 = 65_535;
+
+/// The event type field is an ASCII character that indicates the type of the event.
+#[derive(Clone, Copy)]
+pub enum UsbEventType {
+    Submission,
+    Completion,
+    Error,
+}
+
+impl UsbEventType {
+    const fn code(self) -> u8 {
+        match self {
+            Self::Submission => b'S',
+            Self::Completion => b'C',
+            Self::Error => b'E',
+        }
+    }
+}
+
+/// USB transfer category recorded in the linktype header.
+#[derive(Clone, Copy)]
+pub enum UsbTransferType {
+    Isochronous,
+    Control,
+    Bulk,
+    Interrupt,
+}
+
+impl UsbTransferType {
+    const fn code(self) -> u8 {
+        match self {
+            Self::Isochronous => 0,
+            Self::Interrupt => 1,
+            Self::Control => 2,
+            Self::Bulk => 3,
+        }
+    }
+}
+
+/// USB direction used to set the endpoint address IN/OUT bit in the record.
+#[derive(Clone, Copy)]
+pub enum UsbDirection {
+    HostToDevice,
+    DeviceToHost,
+}
+
+impl UsbDirection {
+    const fn endpoint_address(self, endpoint: u8) -> u8 {
+        match self {
+            Self::HostToDevice => endpoint & 0x7f,
+            Self::DeviceToHost => endpoint | 0x80,
+        }
+    }
+}
 
 /// Timestamp of a packet in seconds and microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -230,5 +285,123 @@ impl UsbPcapManager {
         if let Some(manager) = MANAGER.lock().unwrap().as_mut() {
             manager.write_record(record);
         }
+    }
+}
+
+/// Emit a PCAP record for a control transfer submission event.
+pub fn log_control_submission(
+    slot_id: u8,
+    bus_number: u16,
+    request: &UsbRequest,
+    direction: UsbDirection,
+    payload: &[u8],
+) {
+    log_packet(
+        request.address,
+        slot_id,
+        bus_number,
+        0,
+        UsbEventType::Submission,
+        UsbTransferType::Control,
+        direction,
+        0,
+        u32::from(request.length),
+        payload,
+        Some(build_setup_bytes(request)),
+    );
+}
+
+/// Emit a PCAP record for a control transfer completion event.
+pub fn log_control_completion(
+    request_id: u64,
+    slot_id: u8,
+    bus_number: u16,
+    direction: UsbDirection,
+    status: i32,
+    actual_length: u32,
+    payload: &[u8],
+) {
+    log_packet(
+        request_id,
+        slot_id,
+        bus_number,
+        0,
+        UsbEventType::Completion,
+        UsbTransferType::Control,
+        direction,
+        status,
+        actual_length,
+        payload,
+        None,
+    );
+}
+
+// Encode a control setup packet into the 8-byte USB request layout.
+const fn build_setup_bytes(request: &UsbRequest) -> [u8; 8] {
+    [
+        request.request_type,
+        request.request,
+        (request.value & 0x00ff) as u8,
+        (request.value >> 8) as u8,
+        (request.index & 0x00ff) as u8,
+        (request.index >> 8) as u8,
+        (request.length & 0x00ff) as u8,
+        (request.length >> 8) as u8,
+    ]
+}
+
+// Build and emit a single PCAP record for the given USB transfer metadata.
+#[allow(clippy::too_many_arguments)]
+fn log_packet(
+    request_id: u64,
+    slot_id: u8,
+    bus_number: u16,
+    endpoint_number: u8,
+    event: UsbEventType,
+    transfer_type: UsbTransferType,
+    direction: UsbDirection,
+    status: i32,
+    urb_len: u32,
+    payload: &[u8],
+    setup: Option<[u8; 8]>,
+) {
+    let meta = UsbPacketLinktypeHeader {
+        id: request_id,
+        event_type: event.code(),
+        transfer_type: transfer_type.code(),
+        endpoint_address: direction.endpoint_address(endpoint_number),
+        device_address: slot_id,
+        bus_number,
+        setup_flag: setup_flag_value(transfer_type, setup.is_some()),
+        data_flag: data_flag_value(payload.len()),
+        status,
+        urb_len,
+        data_len: payload.len() as u32,
+        setup: if matches!(transfer_type, UsbTransferType::Control) {
+            setup.unwrap_or([0; 8])
+        } else {
+            [0; 8]
+        },
+    };
+    let timestamp = Timestamp::from(SystemTime::now());
+    let record = pcap_record_bytes(timestamp, &meta, payload);
+    UsbPcapManager::write_record(&record);
+}
+
+// zero only for control with setup data.
+const fn setup_flag_value(transfer_type: UsbTransferType, has_setup: bool) -> u8 {
+    if matches!(transfer_type, UsbTransferType::Control) && has_setup {
+        b'\0'
+    } else {
+        b'-'
+    }
+}
+
+// non-zero when there is no payload data.
+const fn data_flag_value(payload_len: usize) -> u8 {
+    if payload_len == 0 {
+        1
+    } else {
+        0
     }
 }
