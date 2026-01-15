@@ -96,6 +96,7 @@ let
   usbvfiodSocketHotplug = "/tmp/hotplug";
 
   guestLogFile = "/tmp/console.log";
+  qemuLogFile = "/tmp/qemu-vc.log";
 
   # Will very likely be used in every test.
   basicMachineConfig = {
@@ -252,6 +253,7 @@ let
       filepath = "${imagePathPart}-${testname}-${device.udevRule.symlink}.img";
     in
     ''
+      import os
       os.system("rm ${filepath}")
       print("Creating file image at ${filepath}")
       os.system("dd bs=1  count=1 seek=${imageSize} if=/dev/zero of=${filepath}")
@@ -413,26 +415,34 @@ let
       nodes.machine = _: {
         imports = [ basicMachineConfig ];
 
-        # Create a udev rule for every device listed that enables it.
-        services.udev.extraRules =
-          lib.concatStrings (
-            builtins.map
-              (device:
-                if device.udevRule.enable then
-                  let
-                    controller = { "2" = ehciProductName; "3" = xhciProductName; }.${device.usbVersion};
-                    usbPort = builtins.toString device.usbPort;
-                  in
-                  if (usbPort == "" || device.udevRule.symlink == "")
-                  then abort "A udev rules requires to set a usbPort and a symlink string"
-                  else
-                    ''
-                      ${mkUdevRule controller usbPort device.udevRule.symlink}
-                    ''
-                else ""
-              )
-              args.virtualDevices)
-        ;
+        services = {
+          # The framework automatically forwards all journal output to ttyS0,
+          # slowing down the test significantly if there is a lot of logs.
+          journald.extraConfig = lib.mkForce ''
+            ForwardToConsole=yes
+            TTYPath=/dev/hvc1
+          '';
+          # Create a udev rule for every device listed that enables it.
+          udev.extraRules =
+            lib.concatStrings (
+              builtins.map
+                (device:
+                  if device.udevRule.enable then
+                    let
+                      controller = { "2" = ehciProductName; "3" = xhciProductName; }.${device.usbVersion};
+                      usbPort = builtins.toString device.usbPort;
+                    in
+                    if (usbPort == "" || device.udevRule.symlink == "")
+                    then abort "A udev rules requires to set a usbPort and a symlink string"
+                    else
+                      ''
+                        ${mkUdevRule controller usbPort device.udevRule.symlink}
+                      ''
+                  else ""
+                )
+                args.virtualDevices)
+          ;
+        };
 
         virtualisation = {
           cores = 2;
@@ -445,6 +455,13 @@ let
 
             # Add the ehci controller to use USB 2.0.
             "-device usb-ehci,id=ehci,addr=11"
+
+            # Add a virtio-console device to use it for bulk logs instead of serial.
+            # Set a addr to have the test-frameworks default virtio-console remain
+            # at hvc0 and not accidentally switch hvc0 and hvc1 thus breaking the test.
+            "-device virtio-serial,addr=12"
+            "-chardev file,id=char42,path=${qemuLogFile}"
+            "-device virtconsole,chardev=char42"
 
             # Enable the QEMU QMP interface to trigger HID events or plug blockdevices at runtime.
             "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
@@ -492,9 +509,9 @@ let
         };
       };
 
+
       testScript = ''
         ${nestedPythonClass}
-        import os
 
         # prepare blockdevice images if necessary
         ${lib.concatStringsSep "\n" (builtins.map (mkPrepareBlockdeviceImages args.name) args.virtualDevices)}
@@ -508,9 +525,20 @@ let
 
         cloud_hypervisor = Nested(vm_host=machine)
 
+        code = r''''${args.testScript}''''
+
+        try:
+          exec(code, globals(), locals())
+        finally:
+          logs = open("${qemuLogFile}", "r").read()
+          print(f'\n<<<<<MACHINE LOGS>>>>>\n{logs}\n<<<<<END MACHINE LOGS>>>>>\n')
+
+        # Include the provided script verbatim as dead code for the linter checks.
+        raise SystemExit
         ${args.testScript}
       '';
     };
+
 
   singleBlockDeviceTestScript = ''
     # Confirm USB controller pops up in boot logs
@@ -528,6 +556,9 @@ let
 
     # Test partitioning
     cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda", timeout=60)
+
+    # The Script is sometimes too fast for the nested guest to detect the new partition.
+    cloud_hypervisor.wait_until_succeeds("lsblk /dev/sda1", timeout=60)
 
     # Test filesystem
     cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=60)
@@ -574,6 +605,7 @@ in
       }
     ];
     testScript = ''
+      import os
       import time
       import threading
 
