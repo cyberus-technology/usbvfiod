@@ -157,10 +157,16 @@
           usbvfiod = {
             type = "app";
             program = "${usbvfiod}/bin/usbvfiod";
+            meta = {
+              description = "USB pass-through vfio-user executable";
+            };
           };
           remote = {
             type = "app";
             program = "${usbvfiod}/bin/remote";
+            meta = {
+              description = "hotplug devices to the running USB pass-through vfio-user executable";
+            };
           };
         };
 
