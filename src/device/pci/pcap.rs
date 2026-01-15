@@ -14,6 +14,7 @@ const PCAP_MAGIC: u32 = 0xa1b2c3d4;
 const PCAP_MAJOR: u16 = 2;
 const PCAP_MINOR: u16 = 4;
 const SNAPLEN: u32 = 65_535;
+pub const DEFAULT_BUS_NUMBER: u16 = 1;
 
 /// The event type field is an ASCII character that indicates the type of the event.
 #[derive(Clone, Copy)]
