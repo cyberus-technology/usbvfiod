@@ -13,7 +13,7 @@ use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
 use crate::device::pci::pcap::{
     log_bulk_completion, log_bulk_submission, log_control_completion, log_control_submission,
-    UsbDirection,
+    log_interrupt_completion, log_interrupt_submission, UsbDirection, UsbTransferType,
 };
 use crate::device::pci::trb::{CompletionCode, EventTrb};
 
@@ -121,6 +121,7 @@ impl NusbDeviceWrapper {
                     .unwrap();
                 runtime().spawn(transfer_in_worker(
                     endpoint,
+                    UsbTransferType::Bulk,
                     worker_info,
                     receiver,
                     self.cancel.clone(),
@@ -132,6 +133,7 @@ impl NusbDeviceWrapper {
                     .unwrap();
                 runtime().spawn(transfer_in_worker(
                     endpoint,
+                    UsbTransferType::Interrupt,
                     worker_info,
                     receiver,
                     self.cancel.clone(),
@@ -458,6 +460,7 @@ async fn control_transfer_host_to_device(
 #[allow(clippy::cognitive_complexity)]
 async fn transfer_in_worker<EpType: BulkOrInterrupt>(
     mut endpoint: nusb::Endpoint<EpType, In>,
+    transfer_type: UsbTransferType,
     worker_info: EndpointWorkerInfo,
     wakeup: Arc<Notify>,
     cancel: CancellationToken,
@@ -499,15 +502,27 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         let bus_number = u16::from(worker_info.bus_number);
         let endpoint_number = worker_info.endpoint_id;
         let request_id = trb.address;
-        log_bulk_submission(
-            request_id,
-            worker_info.slot_id,
-            bus_number,
-            endpoint_number,
-            UsbDirection::DeviceToHost,
-            normal_data.transfer_length,
-            &[],
-        );
+        match transfer_type {
+            UsbTransferType::Bulk => log_bulk_submission(
+                request_id,
+                worker_info.slot_id,
+                bus_number,
+                endpoint_number,
+                UsbDirection::DeviceToHost,
+                normal_data.transfer_length,
+                &[],
+            ),
+            UsbTransferType::Interrupt => log_interrupt_submission(
+                request_id,
+                worker_info.slot_id,
+                bus_number,
+                endpoint_number,
+                UsbDirection::DeviceToHost,
+                normal_data.transfer_length,
+                &[],
+            ),
+            _ => (),
+        }
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
         let buffer = select! {
@@ -547,16 +562,29 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
                 transfer_length
             }
         };
-        log_bulk_completion(
-            request_id,
-            worker_info.slot_id,
-            bus_number,
-            endpoint_number,
-            UsbDirection::DeviceToHost,
-            0,
-            byte_count_dma as u32,
-            &buffer.buffer[..byte_count_dma],
-        );
+        match transfer_type {
+            UsbTransferType::Bulk => log_bulk_completion(
+                request_id,
+                worker_info.slot_id,
+                bus_number,
+                endpoint_number,
+                UsbDirection::DeviceToHost,
+                0,
+                byte_count_dma as u32,
+                &buffer.buffer[..byte_count_dma],
+            ),
+            UsbTransferType::Interrupt => log_interrupt_completion(
+                request_id,
+                worker_info.slot_id,
+                bus_number,
+                endpoint_number,
+                UsbDirection::DeviceToHost,
+                0,
+                byte_count_dma as u32,
+                &buffer.buffer[..byte_count_dma],
+            ),
+            _ => (),
+        }
         worker_info
             .dma_bus
             .write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);

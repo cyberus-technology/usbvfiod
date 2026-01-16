@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -20,7 +18,8 @@ const SNAPLEN: u32 = 65_535;
 pub enum UsbEventType {
     Submission,
     Completion,
-    Error,
+    // TODO: implement error logging
+    // Error,
 }
 
 impl UsbEventType {
@@ -28,7 +27,8 @@ impl UsbEventType {
         match self {
             Self::Submission => b'S',
             Self::Completion => b'C',
-            Self::Error => b'E',
+            // TODO: implement error logging
+            // Self::Error => b'E',
         }
     }
 }
@@ -36,7 +36,8 @@ impl UsbEventType {
 /// USB transfer category recorded in the linktype header.
 #[derive(Clone, Copy)]
 pub enum UsbTransferType {
-    Isochronous,
+    // TODO: implement isochronous transfer logging
+    // Isochronous,
     Control,
     Bulk,
     Interrupt,
@@ -45,7 +46,8 @@ pub enum UsbTransferType {
 impl UsbTransferType {
     const fn code(self) -> u8 {
         match self {
-            Self::Isochronous => 0,
+            // TODO: implement isochronous transfer logging
+            // Self::Isochronous => 0,
             Self::Interrupt => 1,
             Self::Control => 2,
             Self::Bulk => 3,
@@ -356,6 +358,58 @@ pub fn log_bulk_submission(
         direction,
         0,
         expected_length,
+        payload,
+        None,
+    );
+}
+
+/// Emit a PCAP record for a interrupt transfer completion event.
+pub fn log_interrupt_submission(
+    trb_id: u64,
+    slot_id: u8,
+    bus_number: u16,
+    endpoint_id: u8,
+    direction: UsbDirection,
+    expected_length: u32,
+    payload: &[u8],
+) {
+    log_packet(
+        trb_id,
+        slot_id,
+        bus_number,
+        endpoint_id,
+        UsbEventType::Submission,
+        UsbTransferType::Interrupt,
+        direction,
+        0,
+        expected_length,
+        payload,
+        None,
+    );
+}
+
+/// Emit a PCAP record for a interrupt transfer completion event.
+#[allow(clippy::too_many_arguments)]
+pub fn log_interrupt_completion(
+    trb_id: u64,
+    slot_id: u8,
+    bus_number: u16,
+    endpoint_id: u8,
+    direction: UsbDirection,
+    status: i32,
+    actual_length: u32,
+    payload: &[u8],
+) {
+    log_packet(
+        trb_id,
+        slot_id,
+        bus_number,
+        endpoint_id,
+        UsbEventType::Completion,
+        UsbTransferType::Interrupt,
+        direction,
+        status,
+        actual_length,
         payload,
         None,
     );
