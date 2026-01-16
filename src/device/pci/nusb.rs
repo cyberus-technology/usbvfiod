@@ -11,7 +11,10 @@ use tracing::{debug, trace, warn};
 
 use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
-use crate::device::pci::pcap::{log_control_completion, log_control_submission, UsbDirection};
+use crate::device::pci::pcap::{
+    log_bulk_completion, log_bulk_submission, log_control_completion, log_control_submission,
+    UsbDirection,
+};
 use crate::device::pci::trb::{CompletionCode, EventTrb};
 
 use super::realdevice::{EndpointType, EndpointWorkerInfo, Speed};
@@ -493,6 +496,18 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         let transfer_length = normal_data.transfer_length as usize;
 
         let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
+        let bus_number = u16::from(worker_info.bus_number);
+        let endpoint_number = worker_info.endpoint_id;
+        let request_id = trb.address;
+        log_bulk_submission(
+            request_id,
+            worker_info.slot_id,
+            bus_number,
+            endpoint_number,
+            UsbDirection::DeviceToHost,
+            normal_data.transfer_length,
+            &[],
+        );
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
         let buffer = select! {
@@ -532,6 +547,16 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
                 transfer_length
             }
         };
+        log_bulk_completion(
+            request_id,
+            worker_info.slot_id,
+            bus_number,
+            endpoint_number,
+            UsbDirection::DeviceToHost,
+            0,
+            byte_count_dma as u32,
+            &buffer.buffer[..byte_count_dma],
+        );
         worker_info
             .dma_bus
             .write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
@@ -608,8 +633,30 @@ async fn transfer_out_worker(
         if normal_data.transfer_length == 31 {
             debug!("OUT data: {:?}", data);
         }
+        let bus_number = u16::from(worker_info.bus_number);
+        let endpoint_number = worker_info.endpoint_id;
+        let request_id = trb.address;
+        log_bulk_submission(
+            request_id,
+            worker_info.slot_id,
+            bus_number,
+            endpoint_number,
+            UsbDirection::HostToDevice,
+            normal_data.transfer_length,
+            &data,
+        );
         endpoint.submit(data.into());
         endpoint.next_complete().await;
+        log_bulk_completion(
+            request_id,
+            worker_info.slot_id,
+            bus_number,
+            endpoint_number,
+            UsbDirection::HostToDevice,
+            0,
+            normal_data.transfer_length,
+            &[],
+        );
 
         if !normal_data.interrupt_on_completion {
             trace!("Processed TRB without IOC flag; sending no transfer event");
