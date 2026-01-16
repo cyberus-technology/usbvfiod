@@ -336,6 +336,58 @@ pub fn log_control_completion(
     );
 }
 
+/// Emit a PCAP record for a bulk transfer submission event.
+pub fn log_bulk_submission(
+    trb_id: u64,
+    slot_id: u8,
+    bus_number: u16,
+    endpoint_id: u8,
+    direction: UsbDirection,
+    expected_length: u32,
+    payload: &[u8],
+) {
+    log_packet(
+        trb_id,
+        slot_id,
+        bus_number,
+        endpoint_id,
+        UsbEventType::Submission,
+        UsbTransferType::Bulk,
+        direction,
+        0,
+        expected_length,
+        payload,
+        None,
+    );
+}
+
+/// Emit a PCAP record for a bulk transfer completion event.
+#[allow(clippy::too_many_arguments)]
+pub fn log_bulk_completion(
+    trb_id: u64,
+    slot_id: u8,
+    bus_number: u16,
+    endpoint_id: u8,
+    direction: UsbDirection,
+    status: i32,
+    actual_length: u32,
+    payload: &[u8],
+) {
+    log_packet(
+        trb_id,
+        slot_id,
+        bus_number,
+        endpoint_id,
+        UsbEventType::Completion,
+        UsbTransferType::Bulk,
+        direction,
+        status,
+        actual_length,
+        payload,
+        None,
+    );
+}
+
 // Encode a control setup packet into the 8-byte USB request layout.
 const fn build_setup_bytes(request: &UsbRequest) -> [u8; 8] {
     [
