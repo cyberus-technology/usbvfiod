@@ -532,7 +532,17 @@ impl XhciController {
                     )
                 }
             }
-            CommandTrbVariant::EvaluateContext => todo!(),
+            CommandTrbVariant::EvaluateContext(data) => {
+                // TODO this command probably requires more handling.
+                // Currently, we just acknowledge to not crash usbvfiod when using USB 1.1.
+                warn!("received CommandTrbVariant::EvaluateContext: returning success without taking action");
+                EventTrb::new_command_completion_event_trb(
+                    cmd.address,
+                    0,
+                    CompletionCode::Success,
+                    data.slot_id,
+                )
+            }
             CommandTrbVariant::ResetEndpoint => todo!(),
             CommandTrbVariant::StopEndpoint(data) => {
                 self.handle_stop_endpoint(&data);

@@ -351,7 +351,7 @@ pub enum CommandTrbVariant {
     DisableSlot,
     AddressDevice(AddressDeviceCommandTrbData),
     ConfigureEndpoint(ConfigureEndpointCommandTrbData),
-    EvaluateContext,
+    EvaluateContext(EvaluateContextCommandTrbData),
     ResetEndpoint,
     StopEndpoint(StopEndpointCommandTrbData),
     SetTrDequeuePointer,
@@ -387,7 +387,7 @@ impl CommandTrbVariant {
             trb_types::DISABLE_SLOT_COMMAND => Self::DisableSlot,
             trb_types::ADDRESS_DEVICE_COMMAND => parse(Self::AddressDevice, bytes),
             trb_types::CONFIGURE_ENDPOINT_COMMAND => parse(Self::ConfigureEndpoint, bytes),
-            trb_types::EVALUATE_CONTEXT_COMMAND => Self::EvaluateContext,
+            trb_types::EVALUATE_CONTEXT_COMMAND => parse(Self::EvaluateContext, bytes),
             trb_types::RESET_ENDPOINT_COMMAND => Self::ResetEndpoint,
             trb_types::STOP_ENDPOINT_COMMAND => parse(Self::StopEndpoint, bytes),
             trb_types::SET_TR_DEQUEUE_POINTER_COMMAND => Self::SetTrDequeuePointer,
@@ -566,6 +566,51 @@ impl TrbData for ConfigureEndpointCommandTrbData {
         Ok(Self {
             input_context_pointer,
             deconfigure,
+            slot_id,
+        })
+    }
+}
+
+/// Evaluate Context Command TRB data structure.
+///
+/// See XHCI specification Section 6.4.3.6 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct EvaluateContextCommandTrbData {
+    pub input_context_pointer: u64,
+    pub slot_id: u8,
+}
+
+impl TrbData for EvaluateContextCommandTrbData {
+    /// Parse data of a Evaluate Context Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects all RsvdZ
+    /// fields.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::EVALUATE_CONTEXT_COMMAND,
+            trb_type,
+            "EvaluateContextCommandTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
+        );
+
+        // SAFETY: range matches array length
+        let icp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
+        let input_context_pointer = u64::from_le_bytes(icp_bytes);
+
+        // the lowest four bit of the pointer are RsvdZ to ensure 16-byte
+        // alignment.
+        if input_context_pointer & 0xf != 0 {
+            return Err(TrbParseError::RsvdZViolation);
+        }
+
+        let slot_id = trb_bytes[15];
+
+        Ok(Self {
+            input_context_pointer,
             slot_id,
         })
     }

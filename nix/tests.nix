@@ -223,7 +223,7 @@ let
   # Create a blockdevice or USB keyboard on our QEMU bus-id corresponding with the declared usb version.
   mkUsbDeviceType = testname: device:
     let
-      deviceBus = { "2" = "ehci"; "3" = "xhci"; }.${device.usbVersion};
+      deviceBus = { "1.1" = "usb-bus"; "2" = "ehci"; "3" = "xhci"; }.${device.usbVersion};
     in
     if (!device.udevRule.enable || device.udevRule.symlink == "")
     then abort "udevRule is necessary to attach create qemu device before/on startup"
@@ -276,7 +276,7 @@ let
   # Input type check for list of virtualDevices in the attrs.
   sanityCheckDevice = device:
     assert (device.type == "blockdevice" || device.type == "hid-device");
-    assert (device.usbVersion == "2" || device.usbVersion == "3");
+    assert (device.usbVersion == "1.1" || device.usbVersion == "2" || device.usbVersion == "3");
     assert (builtins.typeOf device.usbPort == "int" || builtins.typeOf device.usbPort == "string");
     assert (builtins.typeOf device.udevRule.enable == "bool");
     assert (builtins.typeOf device.udevRule.symlink == "string");
@@ -337,7 +337,7 @@ let
       virtualDevices :: [
         {
         type :: "blockdevice" || "hid-device"
-        usbVersion :: "2" || "3"
+        usbVersion :: "1.1" || "2" || "3"
         usbPort :: Integer || String
         udevRule.enable :: Bool
         udevRule.symlink :: String
@@ -347,6 +347,10 @@ let
       testScript :: String
     } -> a
     ```
+
+    # Note
+    By default the first port on the controller for USB 1.1 is used.
+    Do not use (the default) usbPort = 1 with usbVersion = "1.1".
 
     # Examples
     :::{.example}
@@ -404,6 +408,7 @@ let
   # See mkUsbTest (this runs without any arg checks).
   mkUsbTestChecked =
     let
+      uhciProductName = "UHCI Host Controller";
       ehciProductName = "EHCI Host Controller";
       xhciProductName = "xHCI Host Controller";
     in
@@ -429,7 +434,7 @@ let
                 (device:
                   if device.udevRule.enable then
                     let
-                      controller = { "2" = ehciProductName; "3" = xhciProductName; }.${device.usbVersion};
+                      controller = { "1.1" = uhciProductName; "2" = ehciProductName; "3" = xhciProductName; }.${device.usbVersion};
                       usbPort = builtins.toString device.usbPort;
                     in
                     if (usbPort == "" || device.udevRule.symlink == "")
@@ -462,6 +467,9 @@ let
             "-device virtio-serial,addr=12"
             "-chardev file,id=char42,path=${qemuLogFile}"
             "-device virtconsole,chardev=char42"
+
+            # A uhci controller is already added by the testframework at "usb-bus.0" with "-usb"
+            # There is per default a "Adomax Technology Co., Ltd QEMU Tablet" attached at port 1.
 
             # Enable the QEMU QMP interface to trigger HID events or plug blockdevices at runtime.
             "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
@@ -589,6 +597,18 @@ in
       {
         type = "blockdevice";
         usbVersion = "2";
+      }
+    ];
+    testScript = singleBlockDeviceTestScript;
+  };
+
+  blockdevice-usb-1-1 = mkUsbTest {
+    name = "blockdevice-usb-1.1";
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "1.1";
+        usbPort = 2;
       }
     ];
     testScript = singleBlockDeviceTestScript;
