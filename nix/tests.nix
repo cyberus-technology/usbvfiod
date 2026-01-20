@@ -463,9 +463,9 @@ let
             # Add a virtio-console device to use it for bulk logs instead of serial.
             # Set a addr to have the test-frameworks default virtio-console remain
             # at hvc0 and not accidentally switch hvc0 and hvc1 thus breaking the test.
-            "-device virtio-serial,addr=13"
-            "-chardev file,id=char42,path=${qemuLogFile}"
-            "-device virtconsole,chardev=char42"
+            "-device virtio-serial,addr=13,id=virtserial"
+            "-chardev file,id=charvirtcon,path=${qemuLogFile}"
+            "-device virtconsole,chardev=charvirtcon,bus=virtserial.0"
 
             # Enable the QEMU QMP interface to trigger HID events or plug blockdevices at runtime.
             "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
