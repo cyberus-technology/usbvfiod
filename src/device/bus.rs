@@ -51,7 +51,7 @@ impl From<RequestSize> for u64 {
 #[allow(clippy::fallible_impl_from)]
 impl From<RequestSize> for NonZeroU64 {
     fn from(r: RequestSize) -> Self {
-        // This cannot panic as all valid [RequestSize]s are > 0.
+        // SAFETY: This cannot panic as all valid [RequestSize]s are > 0.
         Self::new(r as u64).unwrap()
     }
 }
@@ -194,8 +194,7 @@ pub trait BusDevice: Debug {
     /// should not be used where performance matters.
     fn read_bulk(&self, offset: u64, data: &mut [u8]) {
         for (cur, value) in data.iter_mut().enumerate() {
-            // This conversion cannot panic, because usize always fits
-            // into u64.
+            // SAFETY: This conversion cannot panic, because usize always fits in u64 on all supported platforms.
             let cur_u64: u64 = cur.try_into().expect("Failed to convert to u64");
 
             // The case where we read past the wrapping point is not
@@ -223,8 +222,7 @@ pub trait BusDevice: Debug {
     /// should not be used where performance matters.
     fn write_bulk(&self, offset: u64, data: &[u8]) {
         for (cur, &value) in data.iter().enumerate() {
-            // This conversion cannot panic, because usize always fits
-            // into u64.
+            // SAFETY: This conversion cannot panic, because usize always fits in u64 on all supported platforms.
             let cur_u64: u64 = cur.try_into().expect("Failed to convert to u64");
 
             // The case where we read past the wrapping point is not
