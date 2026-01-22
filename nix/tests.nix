@@ -833,4 +833,85 @@ blockdeviceTests
       cloud_hypervisor.wait_until_succeeds('lsblk /dev/sda')
     '';
   };
+
+  forceful-removal = mkUsbTest {
+    name = "forceful removal";
+    virtualDevices = [
+      {
+        type = "blockdevice";
+        usbVersion = "3";
+        usbPort = 1;
+        udevRule.enable = true;
+        udevRule.symlink = "hotplug";
+        attachedOnStartup = "none";
+      }
+    ];
+    # TODO loop this to verify proper cleanup
+    testScript = ''
+      import os
+
+      os.system("dd bs=1  count=1 seek=${imageSize} if=/dev/zero of=/tmp/hotplug.img")
+
+      # create a blockdevice
+      os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
+      {"execute": "qmp_capabilities"}
+      {"execute": "blockdev-add", "arguments": {"driver": "file", "node-name": "hotplug", "filename": "/tmp/hotplug.img"} }
+      EOF""")
+
+      for i in range(1,20):
+        print(f"ATTACH DETACH LOOP {i}")
+
+        # plug in a blockdevice
+        os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
+        {"execute": "qmp_capabilities"}
+        {"execute": "device_add", "arguments": {"driver": "usb-storage", "id": "hotplug", "bus": "${usbVersions."3".busName}.0", "drive": "hotplug", "port": "1"} }
+        EOF""")
+
+        # wait for qemu host to find the blockdevice
+        machine.wait_until_succeeds("lsusb | grep 'QEMU QEMU USB HARDDRIVE'", timeout=120)
+        machine.wait_until_succeeds("lsblk /dev/sd*", timeout=120)
+
+        # Attaching a blockdevice with qmp seems to not trigger the udev rule.
+        # This is probably the case because of ATTRS{serial} that need the grand/-parent
+        # to confirm it is the correct USB controller we will be talking to.
+        machine.succeed("udevadm trigger", timeout=60)
+        machine.wait_until_succeeds("ls /dev/bus/usb/hotplug", timeout=60)
+
+        # Attach a device.
+        out = machine.succeed("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --attach /dev/bus/usb/hotplug", timeout=60)
+        print(out)
+
+        # List attached devices.
+        out = machine.succeed("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
+        print(out)
+
+        # Check the list output is what we expect: one device
+        listed_devices_count = len(re.findall(r'(\d{3}):(\d{3})',out))
+        if listed_devices_count != 1:
+          raise RequestedAssertionFailed(
+            f"The `remote --list` output contains a wrong count of devices (expected 1, got {listed_devices_count})"
+          )
+
+        # Get the bus and device numbers.
+        (bus_nr, device_nr) = re.search(r'(\d{3}):(\d{3})',out).groups()
+        print(f"Bus number: {bus_nr}, Device number: {device_nr}")
+
+        # Wait for the guest to find the usb device.
+        if (i % 2 == 0):
+          cloud_hypervisor.wait_until_succeeds("lsusb -d ${blockdeviceVendorId}:${blockdeviceProductId}", timeout=120)
+
+        # Wait for the guest to find the blockdevice.
+        if (i % 4 == 0):
+          cloud_hypervisor.wait_until_succeeds("lsblk /dev/sd*", timeout=120)
+
+        # Plug out a blockdevice.
+        os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
+        {"execute": "qmp_capabilities"}
+        {"execute": "device_del", "arguments": { "id": "hotplug" } }
+        EOF""")
+
+        # Wait for the qemu host to realize the missing usb device.
+        machine.wait_until_fails("lsusb | grep 'QEMU QEMU USB HARDDRIVE'")
+    '';
+  };
 }
