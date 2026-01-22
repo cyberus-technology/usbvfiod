@@ -18,8 +18,7 @@ const SNAPLEN: u32 = 65_535;
 pub enum UsbEventType {
     Submission,
     Completion,
-    // TODO: implement error logging
-    // Error,
+    Error,
 }
 
 impl UsbEventType {
@@ -27,8 +26,7 @@ impl UsbEventType {
         match self {
             Self::Submission => b'S',
             Self::Completion => b'C',
-            // TODO: implement error logging
-            // Self::Error => b'E',
+            Self::Error => b'E',
         }
     }
 }
@@ -335,6 +333,30 @@ pub fn log_control_completion(
         actual_length,
         payload,
         None,
+    );
+}
+
+/// Emit a PCAP record for a control transfer submission error event.
+pub fn log_control_error(
+    slot_id: u8,
+    bus_number: u16,
+    request: &UsbRequest,
+    direction: UsbDirection,
+    status: i32,
+    payload: &[u8],
+) {
+    log_packet(
+        request.address,
+        slot_id,
+        bus_number,
+        0,
+        UsbEventType::Error,
+        UsbTransferType::Control,
+        direction,
+        status,
+        u32::from(request.length),
+        payload,
+        Some(build_setup_bytes(request)),
     );
 }
 

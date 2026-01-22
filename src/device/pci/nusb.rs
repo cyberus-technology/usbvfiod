@@ -11,9 +11,11 @@ use tracing::{debug, trace, warn};
 
 use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
+use crate::device::pci::error_map::status_from_error;
 use crate::device::pci::pcap::{
-    log_bulk_completion, log_bulk_submission, log_control_completion, log_control_submission,
-    log_interrupt_completion, log_interrupt_submission, UsbDirection, UsbTransferType,
+    log_bulk_completion, log_bulk_submission, log_control_completion, log_control_error,
+    log_control_submission, log_interrupt_completion, log_interrupt_submission, UsbDirection,
+    UsbTransferType,
 };
 use crate::device::pci::trb::{CompletionCode, EventTrb};
 
@@ -377,8 +379,17 @@ async fn control_transfer_device_to_host(
             (data, 0)
         }
         Err(error) => {
+            let status = status_from_error(&error);
+            log_control_error(
+                slot_id,
+                bus_number,
+                request,
+                UsbDirection::DeviceToHost,
+                status,
+                &[],
+            );
             warn!("control in request failed: {:?}", error);
-            (vec![0; 0], -1)
+            (vec![0; 0], status)
         }
     };
 
@@ -440,8 +451,17 @@ async fn control_transfer_host_to_device(
             0
         }
         Err(error) => {
+            let status = status_from_error(&error);
+            log_control_error(
+                slot_id,
+                bus_number,
+                request,
+                UsbDirection::HostToDevice,
+                status,
+                &data,
+            );
             warn!("control out request failed: {:?}", error);
-            -1
+            status
         }
     };
 
