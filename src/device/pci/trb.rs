@@ -348,7 +348,7 @@ pub struct CommandTrb {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommandTrbVariant {
     EnableSlot,
-    DisableSlot,
+    DisableSlot(DisableSlotCommandTrbData),
     AddressDevice(AddressDeviceCommandTrbData),
     ConfigureEndpoint(ConfigureEndpointCommandTrbData),
     EvaluateContext(EvaluateContextCommandTrbData),
@@ -384,7 +384,7 @@ impl CommandTrbVariant {
             // type; thus, no further parsing is necessary and we can just
             // return the enum variant.
             trb_types::ENABLE_SLOT_COMMAND => Self::EnableSlot,
-            trb_types::DISABLE_SLOT_COMMAND => Self::DisableSlot,
+            trb_types::DISABLE_SLOT_COMMAND => parse(Self::DisableSlot, bytes),
             trb_types::ADDRESS_DEVICE_COMMAND => parse(Self::AddressDevice, bytes),
             trb_types::CONFIGURE_ENDPOINT_COMMAND => parse(Self::ConfigureEndpoint, bytes),
             trb_types::EVALUATE_CONTEXT_COMMAND => parse(Self::EvaluateContext, bytes),
@@ -468,6 +468,38 @@ impl TrbData for LinkTrbData {
             ring_segment_pointer,
             toggle_cycle,
         })
+    }
+}
+
+/// Disable Slot Command TRB data structure.
+///
+/// See XHCI specification Section 6.4.3.3 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DisableSlotCommandTrbData {
+    /// The associated Slot ID
+    pub slot_id: u8,
+}
+
+impl TrbData for DisableSlotCommandTrbData {
+    /// Parse data of a Disable Slot Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects all RsvdZ
+    /// fields.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::DISABLE_SLOT_COMMAND,
+            trb_type,
+            "DisableSlotCommandTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
+        );
+
+        let slot_id = trb_bytes[15];
+
+        Ok(Self { slot_id })
     }
 }
 

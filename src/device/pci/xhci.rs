@@ -462,15 +462,15 @@ impl XhciController {
                 let (completion_code, slot_id) = self.handle_enable_slot();
                 EventTrb::new_command_completion_event_trb(cmd.address, 0, completion_code, slot_id)
             }
-            CommandTrbVariant::DisableSlot => {
+            CommandTrbVariant::DisableSlot(data) => {
                 // TODO this command probably requires more handling.
-                // Currently, we just acknowledge to not crash usbvfiod in the
-                // integration test.
+                // Currently, we only do a minimal check against a hot-detach race condition
+                // and acknowledge to not crash usbvfiod in the integration test.
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
-                    CompletionCode::Success,
-                    1,
+                    self.handle_noop(data.slot_id),
+                    data.slot_id,
                 )
             }
             CommandTrbVariant::AddressDevice(ref data) => {
@@ -481,7 +481,6 @@ impl XhciController {
                     data.slot_id,
                 )
             }
-
             CommandTrbVariant::ConfigureEndpoint(ref data) => {
                 if self
                     .slot_to_port
