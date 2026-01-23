@@ -574,41 +574,30 @@ let
     search("123TEST123", out)
   '';
 
+  blockdeviceTests = builtins.listToAttrs (
+    builtins.map
+      (usbVersion: {
+        name = "blockdevice-usb-${builtins.replaceStrings [ "." ] [ "_" ] usbVersion}";
+        value = mkUsbTest {
+          name = "blockdevice-usb-${usbVersion}";
+          virtualDevices = [
+            {
+              type = "blockdevice";
+              inherit usbVersion;
+            }
+          ];
+          testScript = singleBlockDeviceTestScript;
+        };
+      })
+      [
+        "1.1"
+        "2"
+        "3"
+      ]
+  );
 in
-{
-  blockdevice-usb-3 = mkUsbTest {
-    name = "blockdevice-usb-3";
-    virtualDevices = [
-      {
-        type = "blockdevice";
-        usbVersion = "3";
-      }
-    ];
-    testScript = singleBlockDeviceTestScript;
-  };
-
-  blockdevice-usb-2 = mkUsbTest {
-    name = "blockdevice-usb-2";
-    virtualDevices = [
-      {
-        type = "blockdevice";
-        usbVersion = "2";
-      }
-    ];
-    testScript = singleBlockDeviceTestScript;
-  };
-
-  blockdevice-usb-1-1 = mkUsbTest {
-    name = "blockdevice-usb-1.1";
-    virtualDevices = [
-      {
-        type = "blockdevice";
-        usbVersion = "1.1";
-      }
-    ];
-    testScript = singleBlockDeviceTestScript;
-  };
-
+blockdeviceTests
+  // {
   interrupt-endpoints = mkUsbTest {
     name = "interrupt-endpoints";
     virtualDevices = [
