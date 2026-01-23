@@ -65,7 +65,7 @@ fn handle_attach(
     let device = nusb::Device::from_fd(fd.into())
         .wait()
         .context("Failed to open nusb device from the supplied file descriptor")?;
-    let wrapped_device = Box::new(NusbDeviceWrapper::new(device));
+    let wrapped_device = Box::new(NusbDeviceWrapper::try_from(device)?);
     let response = controller
         .lock()
         .unwrap()
