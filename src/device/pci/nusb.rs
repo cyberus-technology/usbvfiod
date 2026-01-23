@@ -1,3 +1,4 @@
+use anyhow::{Error, Result};
 use nusb::transfer::{
     Buffer, Bulk, BulkOrInterrupt, ControlIn, ControlOut, ControlType, In, Interrupt, Out,
     Recipient,
@@ -47,36 +48,29 @@ impl Debug for NusbDeviceWrapper {
     }
 }
 
-impl NusbDeviceWrapper {
-    pub fn new(device: nusb::Device) -> Self {
+impl TryFrom<nusb::Device> for NusbDeviceWrapper {
+    type Error = Error;
+
+    fn try_from(device: nusb::Device) -> Result<Self, Error> {
         // Claim all interfaces
         let mut interfaces = vec![];
-        // when we cannot get the active configuration, i.e., not properly talk
-        // to the device, panicking is currently the desired behavior to
-        // identify the situation in which the problem occurred.
-        let desc = device.active_configuration().unwrap();
+        let desc = device.active_configuration()?;
         for interface in desc.interfaces() {
             let interface_number = interface.interface_number();
             debug!("Enabling interface {}", interface_number);
-            // when we cannot claim an interface of the device, panicking is
-            // currently the desired behavior to identify the situation in which
-            // the problem occurred.
-            interfaces.push(
-                device
-                    .detach_and_claim_interface(interface_number)
-                    .wait()
-                    .unwrap(),
-            );
+            interfaces.push(device.detach_and_claim_interface(interface_number).wait()?);
         }
 
-        Self {
+        Ok(Self {
             device,
             interfaces,
             endpoints: std::array::from_fn(|_| None),
             cancel: CancellationToken::new(),
-        }
+        })
     }
+}
 
+impl NusbDeviceWrapper {
     fn get_interface_number_containing_endpoint(&self, endpoint_id: u8) -> Option<usize> {
         self.interfaces.iter().position(|interface| {
             interface
