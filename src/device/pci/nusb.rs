@@ -485,8 +485,6 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
             worker_info.endpoint_id,
             worker_info.slot_id,
         );
-        // Mutex lock unwrap fails only if other threads panicked while holding
-        // the lock. In that case it is reasonable we also panic.
         worker_info
             .event_ring
             .lock()
@@ -562,8 +560,6 @@ async fn transfer_out_worker(
             worker_info.endpoint_id,
             worker_info.slot_id,
         );
-        // Mutex lock unwrap fails only if other threads panicked while holding
-        // the lock. In that case it is reasonable we also panic.
         worker_info
             .event_ring
             .lock()
