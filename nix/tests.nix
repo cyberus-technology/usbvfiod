@@ -553,7 +553,9 @@ let
     # Confirm some diagnostic information
     out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=60)
     search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
-    out = cloud_hypervisor.succeed("lsusb", timeout=60)
+
+    # Wait until the usb drive we expect is recognized.
+    out = cloud_hypervisor.wait_until_succeeds("lsusb -d ${blockdeviceVendorId}:${blockdeviceProductId}", timeout=120)
     search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
     out = cloud_hypervisor.succeed("sfdisk -l", timeout=60)
     search("Disk /dev/sda:", out)
