@@ -1,82 +1,100 @@
 /**
   This file contains integration tests for usbvfiod.
 */
-{ lib, pkgs, usbvfiod }:
+{
+  lib,
+  pkgs,
+  usbvfiod,
+}:
 let
   # For the VM that we start in Cloud Hypervisor, we re-use the netboot image.
-  netbootNixos = debug: lib.nixosSystem {
-    inherit (pkgs.stdenv.hostPlatform) system;
+  netbootNixos =
+    debug:
+    lib.nixosSystem {
+      inherit (pkgs.stdenv.hostPlatform) system;
 
-    modules = [
-      "${pkgs.path}/nixos/modules/installer/netboot/netboot-minimal.nix"
+      modules = [
+        "${pkgs.path}/nixos/modules/installer/netboot/netboot-minimal.nix"
 
-      # Cloud Hypervisor Guest Convenience
-      ({ config, ... }: {
+        # Cloud Hypervisor Guest Convenience
+        (
+          { config, ... }:
+          {
 
-        boot = {
-          initrd.kernelModules = [ "virtio_console" ];
+            boot = {
+              initrd.kernelModules = [ "virtio_console" ];
 
-          kernelParams = [
-            # currently we can not handle the automatic suspend that is triggered so we disable dynamic power management
-            # https://github.com/torvalds/linux/blob/master/Documentation/driver-api/usb/power-management.rst
-            "usbcore.autosuspend=-1"
+              kernelParams = [
+                # currently we can not handle the automatic suspend that is triggered so we disable dynamic power management
+                # https://github.com/torvalds/linux/blob/master/Documentation/driver-api/usb/power-management.rst
+                "usbcore.autosuspend=-1"
 
-            # Faster logging than serial would provide.
-            "console=hvc0"
+                # Faster logging than serial would provide.
+                "console=hvc0"
 
-            # Keep a console available for early boot until we can write hvc.
-            "console=tty0"
-          ] ++ (if debug then [
-            # Enable dyndbg messages for the XHCI driver.
-            "xhci_pci.dyndbg==pmfl"
-            "xhci_hcd.dyndbg==pmfl"
-          ]
-          else [ ]);
-        };
+                # Keep a console available for early boot until we can write hvc.
+                "console=tty0"
+              ]
+              ++ (
+                if debug then
+                  [
+                    # Enable dyndbg messages for the XHCI driver.
+                    "xhci_pci.dyndbg==pmfl"
+                    "xhci_hcd.dyndbg==pmfl"
+                  ]
+                else
+                  [ ]
+              );
+            };
 
-        services.journald.console = "hvc0";
+            services.journald.console = "hvc0";
 
-        # Enable debug verbosity.
-        boot.consoleLogLevel = lib.mkIf debug 8;
+            # Enable debug verbosity.
+            boot.consoleLogLevel = lib.mkIf debug 8;
 
-        # Convenience packages for interactive use
-        environment.systemPackages = with pkgs; [ pciutils usbutils ];
+            # Convenience packages for interactive use
+            environment.systemPackages = with pkgs; [
+              pciutils
+              usbutils
+            ];
 
-        # network configuration for interactive debugging
-        networking.interfaces."ens2" = {
-          ipv4.addresses = [
-            {
-              address = "192.168.100.2";
-              prefixLength = 24;
-            }
-          ];
-          ipv4.routes = [
-            {
-              address = "0.0.0.0";
-              prefixLength = 0;
-              via = "192.168.100.1";
-            }
-          ];
-          useDHCP = false;
-        };
+            # network configuration for interactive debugging
+            networking.interfaces."ens2" = {
+              ipv4.addresses = [
+                {
+                  address = "192.168.100.2";
+                  prefixLength = 24;
+                }
+              ];
+              ipv4.routes = [
+                {
+                  address = "0.0.0.0";
+                  prefixLength = 0;
+                  via = "192.168.100.1";
+                }
+              ];
+              useDHCP = false;
+            };
 
-        # ssh access for interactive debugging
-        services.openssh = {
-          enable = true;
-          settings = {
-            PermitRootLogin = "yes";
-            PermitEmptyPasswords = "yes";
-          };
-        };
-        security.pam.services.sshd.allowNullPassword = true;
+            # ssh access for interactive debugging
+            services.openssh = {
+              enable = true;
+              settings = {
+                PermitRootLogin = "yes";
+                PermitEmptyPasswords = "yes";
+              };
+            };
+            security.pam.services.sshd.allowNullPassword = true;
 
-        # Silence the useless stateVersion warning. We have no state to keep.
-        system.stateVersion = config.system.nixos.release;
-      })
-    ];
-  };
+            # Silence the useless stateVersion warning. We have no state to keep.
+            system.stateVersion = config.system.nixos.release;
+          }
+        )
+      ];
+    };
 
-  mkNetboot = debug:
+  mkNetboot =
+    debug:
     let
       inherit (netbootNixos debug) config;
 
@@ -85,8 +103,7 @@ let
     {
       initrd = "${config.system.build.netbootRamdisk}/initrd";
       kernel = "${config.system.build.kernel}/${kernelTarget}";
-      cmdline = "init=${config.system.build.toplevel}/init "
-        + builtins.toString config.boot.kernelParams;
+      cmdline = "init=${config.system.build.toplevel}/init " + builtins.toString config.boot.kernelParams;
     };
 
   # Putting the socket in a world-readable location is obviously not a
@@ -121,7 +138,11 @@ let
     };
     security.pam.services.sshd.allowNullPassword = true;
     virtualisation.forwardPorts = [
-      { from = "host"; host.port = 2000; guest.port = 22; }
+      {
+        from = "host";
+        host.port = 2000;
+        guest.port = 22;
+      }
     ];
   };
 
@@ -189,14 +210,17 @@ let
     # for HerculesCI have weird interaction with reporting back the status to GitHub.
     # This is also making sure the test is still available for end-users to run on their systems.
     # Using buildDependenciesOnly means the actual test will not be ran, but all dependencies will be built.
-    buildDependenciesOnly = {
-      # Verified systems, which should work.
-      "x86_64-linux" = false;
-      # `aarch64-linux` fails on Hercules CI due to nested virtualization usage.
-      # The build might be working, but after a 1 hour timeout, the machine barely gets into stage-2.
-      # So for now, skip running the actual test.
-      "aarch64-linux" = true;
-    }.${pkgs.stdenv.hostPlatform.system} or true /* Also ignore failure on any systems not otherwise listed. */;
+    buildDependenciesOnly =
+      {
+        # Verified systems, which should work.
+        "x86_64-linux" = false;
+        # `aarch64-linux` fails on Hercules CI due to nested virtualization usage.
+        # The build might be working, but after a 1 hour timeout, the machine barely gets into stage-2.
+        # So for now, skip running the actual test.
+        "aarch64-linux" = true;
+      }
+      .${pkgs.stdenv.hostPlatform.system} or true # Also ignore failure on any systems not otherwise listed.
+    ;
   };
 
   # Some static values for ...
@@ -215,40 +239,48 @@ let
   '';
 
   # Fill in a template for the qemu.options list for a blockdevice.
-  mkQemuBlockdevice = driveId: driveFile: deviceBus: devicePort: ''-drive if=none,id=${driveId},format=raw,file=${driveFile} -device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}'';
+  mkQemuBlockdevice =
+    driveId: driveFile: deviceBus: devicePort:
+    "-drive if=none,id=${driveId},format=raw,file=${driveFile} -device usb-storage,bus=${deviceBus}.0,port=${devicePort},drive=${driveId}";
 
   # Fill in a template for the qemu.options list for a USB keyboard.
-  mkQemuKeyboard = deviceBus: devicePort: ''-device usb-kbd,bus=${deviceBus}.0,port=${devicePort}'';
+  mkQemuKeyboard = deviceBus: devicePort: "-device usb-kbd,bus=${deviceBus}.0,port=${devicePort}";
 
   # Create a blockdevice or USB keyboard on our QEMU bus-id corresponding with the declared usb version.
-  mkUsbDeviceType = testname: device:
+  mkUsbDeviceType =
+    testname: device:
     let
-      deviceBus = { "1.1" = "uhci"; "2" = "ehci"; "3" = "xhci"; }.${device.usbVersion};
+      deviceBus =
+        {
+          "1.1" = "uhci";
+          "2" = "ehci";
+          "3" = "xhci";
+        }
+        .${device.usbVersion};
     in
-    if (!device.udevRule.enable || device.udevRule.symlink == "")
-    then abort "udevRule is necessary to attach create qemu device before/on startup"
-    else if (device.type == "blockdevice")
-    then
-      mkQemuBlockdevice
-        "${deviceBus}-${device.udevRule.symlink}"
+    if (!device.udevRule.enable || device.udevRule.symlink == "") then
+      abort "udevRule is necessary to attach create qemu device before/on startup"
+    else if (device.type == "blockdevice") then
+      mkQemuBlockdevice "${deviceBus}-${device.udevRule.symlink}"
         "${imagePathPart}-${testname}-${device.udevRule.symlink}.img"
         "${deviceBus}"
         "${builtins.toString device.usbPort}"
-    else if (device.type == "hid-device")
-    then
-      mkQemuKeyboard
-        "${deviceBus}"
-        "${builtins.toString device.usbPort}"
-    else builtins.abort ''wrong device type; types supported are "blockdevice" and "hid-device"'';
+    else if (device.type == "hid-device") then
+      mkQemuKeyboard "${deviceBus}" "${builtins.toString device.usbPort}"
+    else
+      builtins.abort ''wrong device type; types supported are "blockdevice" and "hid-device"'';
 
   # Respect if attached at host on boot option is true to create the QEMU device option.
-  mkUsbDevice = testname: device:
-    if device.attachedOnStartup == "host" || device.attachedOnStartup == "guest"
-    then mkUsbDeviceType testname device
-    else ""; # Device should be handled via QEMU QMP in the testScript.
+  mkUsbDevice =
+    testname: device:
+    if device.attachedOnStartup == "host" || device.attachedOnStartup == "guest" then
+      mkUsbDeviceType testname device
+    else
+      ""; # Device should be handled via QEMU QMP in the testScript.
 
   # Create a testScript snippet to make a clean blockdevice image file.
-  mkPrepareOneBlockdeviceImage = testname: device:
+  mkPrepareOneBlockdeviceImage =
+    testname: device:
     let
       filepath = "${imagePathPart}-${testname}-${device.udevRule.symlink}.img";
     in
@@ -260,31 +292,45 @@ let
     '';
 
   # Decide if a virtual device needs a backing image file.
-  mkPrepareBlockdeviceImages = testname: device:
-    if device.type == "blockdevice" # for now only blockdevices need a backing file
-    then mkPrepareOneBlockdeviceImage testname device
-    else "";
+  mkPrepareBlockdeviceImages =
+    testname: device:
+    if
+      device.type == "blockdevice" # for now only blockdevices need a backing file
+    then
+      mkPrepareOneBlockdeviceImage testname device
+    else
+      "";
 
   # Generate usbvfiod argument flags to hand over the device through their udev generated symlink.
-  mkDeviceFlag = device:
-    if device.attachedOnStartup == "guest" && (!device.udevRule.enable || device.udevRule.symlink == "")
-    then abort "udevRule is necessary to attach device before startup of usbvfiod"
-    else if device.attachedOnStartup == "guest"
-    then ''--device "/dev/bus/usb/${device.udevRule.symlink}"''
-    else "";
+  mkDeviceFlag =
+    device:
+    if
+      device.attachedOnStartup == "guest" && (!device.udevRule.enable || device.udevRule.symlink == "")
+    then
+      abort "udevRule is necessary to attach device before startup of usbvfiod"
+    else if device.attachedOnStartup == "guest" then
+      ''--device "/dev/bus/usb/${device.udevRule.symlink}"''
+    else
+      "";
 
   # Input type check for list of virtualDevices in the attrs.
-  sanityCheckDevice = device:
+  sanityCheckDevice =
+    device:
     assert (device.type == "blockdevice" || device.type == "hid-device");
     assert (device.usbVersion == "1.1" || device.usbVersion == "2" || device.usbVersion == "3");
     assert (builtins.typeOf device.usbPort == "int" || builtins.typeOf device.usbPort == "string");
     assert (builtins.typeOf device.udevRule.enable == "bool");
     assert (builtins.typeOf device.udevRule.symlink == "string");
-    assert (device.attachedOnStartup == "none" || device.attachedOnStartup == "host" || device.attachedOnStartup == "guest");
+    assert (
+      device.attachedOnStartup == "none"
+      || device.attachedOnStartup == "host"
+      || device.attachedOnStartup == "guest"
+    );
     true;
 
   # Input type check for the attrs arg.
-  sanityCheckArgs = args:
+  sanityCheckArgs =
+    args:
     assert (builtins.typeOf args.name == "string");
     assert (builtins.typeOf args.debug == "bool");
     assert (builtins.typeOf args.virtualDevices == "list");
@@ -293,7 +339,8 @@ let
     args;
 
   # If possible use default values for not set things.
-  mkDefaults = args:
+  mkDefaults =
+    args:
     let
       deviceCount = builtins.length args.virtualDevices;
 
@@ -309,14 +356,16 @@ let
 
       attrs = {
         debug = true;
-      } // args // {
-        virtualDevices = builtins.genList (i: lib.recursiveUpdate virtualDevice (builtins.elemAt args.virtualDevices i)) deviceCount;
+      }
+      // args
+      // {
+        virtualDevices = builtins.genList (
+          i: lib.recursiveUpdate virtualDevice (builtins.elemAt args.virtualDevices i)
+        ) deviceCount;
       };
 
     in
     attrs;
-
-
 
   /**
     Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
@@ -397,7 +446,6 @@ let
       '';
     };
     ```
-
   */
   mkUsbTest = args: mkUsbTestChecked (sanityCheckArgs (mkDefaults args));
 
@@ -408,7 +456,8 @@ let
       ehciProductName = "EHCI Host Controller";
       xhciProductName = "xHCI Host Controller";
     in
-    args: pkgs.testers.runNixOSTest {
+    args:
+    pkgs.testers.runNixOSTest {
       inherit (args) name;
 
       inherit globalTimeout passthru;
@@ -424,25 +473,30 @@ let
             TTYPath=/dev/hvc1
           '';
           # Create a udev rule for every device listed that enables it.
-          udev.extraRules =
-            lib.concatStrings (
-              builtins.map
-                (device:
-                  if device.udevRule.enable then
-                    let
-                      controller = { "1.1" = uhciProductName; "2" = ehciProductName; "3" = xhciProductName; }.${device.usbVersion};
-                      usbPort = builtins.toString device.usbPort;
-                    in
-                    if (usbPort == "" || device.udevRule.symlink == "")
-                    then abort "A udev rules requires to set a usbPort and a symlink string"
-                    else
-                      ''
-                        ${mkUdevRule controller usbPort device.udevRule.symlink}
-                      ''
-                  else ""
-                )
-                args.virtualDevices)
-          ;
+          udev.extraRules = lib.concatStrings (
+            builtins.map (
+              device:
+              if device.udevRule.enable then
+                let
+                  controller =
+                    {
+                      "1.1" = uhciProductName;
+                      "2" = ehciProductName;
+                      "3" = xhciProductName;
+                    }
+                    .${device.usbVersion};
+                  usbPort = builtins.toString device.usbPort;
+                in
+                if (usbPort == "" || device.udevRule.symlink == "") then
+                  abort "A udev rules requires to set a usbPort and a symlink string"
+                else
+                  ''
+                    ${mkUdevRule controller usbPort device.udevRule.symlink}
+                  ''
+              else
+                ""
+            ) args.virtualDevices
+          );
         };
 
         virtualisation = {
@@ -484,7 +538,9 @@ let
               Restart = "on-failure";
               RestartSec = "2s";
               ExecStart = ''
-                ${lib.getExe usbvfiod} ${if args.debug then "-v" else ""} --socket-path ${usbvfiodSocket} --hotplug-socket-path ${usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
+                ${lib.getExe usbvfiod} ${
+                  if args.debug then "-v" else ""
+                } --socket-path ${usbvfiodSocket} --hotplug-socket-path ${usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
               '';
             };
           };
@@ -513,12 +569,13 @@ let
         };
       };
 
-
       testScript = ''
         ${nestedPythonClass}
 
         # prepare blockdevice images if necessary
-        ${lib.concatStringsSep "\n" (builtins.map (mkPrepareBlockdeviceImages args.name) args.virtualDevices)}
+        ${lib.concatStringsSep "\n" (
+          builtins.map (mkPrepareBlockdeviceImages args.name) args.virtualDevices
+        )}
 
         start_all()
 
@@ -542,7 +599,6 @@ let
         ${args.testScript}
       '';
     };
-
 
   singleBlockDeviceTestScript = ''
     # Confirm USB controller pops up in boot logs
@@ -599,7 +655,7 @@ let
   );
 in
 blockdeviceTests
-  // {
+// {
   interrupt-endpoints = mkUsbTest {
     name = "interrupt-endpoints";
     virtualDevices = [
@@ -653,17 +709,26 @@ blockdeviceTests
     debug = false;
     virtualDevices =
       builtins.concatMap
-        (usb:
+        (
+          usb:
           builtins.map
-            (num:
-              {
-                type = "blockdevice";
-                usbVersion = "${usb}";
-                usbPort = num;
-                udevRule.symlink = "usb-${usb}-device-${builtins.toString num}";
-              }
-            ) [ 1 2 3 4 ]
-        ) [ "2" "3" ];
+            (num: {
+              type = "blockdevice";
+              usbVersion = "${usb}";
+              usbPort = num;
+              udevRule.symlink = "usb-${usb}-device-${builtins.toString num}";
+            })
+            [
+              1
+              2
+              3
+              4
+            ]
+        )
+        [
+          "2"
+          "3"
+        ];
     testScript = ''
       out = cloud_hypervisor.succeed("lsusb --tree", timeout=60)
       search(r'Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)

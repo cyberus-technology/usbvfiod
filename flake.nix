@@ -41,7 +41,16 @@
         ;
     in
     exportOutputs (
-      { self, nixpkgs, crane, fenix, advisory-db, git-hooks, currentSystem, ... }:
+      {
+        self,
+        nixpkgs,
+        crane,
+        fenix,
+        advisory-db,
+        git-hooks,
+        currentSystem,
+        ...
+      }:
 
       let
         pkgs = nixpkgs.legacyPackages;
@@ -57,12 +66,13 @@
           strictDeps = true;
         };
 
-        craneLibLLvmTools = craneLib.overrideToolchain
-          (fenix.packages.complete.withComponents [
+        craneLibLLvmTools = craneLib.overrideToolchain (
+          fenix.packages.complete.withComponents [
             "cargo"
             "llvm-tools"
             "rustc"
-          ]);
+          ]
+        );
 
         # Build *just* the cargo dependencies, so we can reuse
         # all of that work (e.g. via cachix) when running in CI
@@ -70,20 +80,23 @@
 
         # Build the actual crate itself, reusing the dependency
         # artifacts from above.
-        usbvfiod = craneLib.buildPackage (commonArgs // {
-          inherit cargoArtifacts;
+        usbvfiod = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
 
-          meta = {
-            mainProgram = "usbvfiod";
-          };
-        });
+            meta = {
+              mainProgram = "usbvfiod";
+            };
+          }
+        );
       in
       {
         checks = {
           pre-commit-check = git-hooks.lib.${currentSystem}.run {
             src = ./.;
             hooks = {
-              nixpkgs-fmt.enable = true;
+              nixfmt.enable = true;
               rustfmt.enable = true;
               typos.enable = true;
               deadnix.enable = true;
@@ -100,14 +113,20 @@
           # Note that this is done as a separate derivation so that
           # we can block the CI if there are issues here, but not
           # prevent downstream consumers from building our crate by itself.
-          usbvfiod-clippy = craneLib.cargoClippy (commonArgs // {
-            inherit cargoArtifacts;
-            cargoClippyExtraArgs = "--all-targets -- --deny warnings";
-          });
+          usbvfiod-clippy = craneLib.cargoClippy (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+            }
+          );
 
-          usbvfiod-doc = craneLib.cargoDoc (commonArgs // {
-            inherit cargoArtifacts;
-          });
+          usbvfiod-doc = craneLib.cargoDoc (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+            }
+          );
 
           # Check formatting
           usbvfiod-fmt = craneLib.cargoFmt {
@@ -133,23 +152,31 @@
           # Run tests with cargo-nextest
           # Consider setting `doCheck = false` on `usbvfiod` if you do not want
           # the tests to run twice
-          usbvfiod-nextest = craneLib.cargoNextest (commonArgs // {
-            inherit cargoArtifacts;
-            partitions = 1;
-            partitionType = "count";
-            cargoNextestPartitionsExtraArgs = "--no-tests=pass";
-          });
-        } // (import ./nix/tests.nix {
+          usbvfiod-nextest = craneLib.cargoNextest (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              partitions = 1;
+              partitionType = "count";
+              cargoNextestPartitionsExtraArgs = "--no-tests=pass";
+            }
+          );
+        }
+        // (import ./nix/tests.nix {
           inherit lib pkgs;
           usbvfiod = self.packages.default;
         });
 
         packages = {
           default = usbvfiod;
-        } // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
-          usbvfiod-llvm-coverage = craneLibLLvmTools.cargoLlvmCov (commonArgs // {
-            inherit cargoArtifacts;
-          });
+        }
+        // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
+          usbvfiod-llvm-coverage = craneLibLLvmTools.cargoLlvmCov (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+            }
+          );
         };
 
         apps = {
@@ -197,6 +224,9 @@
             "aarch64-linux"
           ];
         };
+
+        # Use `nix fmt` like you would `cargo fmt`.
+        formatter = pkgs.nixfmt-tree;
       }
     );
 }
