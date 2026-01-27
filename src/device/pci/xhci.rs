@@ -600,7 +600,9 @@ impl XhciController {
     }
 
     fn handle_address_device(&mut self, data: &AddressDeviceCommandTrbData) -> CompletionCode {
-        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+        let Some(device_context) = self.device_slot_manager.get_device_context(data.slot_id) else {
+            return CompletionCode::UsbTransactionError;
+        };
         let root_hub_port_number = device_context.initialize(data.input_context_pointer);
         if root_hub_port_number < 1 || root_hub_port_number as u64 > MAX_PORTS {
             panic!("address device reported invalid root hub port number: {root_hub_port_number}");
@@ -642,7 +644,9 @@ impl XhciController {
             return CompletionCode::UsbTransactionError;
         };
 
-        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+        let Some(device_context) = self.device_slot_manager.get_device_context(data.slot_id) else {
+            return CompletionCode::UsbTransactionError;
+        };
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
 
         for (i, ep_type) in enabled_endpoints {
@@ -660,7 +664,9 @@ impl XhciController {
     }
 
     fn handle_stop_endpoint(&self, data: &StopEndpointCommandTrbData) -> CompletionCode {
-        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+        let Some(device_context) = self.device_slot_manager.get_device_context(data.slot_id) else {
+            return CompletionCode::UsbTransactionError;
+        };
         device_context.set_endpoint_state(data.endpoint_id, endpoint_state::STOPPED);
         CompletionCode::Success
     }
