@@ -566,6 +566,15 @@ impl XhciController {
         self.interrupt_line.interrupt();
     }
 
+    // This is a general handler to check for device existence and return an error in case
+    // of a missing device.
+    fn handle_noop(&mut self, slot_id: u8) -> CompletionCode {
+        if Self::device_by_slot_mut(&self.slot_to_port, &mut self.devices, slot_id).is_none() {
+            return CompletionCode::UsbTransactionError;
+        }
+        CompletionCode::Success
+    }
+
     fn handle_enable_slot(&mut self) -> (CompletionCode, u8) {
         // try to reserve a device slot
         let reservation = self.device_slot_manager.reserve_slot();
