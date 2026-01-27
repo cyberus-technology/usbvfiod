@@ -515,15 +515,12 @@ impl XhciController {
                 )
             }
             CommandTrbVariant::ResetEndpoint => todo!(),
-            CommandTrbVariant::StopEndpoint(data) => {
-                self.handle_stop_endpoint(&data);
-                EventTrb::new_command_completion_event_trb(
-                    cmd.address,
-                    0,
-                    CompletionCode::Success,
-                    data.slot_id,
-                )
-            }
+            CommandTrbVariant::StopEndpoint(data) => EventTrb::new_command_completion_event_trb(
+                cmd.address,
+                0,
+                self.handle_stop_endpoint(&data),
+                data.slot_id,
+            ),
             CommandTrbVariant::SetTrDequeuePointer => todo!(),
             CommandTrbVariant::ResetDevice(data) => {
                 // TODO this command requires more handling. The guest
@@ -650,9 +647,10 @@ impl XhciController {
         CompletionCode::Success
     }
 
-    fn handle_stop_endpoint(&self, data: &StopEndpointCommandTrbData) {
+    fn handle_stop_endpoint(&self, data: &StopEndpointCommandTrbData) -> CompletionCode {
         let device_context = self.device_slot_manager.get_device_context(data.slot_id);
         device_context.set_endpoint_state(data.endpoint_id, endpoint_state::STOPPED);
+        CompletionCode::Success
     }
 
     fn doorbell_device(&mut self, slot_id: u8, value: u32) {
