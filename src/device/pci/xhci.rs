@@ -504,12 +504,13 @@ impl XhciController {
             }
             CommandTrbVariant::EvaluateContext(data) => {
                 // TODO this command probably requires more handling.
-                // Currently, we just acknowledge to not crash usbvfiod when using USB 1.1.
+                // Currently, we only do a minimal check against a hot-detach race condition
+                // and acknowledge to not crash usbvfiod when using USB 1.1.
                 warn!("received CommandTrbVariant::EvaluateContext: returning success without taking action");
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
-                    CompletionCode::Success,
+                    self.handle_noop(data.slot_id),
                     data.slot_id,
                 )
             }
@@ -539,7 +540,7 @@ impl XhciController {
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
-                    CompletionCode::Success,
+                    self.handle_noop(data.slot_id),
                     data.slot_id,
                 )
             }
