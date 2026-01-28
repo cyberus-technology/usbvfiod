@@ -521,7 +521,19 @@ impl XhciController {
                 self.handle_stop_endpoint(&data),
                 data.slot_id,
             ),
-            CommandTrbVariant::SetTrDequeuePointer => todo!(),
+
+            CommandTrbVariant::SetTrDequeuePointer(data) => {
+                // TODO this command requires more handling.
+                // With the detach functionality this CommandTrb appears after the
+                // StopEndpoint and will return an USB error in the attach-detach integration test.
+                warn!("received CommandTrbVariant::SetTrDequeuePointer: returning success without taking action");
+                EventTrb::new_command_completion_event_trb(
+                    cmd.address,
+                    0,
+                    self.handle_noop(data.slot_id),
+                    data.slot_id,
+                )
+            }
             CommandTrbVariant::ResetDevice(data) => {
                 // TODO this command requires more handling. The guest
                 // driver will attempt resets when descriptors do not match what
