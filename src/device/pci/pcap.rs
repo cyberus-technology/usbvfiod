@@ -332,27 +332,32 @@ pub fn log_control_completion(
     );
 }
 
-/// Emit a PCAP record for a control transfer submission error event.
-pub fn log_control_error(
+/// Emit a PCAP record for an error-related event with optional setup data.
+#[allow(clippy::too_many_arguments)]
+pub fn log_error(
+    request_id: u64,
     slot_id: u8,
     bus_number: u16,
-    request: &UsbRequest,
+    endpoint_id: u8,
+    event: UsbEventType,
+    transfer_type: UsbTransferType,
     direction: UsbDirection,
     status: i32,
     payload: &[u8],
+    setup: Option<[u8; 8]>,
 ) {
     log_packet(
-        request.address,
+        request_id,
         slot_id,
         bus_number,
-        0,
-        UsbEventType::Error,
-        UsbTransferType::Control,
+        endpoint_id,
+        event,
+        transfer_type,
         direction,
         status,
-        u32::from(request.length),
+        payload.len() as u32,
         payload,
-        Some(build_setup_bytes(request)),
+        setup,
     );
 }
 
@@ -413,7 +418,7 @@ pub fn log_completion(
 }
 
 // Encode a control setup packet into the 8-byte USB request layout.
-const fn build_setup_bytes(request: &UsbRequest) -> [u8; 8] {
+pub(super) const fn build_setup_bytes(request: &UsbRequest) -> [u8; 8] {
     [
         request.request_type,
         request.request,

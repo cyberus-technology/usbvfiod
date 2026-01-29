@@ -13,8 +13,8 @@ use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
 use crate::device::pci::error_map::status_from_error;
 use crate::device::pci::pcap::{
-    log_completion, log_control_completion, log_control_error, log_control_submission,
-    log_submission, UsbDirection, UsbTransferType,
+    build_setup_bytes, log_completion, log_control_completion, log_control_submission, log_error,
+    log_submission, UsbDirection, UsbEventType, UsbTransferType,
 };
 use crate::device::pci::trb::{CompletionCode, EventTrb};
 
@@ -61,7 +61,22 @@ impl TryFrom<(nusb::Device, u8)> for NusbDeviceWrapper {
     fn try_from((device, bus_number): (nusb::Device, u8)) -> Result<Self, Error> {
         // Claim all interfaces
         let mut interfaces = vec![];
-        let desc = device.active_configuration()?;
+        let desc = device.active_configuration().map_err(|error| {
+            let status = status_from_error(&error);
+            log_error(
+                0,
+                0,
+                u16::from(bus_number),
+                0,
+                UsbEventType::Completion,
+                UsbTransferType::Control,
+                UsbDirection::HostToDevice,
+                status,
+                &[],
+                None,
+            );
+            Error::from(error)
+        })?;
         for interface in desc.interfaces() {
             let interface_number = interface.interface_number();
             debug!("Enabling interface {}", interface_number);
@@ -379,13 +394,17 @@ async fn control_transfer_device_to_host(
         }
         Err(error) => {
             let status = status_from_error(&error);
-            log_control_error(
+            log_error(
+                request.address,
                 slot_id,
                 bus_number,
-                request,
+                0,
+                UsbEventType::Error,
+                UsbTransferType::Control,
                 UsbDirection::DeviceToHost,
                 status,
                 &[],
+                Some(build_setup_bytes(request)),
             );
             warn!("control in request failed: {:?}", error);
             (vec![0; 0], status)
@@ -451,13 +470,17 @@ async fn control_transfer_host_to_device(
         }
         Err(error) => {
             let status = status_from_error(&error);
-            log_control_error(
+            log_error(
+                request.address,
                 slot_id,
                 bus_number,
-                request,
+                0,
+                UsbEventType::Error,
+                UsbTransferType::Control,
                 UsbDirection::HostToDevice,
                 status,
                 &data,
+                Some(build_setup_bytes(request)),
             );
             warn!("control out request failed: {:?}", error);
             status
