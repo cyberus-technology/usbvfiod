@@ -296,15 +296,13 @@ pub fn log_control_submission(
     direction: UsbDirection,
     payload: &[u8],
 ) {
-    log_packet(
+    log_submission(
         request.address,
         slot_id,
         bus_number,
         0,
-        UsbEventType::Submission,
         UsbTransferType::Control,
         direction,
-        0,
         u32::from(request.length),
         payload,
         Some(build_setup_bytes(request)),
@@ -321,18 +319,16 @@ pub fn log_control_completion(
     actual_length: u32,
     payload: &[u8],
 ) {
-    log_packet(
+    log_completion(
         request_id,
         slot_id,
         bus_number,
         0,
-        UsbEventType::Completion,
         UsbTransferType::Control,
         direction,
         status,
         actual_length,
         payload,
-        None,
     );
 }
 
@@ -360,102 +356,54 @@ pub fn log_control_error(
     );
 }
 
-/// Emit a PCAP record for a bulk transfer submission event.
-pub fn log_bulk_submission(
-    trb_id: u64,
-    slot_id: u8,
-    bus_number: u16,
-    endpoint_id: u8,
-    direction: UsbDirection,
-    expected_length: u32,
-    payload: &[u8],
-) {
-    log_packet(
-        trb_id,
-        slot_id,
-        bus_number,
-        endpoint_id,
-        UsbEventType::Submission,
-        UsbTransferType::Bulk,
-        direction,
-        0,
-        expected_length,
-        payload,
-        None,
-    );
-}
-
-/// Emit a PCAP record for a interrupt transfer completion event.
-pub fn log_interrupt_submission(
-    trb_id: u64,
-    slot_id: u8,
-    bus_number: u16,
-    endpoint_id: u8,
-    direction: UsbDirection,
-    expected_length: u32,
-    payload: &[u8],
-) {
-    log_packet(
-        trb_id,
-        slot_id,
-        bus_number,
-        endpoint_id,
-        UsbEventType::Submission,
-        UsbTransferType::Interrupt,
-        direction,
-        0,
-        expected_length,
-        payload,
-        None,
-    );
-}
-
-/// Emit a PCAP record for a interrupt transfer completion event.
+/// Emit a PCAP record for a transfer submission event.
 #[allow(clippy::too_many_arguments)]
-pub fn log_interrupt_completion(
-    trb_id: u64,
+pub fn log_submission(
+    request_id: u64,
     slot_id: u8,
     bus_number: u16,
     endpoint_id: u8,
+    transfer_type: UsbTransferType,
+    direction: UsbDirection,
+    expected_length: u32,
+    payload: &[u8],
+    setup: Option<[u8; 8]>,
+) {
+    log_packet(
+        request_id,
+        slot_id,
+        bus_number,
+        endpoint_id,
+        UsbEventType::Submission,
+        transfer_type,
+        direction,
+        0,
+        expected_length,
+        payload,
+        setup,
+    );
+}
+
+/// Emit a PCAP record for a transfer completion event.
+#[allow(clippy::too_many_arguments)]
+pub fn log_completion(
+    request_id: u64,
+    slot_id: u8,
+    bus_number: u16,
+    endpoint_id: u8,
+    transfer_type: UsbTransferType,
     direction: UsbDirection,
     status: i32,
     actual_length: u32,
     payload: &[u8],
 ) {
     log_packet(
-        trb_id,
+        request_id,
         slot_id,
         bus_number,
         endpoint_id,
         UsbEventType::Completion,
-        UsbTransferType::Interrupt,
-        direction,
-        status,
-        actual_length,
-        payload,
-        None,
-    );
-}
-
-/// Emit a PCAP record for a bulk transfer completion event.
-#[allow(clippy::too_many_arguments)]
-pub fn log_bulk_completion(
-    trb_id: u64,
-    slot_id: u8,
-    bus_number: u16,
-    endpoint_id: u8,
-    direction: UsbDirection,
-    status: i32,
-    actual_length: u32,
-    payload: &[u8],
-) {
-    log_packet(
-        trb_id,
-        slot_id,
-        bus_number,
-        endpoint_id,
-        UsbEventType::Completion,
-        UsbTransferType::Bulk,
+        transfer_type,
         direction,
         status,
         actual_length,

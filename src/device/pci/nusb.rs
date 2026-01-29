@@ -13,9 +13,8 @@ use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
 use crate::device::pci::error_map::status_from_error;
 use crate::device::pci::pcap::{
-    log_bulk_completion, log_bulk_submission, log_control_completion, log_control_error,
-    log_control_submission, log_interrupt_completion, log_interrupt_submission, UsbDirection,
-    UsbTransferType,
+    log_completion, log_control_completion, log_control_error, log_control_submission,
+    log_submission, UsbDirection, UsbTransferType,
 };
 use crate::device::pci::trb::{CompletionCode, EventTrb};
 
@@ -522,27 +521,17 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         let bus_number = u16::from(worker_info.bus_number);
         let endpoint_number = worker_info.endpoint_id;
         let request_id = trb.address;
-        match transfer_type {
-            UsbTransferType::Bulk => log_bulk_submission(
-                request_id,
-                worker_info.slot_id,
-                bus_number,
-                endpoint_number,
-                UsbDirection::DeviceToHost,
-                normal_data.transfer_length,
-                &[],
-            ),
-            UsbTransferType::Interrupt => log_interrupt_submission(
-                request_id,
-                worker_info.slot_id,
-                bus_number,
-                endpoint_number,
-                UsbDirection::DeviceToHost,
-                normal_data.transfer_length,
-                &[],
-            ),
-            _ => (),
-        }
+        log_submission(
+            request_id,
+            worker_info.slot_id,
+            bus_number,
+            endpoint_number,
+            transfer_type,
+            UsbDirection::DeviceToHost,
+            normal_data.transfer_length,
+            &[],
+            None,
+        );
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
         let buffer = select! {
@@ -582,29 +571,17 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
                 transfer_length
             }
         };
-        match transfer_type {
-            UsbTransferType::Bulk => log_bulk_completion(
-                request_id,
-                worker_info.slot_id,
-                bus_number,
-                endpoint_number,
-                UsbDirection::DeviceToHost,
-                0,
-                byte_count_dma as u32,
-                &buffer.buffer[..byte_count_dma],
-            ),
-            UsbTransferType::Interrupt => log_interrupt_completion(
-                request_id,
-                worker_info.slot_id,
-                bus_number,
-                endpoint_number,
-                UsbDirection::DeviceToHost,
-                0,
-                byte_count_dma as u32,
-                &buffer.buffer[..byte_count_dma],
-            ),
-            _ => (),
-        }
+        log_completion(
+            request_id,
+            worker_info.slot_id,
+            bus_number,
+            endpoint_number,
+            transfer_type,
+            UsbDirection::DeviceToHost,
+            0,
+            byte_count_dma as u32,
+            &buffer.buffer[..byte_count_dma],
+        );
         worker_info
             .dma_bus
             .write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
@@ -684,22 +661,25 @@ async fn transfer_out_worker(
         let bus_number = u16::from(worker_info.bus_number);
         let endpoint_number = worker_info.endpoint_id;
         let request_id = trb.address;
-        log_bulk_submission(
+        log_submission(
             request_id,
             worker_info.slot_id,
             bus_number,
             endpoint_number,
+            UsbTransferType::Bulk,
             UsbDirection::HostToDevice,
             normal_data.transfer_length,
             &data,
+            None,
         );
         endpoint.submit(data.into());
         endpoint.next_complete().await;
-        log_bulk_completion(
+        log_completion(
             request_id,
             worker_info.slot_id,
             bus_number,
             endpoint_number,
+            UsbTransferType::Bulk,
             UsbDirection::HostToDevice,
             0,
             normal_data.transfer_length,
