@@ -233,9 +233,28 @@ let
   hidVendorId = "0627";
   hidProductId = "0001";
 
+  # Attrs for all supported USB versions and information for test construction.
+  usbVersions = {
+    "3" = {
+      controller = "xHCI Host Controller";
+      busName = "xhci";
+      addr = "10";
+    };
+    "2" = {
+      controller = "EHCI Host Controller";
+      busName = "ehci";
+      addr = "11";
+    };
+    "1.1" = {
+      controller = "UHCI Host Controller";
+      busName = "uhci";
+      addr = "12";
+    };
+  };
+
   # Fill in a template for a udev rule.
-  mkUdevRule = controller: port: symlink: ''
-    ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{product}=="${controller}" ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
+  mkUdevRule = pciAddr: controller: port: symlink: ''
+    ACTION=="add|change", ATTRS{serial}=="0000:00:${pciAddr}.0", SUBSYSTEM=="usb", ATTRS{product}=="${controller}", ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
   '';
 
   # Fill in a template for the qemu.options list for a blockdevice.
@@ -250,13 +269,7 @@ let
   mkUsbDeviceType =
     testname: device:
     let
-      deviceBus =
-        {
-          "1.1" = "uhci";
-          "2" = "ehci";
-          "3" = "xhci";
-        }
-        .${device.usbVersion};
+      deviceBus = usbVersions.${device.usbVersion}.busName;
     in
     if (!device.udevRule.enable || device.udevRule.symlink == "") then
       abort "udevRule is necessary to attach create qemu device before/on startup"
@@ -451,11 +464,6 @@ let
 
   # See mkUsbTest (this runs without any arg checks).
   mkUsbTestChecked =
-    let
-      uhciProductName = "UHCI Host Controller";
-      ehciProductName = "EHCI Host Controller";
-      xhciProductName = "xHCI Host Controller";
-    in
     args:
     pkgs.testers.runNixOSTest {
       inherit (args) name;
@@ -478,20 +486,16 @@ let
               device:
               if device.udevRule.enable then
                 let
-                  controller =
-                    {
-                      "1.1" = uhciProductName;
-                      "2" = ehciProductName;
-                      "3" = xhciProductName;
-                    }
-                    .${device.usbVersion};
                   usbPort = builtins.toString device.usbPort;
                 in
                 if (usbPort == "" || device.udevRule.symlink == "") then
                   abort "A udev rules requires to set a usbPort and a symlink string"
                 else
                   ''
-                    ${mkUdevRule controller usbPort device.udevRule.symlink}
+                    ${mkUdevRule usbVersions.${device.usbVersion}.addr usbVersions.${device.usbVersion}.controller
+                      usbPort
+                      device.udevRule.symlink
+                    }
                   ''
               else
                 ""
@@ -506,13 +510,13 @@ let
           qemu.virtioKeyboard = false;
           qemu.options = [
             # Add the xhci controller to use USB 3.0.
-            "-device qemu-xhci,id=xhci,addr=10"
+            "-device qemu-xhci,id=${usbVersions."3".busName},addr=${usbVersions."3".addr}"
 
             # Add the ehci controller to use USB 2.0.
-            "-device usb-ehci,id=ehci,addr=11"
+            "-device usb-ehci,id=${usbVersions."2".busName},addr=${usbVersions."2".addr}"
 
             # Add the uhci controller to use USB 1.1.
-            "-device piix3-usb-uhci,id=uhci,addr=12"
+            "-device piix3-usb-uhci,id=${usbVersions."1.1".busName},addr=${usbVersions."1.1".addr}"
 
             # Add a virtio-console device to use it for bulk logs instead of serial.
             # Set a addr to have the test-frameworks default virtio-console remain
@@ -633,25 +637,19 @@ let
   '';
 
   blockdeviceTests = builtins.listToAttrs (
-    builtins.map
-      (usbVersion: {
-        name = "blockdevice-usb-${builtins.replaceStrings [ "." ] [ "_" ] usbVersion}";
-        value = mkUsbTest {
-          name = "blockdevice-usb-${usbVersion}";
-          virtualDevices = [
-            {
-              type = "blockdevice";
-              inherit usbVersion;
-            }
-          ];
-          testScript = singleBlockDeviceTestScript;
-        };
-      })
-      [
-        "1.1"
-        "2"
-        "3"
-      ]
+    builtins.map (usbVersion: {
+      name = "blockdevice-usb-${builtins.replaceStrings [ "." ] [ "_" ] usbVersion}";
+      value = mkUsbTest {
+        name = "blockdevice-usb-${usbVersion}";
+        virtualDevices = [
+          {
+            type = "blockdevice";
+            inherit usbVersion;
+          }
+        ];
+        testScript = singleBlockDeviceTestScript;
+      };
+    }) (builtins.attrNames usbVersions)
   );
 in
 blockdeviceTests
