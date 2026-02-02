@@ -183,20 +183,14 @@ impl XhciController {
         devices: &'a mut OneIndexed<Option<IdentifiableRealDevice>, { MAX_PORTS as usize }>,
         slot_id: u8,
     ) -> Option<&'a mut Box<dyn RealDevice>> {
-        slot_to_port
+        let device = slot_to_port
             .get(slot_id as usize)
             .and_then(|port_id| *port_id)
-            .and_then(|port_id| devices[port_id].as_mut().map(|dev| &mut dev.real_device))
-    }
-
-    fn device_by_slot_mut_expect<'a>(
-        slot_to_port: &OneIndexed<Option<usize>, { MAX_SLOTS as usize }>,
-        devices: &'a mut OneIndexed<Option<IdentifiableRealDevice>, { MAX_PORTS as usize }>,
-        slot_id: u8,
-    ) -> &'a mut Box<dyn RealDevice> {
-        Self::device_by_slot_mut(slot_to_port, devices, slot_id).unwrap_or_else(|| {
-            panic!("Trying to access device with slot id {slot_id}, but there is no such device.")
-        })
+            .and_then(|port_id| devices[port_id].as_mut().map(|dev| &mut dev.real_device));
+        if device.is_none() {
+            info!("attempted to access non available device with slot_id {slot_id}");
+        }
+        device
     }
 
     /// Attach a real USB device to the controller.
@@ -468,59 +462,35 @@ impl XhciController {
                 let (completion_code, slot_id) = self.handle_enable_slot();
                 EventTrb::new_command_completion_event_trb(cmd.address, 0, completion_code, slot_id)
             }
-            CommandTrbVariant::DisableSlot => {
+            CommandTrbVariant::DisableSlot(data) => {
                 // TODO this command probably requires more handling.
-                // Currently, we just acknowledge to not crash usbvfiod in the
-                // integration test.
+                // Currently, we only do a minimal check against a hot-detach race condition
+                // and acknowledge to not crash usbvfiod in the integration test.
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
-                    CompletionCode::Success,
-                    1,
+                    self.handle_noop(data.slot_id),
+                    data.slot_id,
                 )
             }
-            CommandTrbVariant::AddressDevice(data) => {
-                self.handle_address_device(&data);
-
-                let device_context = self.device_slot_manager.get_device_context(data.slot_id);
-
-                // Program requires real USB device for all XHCI operations (pattern used throughout file)
-                let device = Self::device_by_slot_mut_expect(
-                    &self.slot_to_port,
-                    &mut self.devices,
-                    data.slot_id,
-                );
-
-                let worker_info = EndpointWorkerInfo {
-                    slot_id: data.slot_id,
-                    endpoint_id: 1,
-                    transfer_ring: device_context.get_transfer_ring(1),
-                    dma_bus: self.dma_bus.clone(),
-                    event_ring: self.event_ring.clone(),
-                    interrupt_line: self.interrupt_line.clone(),
-                };
-
-                // start control trb worker thread
-                device.enable_endpoint(worker_info, EndpointType::Control);
-
+            CommandTrbVariant::AddressDevice(ref data) => {
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
-                    CompletionCode::Success,
+                    self.handle_address_device(data),
                     data.slot_id,
                 )
             }
-            CommandTrbVariant::ConfigureEndpoint(data) => {
+            CommandTrbVariant::ConfigureEndpoint(ref data) => {
                 if self
                     .slot_to_port
                     .get(data.slot_id as usize)
                     .is_some_and(|mapping| mapping.is_some())
                 {
-                    self.handle_configure_endpoint(&data);
                     EventTrb::new_command_completion_event_trb(
                         cmd.address,
                         0,
-                        CompletionCode::Success,
+                        self.handle_configure_endpoint(data),
                         data.slot_id,
                     )
                 } else {
@@ -534,26 +504,36 @@ impl XhciController {
             }
             CommandTrbVariant::EvaluateContext(data) => {
                 // TODO this command probably requires more handling.
-                // Currently, we just acknowledge to not crash usbvfiod when using USB 1.1.
+                // Currently, we only do a minimal check against a hot-detach race condition
+                // and acknowledge to not crash usbvfiod when using USB 1.1.
                 warn!("received CommandTrbVariant::EvaluateContext: returning success without taking action");
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
-                    CompletionCode::Success,
+                    self.handle_noop(data.slot_id),
                     data.slot_id,
                 )
             }
             CommandTrbVariant::ResetEndpoint => todo!(),
-            CommandTrbVariant::StopEndpoint(data) => {
-                self.handle_stop_endpoint(&data);
+            CommandTrbVariant::StopEndpoint(data) => EventTrb::new_command_completion_event_trb(
+                cmd.address,
+                0,
+                self.handle_stop_endpoint(&data),
+                data.slot_id,
+            ),
+
+            CommandTrbVariant::SetTrDequeuePointer(data) => {
+                // TODO this command requires more handling.
+                // With the detach functionality this CommandTrb appears after the
+                // StopEndpoint and will return an USB error in the attach-detach integration test.
+                warn!("received CommandTrbVariant::SetTrDequeuePointer: returning success without taking action");
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
-                    CompletionCode::Success,
+                    self.handle_noop(data.slot_id),
                     data.slot_id,
                 )
             }
-            CommandTrbVariant::SetTrDequeuePointer => todo!(),
             CommandTrbVariant::ResetDevice(data) => {
                 // TODO this command requires more handling. The guest
                 // driver will attempt resets when descriptors do not match what
@@ -569,7 +549,7 @@ impl XhciController {
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
                     0,
-                    CompletionCode::Success,
+                    self.handle_noop(data.slot_id),
                     data.slot_id,
                 )
             }
@@ -595,6 +575,15 @@ impl XhciController {
         self.interrupt_line.interrupt();
     }
 
+    // This is a general handler to check for device existence and return an error in case
+    // of a missing device.
+    fn handle_noop(&mut self, slot_id: u8) -> CompletionCode {
+        if Self::device_by_slot_mut(&self.slot_to_port, &mut self.devices, slot_id).is_none() {
+            return CompletionCode::UsbTransactionError;
+        }
+        CompletionCode::Success
+    }
+
     fn handle_enable_slot(&mut self) -> (CompletionCode, u8) {
         // try to reserve a device slot
         let reservation = self.device_slot_manager.reserve_slot();
@@ -610,25 +599,55 @@ impl XhciController {
         )
     }
 
-    fn handle_address_device(&mut self, data: &AddressDeviceCommandTrbData) {
-        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+    fn handle_address_device(&mut self, data: &AddressDeviceCommandTrbData) -> CompletionCode {
+        let Some(device_context) = self.device_slot_manager.get_device_context(data.slot_id) else {
+            return CompletionCode::UsbTransactionError;
+        };
         let root_hub_port_number = device_context.initialize(data.input_context_pointer);
         if root_hub_port_number < 1 || root_hub_port_number as u64 > MAX_PORTS {
             panic!("address device reported invalid root hub port number: {root_hub_port_number}");
         }
         let port_id = root_hub_port_number as usize;
         self.slot_to_port[data.slot_id as usize] = Some(port_id);
+
+        let Some(device) =
+            Self::device_by_slot_mut(&self.slot_to_port, &mut self.devices, data.slot_id)
+        else {
+            return CompletionCode::UsbTransactionError;
+        };
+
+        let worker_info = EndpointWorkerInfo {
+            slot_id: data.slot_id,
+            endpoint_id: 1,
+            transfer_ring: device_context.get_transfer_ring(1),
+            dma_bus: self.dma_bus.clone(),
+            event_ring: self.event_ring.clone(),
+            interrupt_line: self.interrupt_line.clone(),
+        };
+
+        // start control trb worker thread
+        device.enable_endpoint(worker_info, EndpointType::Control);
+
+        CompletionCode::Success
     }
 
-    fn handle_configure_endpoint(&mut self, data: &ConfigureEndpointCommandTrbData) {
+    fn handle_configure_endpoint(
+        &mut self,
+        data: &ConfigureEndpointCommandTrbData,
+    ) -> CompletionCode {
         if data.deconfigure {
             todo!("encountered Configure Endpoint Command with deconfigure set");
         }
-        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+        let Some(device) =
+            Self::device_by_slot_mut(&self.slot_to_port, &mut self.devices, data.slot_id)
+        else {
+            return CompletionCode::UsbTransactionError;
+        };
+
+        let Some(device_context) = self.device_slot_manager.get_device_context(data.slot_id) else {
+            return CompletionCode::UsbTransactionError;
+        };
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
-        // Program requires real USB device for all XHCI operations (pattern used throughout file)
-        let device =
-            Self::device_by_slot_mut_expect(&self.slot_to_port, &mut self.devices, data.slot_id);
 
         for (i, ep_type) in enabled_endpoints {
             let worker_info = EndpointWorkerInfo {
@@ -641,11 +660,15 @@ impl XhciController {
             };
             device.enable_endpoint(worker_info, ep_type);
         }
+        CompletionCode::Success
     }
 
-    fn handle_stop_endpoint(&self, data: &StopEndpointCommandTrbData) {
-        let device_context = self.device_slot_manager.get_device_context(data.slot_id);
+    fn handle_stop_endpoint(&self, data: &StopEndpointCommandTrbData) -> CompletionCode {
+        let Some(device_context) = self.device_slot_manager.get_device_context(data.slot_id) else {
+            return CompletionCode::UsbTransactionError;
+        };
         device_context.set_endpoint_state(data.endpoint_id, endpoint_state::STOPPED);
+        CompletionCode::Success
     }
 
     fn doorbell_device(&mut self, slot_id: u8, value: u32) {

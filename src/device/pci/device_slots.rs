@@ -2,7 +2,7 @@
 //!
 //! This module offers an abstraction for device slots.
 
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::device::{
     bus::{BusDeviceRef, Request, RequestSize},
@@ -95,21 +95,29 @@ impl DeviceSlotManager {
     /// Retrieve a device context abstraction.
     ///
     /// Device context are referenced by the DCBAA and indexed by the slot ID.
-    /// There should not be accesses to device contexts of slots which were
-    /// not previously allocated. Thus, this function panics if the context for
-    /// an unused slot ID is requested.
+    /// There might be accesses to device contexts of slots which are
+    /// not currently allocated. A detach that is faster than an outstanding
+    /// request is one such case and this function will then return Option::None.
     ///
     /// # Parameters
     ///
     /// - slot_id: the slot ID for which the DeviceContext is requested.
-    pub fn get_device_context(&self, slot_id: u8) -> DeviceContext {
+    pub fn get_device_context(&self, slot_id: u8) -> Option<DeviceContext> {
+        if !self.used_slots.contains(&(slot_id as u64)) {
+            info!("DeviceSlotManager tried to access device context of non existing slot_id {slot_id}");
+            return None;
+        }
+
         // lookup address of device context in device context base address array
         let device_context_address = self.dma_bus.read(Request::new(
             self.dcbaap.wrapping_add(slot_id as u64 * 8),
             RequestSize::Size8,
         ));
 
-        DeviceContext::new(device_context_address, self.dma_bus.clone())
+        Some(DeviceContext::new(
+            device_context_address,
+            self.dma_bus.clone(),
+        ))
     }
 }
 

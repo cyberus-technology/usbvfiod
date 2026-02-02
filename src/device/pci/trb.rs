@@ -348,13 +348,13 @@ pub struct CommandTrb {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommandTrbVariant {
     EnableSlot,
-    DisableSlot,
+    DisableSlot(DisableSlotCommandTrbData),
     AddressDevice(AddressDeviceCommandTrbData),
     ConfigureEndpoint(ConfigureEndpointCommandTrbData),
     EvaluateContext(EvaluateContextCommandTrbData),
     ResetEndpoint,
     StopEndpoint(StopEndpointCommandTrbData),
-    SetTrDequeuePointer,
+    SetTrDequeuePointer(SetTrDequeuePointerCommandTrbData),
     ResetDevice(ResetDeviceCommandTrbData),
     ForceHeader,
     NoOp,
@@ -384,13 +384,13 @@ impl CommandTrbVariant {
             // type; thus, no further parsing is necessary and we can just
             // return the enum variant.
             trb_types::ENABLE_SLOT_COMMAND => Self::EnableSlot,
-            trb_types::DISABLE_SLOT_COMMAND => Self::DisableSlot,
+            trb_types::DISABLE_SLOT_COMMAND => parse(Self::DisableSlot, bytes),
             trb_types::ADDRESS_DEVICE_COMMAND => parse(Self::AddressDevice, bytes),
             trb_types::CONFIGURE_ENDPOINT_COMMAND => parse(Self::ConfigureEndpoint, bytes),
             trb_types::EVALUATE_CONTEXT_COMMAND => parse(Self::EvaluateContext, bytes),
             trb_types::RESET_ENDPOINT_COMMAND => Self::ResetEndpoint,
             trb_types::STOP_ENDPOINT_COMMAND => parse(Self::StopEndpoint, bytes),
-            trb_types::SET_TR_DEQUEUE_POINTER_COMMAND => Self::SetTrDequeuePointer,
+            trb_types::SET_TR_DEQUEUE_POINTER_COMMAND => parse(Self::SetTrDequeuePointer, bytes),
             trb_types::RESET_DEVICE_COMMAND => parse(Self::ResetDevice, bytes),
             trb_types::FORCE_EVENT_COMMAND => Self::Unrecognized(
                 bytes,
@@ -468,6 +468,38 @@ impl TrbData for LinkTrbData {
             ring_segment_pointer,
             toggle_cycle,
         })
+    }
+}
+
+/// Disable Slot Command TRB data structure.
+///
+/// See XHCI specification Section 6.4.3.3 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DisableSlotCommandTrbData {
+    /// The associated Slot ID
+    pub slot_id: u8,
+}
+
+impl TrbData for DisableSlotCommandTrbData {
+    /// Parse data of a Disable Slot Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects all RsvdZ
+    /// fields.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::DISABLE_SLOT_COMMAND,
+            trb_type,
+            "DisableSlotCommandTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
+        );
+
+        let slot_id = trb_bytes[15];
+
+        Ok(Self { slot_id })
     }
 }
 
@@ -648,6 +680,53 @@ impl TrbData for StopEndpointCommandTrbData {
         let slot_id = trb_bytes[15];
 
         Ok(Self {
+            endpoint_id,
+            slot_id,
+        })
+    }
+}
+
+/// Set TR Dequeue Pointer Command TRB data structure.
+///
+/// See XHCI specification Section 6.4.3.9 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SetTrDequeuePointerCommandTrbData {
+    /// The value of the xHC Consumer Cycle State referenced by the TR Dequeue pointer.
+    pub dequeue_cycle_state: bool,
+    /// If a stream_id is set, identifies the type of the Stream Context, otherwise 0.
+    pub stream_context_type: u8,
+    /// Base address to be written to the TR Dequeue Pointer Field in the target Endpoint or Stream Context.
+    pub dequeue_pointer: u64,
+    /// If streams enabled, identifies the Stream Context that receives the TR Dequeue Pointer.
+    pub stream_id: u16,
+    /// The target endpoint to receive the new pointer.
+    pub endpoint_id: u8,
+    /// The associated Slot ID.
+    pub slot_id: u8,
+}
+
+impl TrbData for SetTrDequeuePointerCommandTrbData {
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let dequeue_cycle_state = trb_bytes[0] & 1 != 0;
+        let stream_context_type = trb_bytes[0] & 0xe;
+
+        // SAFETY: range matches array length
+        let mut dequeue_pointer_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
+        dequeue_pointer_bytes[0] &= 0xf0;
+        let dequeue_pointer = u64::from_le_bytes(dequeue_pointer_bytes);
+
+        // SAFETY: range matches array length
+        let stream_id_bytes: [u8; 2] = trb_bytes[11..13].try_into().unwrap();
+        let stream_id = u16::from_le_bytes(stream_id_bytes);
+
+        let endpoint_id = trb_bytes[14] & 0x1f;
+        let slot_id = trb_bytes[15];
+
+        Ok(Self {
+            dequeue_cycle_state,
+            stream_context_type,
+            dequeue_pointer,
+            stream_id,
             endpoint_id,
             slot_id,
         })
