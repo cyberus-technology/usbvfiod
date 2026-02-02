@@ -20,7 +20,7 @@ use crate::device::{
         },
         realdevice::EndpointType,
         traits::PciDevice,
-        trb::{CommandTrbVariant, CompletionCode, EventTrb},
+        trb::{CommandTrbVariant, CompletionCode, DisableSlotCommandTrbData, EventTrb},
     },
 };
 use usbvfiod::hotplug_protocol::response::Response;
@@ -290,19 +290,6 @@ impl XhciController {
         self.portsc[port_id] = PortscRegister::new(portsc::PP | portsc::CSC);
         self.send_port_status_change_event(port_id as u8);
 
-        // remove slot-to-port mapping (there might be none if the driver
-        // did not enumerate the device)
-        let slot_id = self
-            .slot_to_port
-            .enumerate()
-            .filter(|(_, mapping)| **mapping == Some(port_id))
-            .map(|(slot_id, _)| slot_id)
-            .next();
-        if let Some(slot_id) = slot_id {
-            self.slot_to_port[slot_id] = None;
-            self.device_slot_manager.free_slot(slot_id as u64);
-        }
-
         // remove
         self.devices[port_id] = None;
 
@@ -462,17 +449,12 @@ impl XhciController {
                 let (completion_code, slot_id) = self.handle_enable_slot();
                 EventTrb::new_command_completion_event_trb(cmd.address, 0, completion_code, slot_id)
             }
-            CommandTrbVariant::DisableSlot(data) => {
-                // TODO this command probably requires more handling.
-                // Currently, we only do a minimal check against a hot-detach race condition
-                // and acknowledge to not crash usbvfiod in the integration test.
-                EventTrb::new_command_completion_event_trb(
-                    cmd.address,
-                    0,
-                    self.handle_noop(data.slot_id),
-                    data.slot_id,
-                )
-            }
+            CommandTrbVariant::DisableSlot(ref data) => EventTrb::new_command_completion_event_trb(
+                cmd.address,
+                0,
+                self.handle_disable_slot(data),
+                data.slot_id,
+            ),
             CommandTrbVariant::AddressDevice(ref data) => {
                 EventTrb::new_command_completion_event_trb(
                     cmd.address,
@@ -597,6 +579,18 @@ impl XhciController {
                 (CompletionCode::Success, slot_id as u8)
             },
         )
+    }
+
+    // A Slot is enabled if it has been reserved in the DeviceSlotManager, but we also
+    // have to remove our out-of-spec slot_to_port mapping to properly clean up.
+    fn handle_disable_slot(&mut self, data: &DisableSlotCommandTrbData) -> CompletionCode {
+        if !self.device_slot_manager.is_reserved(data.slot_id as u64) {
+            return CompletionCode::SlotNotEnabledError;
+        }
+
+        self.slot_to_port[data.slot_id as usize] = None;
+        self.device_slot_manager.free_slot(data.slot_id as u64);
+        CompletionCode::Success
     }
 
     fn handle_address_device(&mut self, data: &AddressDeviceCommandTrbData) -> CompletionCode {
