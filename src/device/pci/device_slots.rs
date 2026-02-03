@@ -88,6 +88,10 @@ impl DeviceSlotManager {
         available_slot_id
     }
 
+    pub fn is_reserved(&self, slot: u64) -> bool {
+        self.used_slots.contains(&slot)
+    }
+
     pub fn free_slot(&mut self, slot: u64) {
         self.used_slots.retain(|s| *s != slot);
     }
