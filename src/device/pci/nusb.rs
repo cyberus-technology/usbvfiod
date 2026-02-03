@@ -22,10 +22,12 @@ use super::realdevice::{EndpointType, EndpointWorkerInfo, Speed};
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
-use std::sync::Arc;
 use std::{
     fmt::Debug,
-    sync::atomic::{fence, Ordering},
+    sync::{
+        atomic::{fence, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -307,10 +309,11 @@ async fn control_worker(
         // forward request to device
         let direction = request.request_type & 0x80 != 0;
         let bus_number = u16::from(worker_info.bus_number);
+        let device_address = worker_info.device_address;
         match direction {
             true => {
                 control_transfer_device_to_host(
-                    worker_info.slot_id,
+                    device_address,
                     bus_number,
                     device.clone(),
                     &request,
@@ -320,7 +323,7 @@ async fn control_worker(
             }
             false => {
                 control_transfer_host_to_device(
-                    worker_info.slot_id,
+                    device_address,
                     bus_number,
                     device.clone(),
                     &request,
@@ -363,7 +366,7 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
 }
 
 async fn control_transfer_device_to_host(
-    slot_id: u8,
+    device_address: u8,
     bus_number: u16,
     device: nusb::Device,
     request: &UsbRequest,
@@ -379,7 +382,7 @@ async fn control_transfer_device_to_host(
         length: request.length,
     };
     log_control_submission(
-        slot_id,
+        device_address,
         bus_number,
         request,
         UsbDirection::DeviceToHost,
@@ -396,7 +399,7 @@ async fn control_transfer_device_to_host(
             let status = status_from_error(&error);
             log_error(
                 request.address,
-                slot_id,
+                device_address,
                 bus_number,
                 0,
                 UsbEventType::Error,
@@ -413,7 +416,7 @@ async fn control_transfer_device_to_host(
 
     log_control_completion(
         request.address,
-        slot_id,
+        device_address,
         bus_number,
         UsbDirection::DeviceToHost,
         status,
@@ -431,7 +434,7 @@ async fn control_transfer_device_to_host(
 }
 
 async fn control_transfer_host_to_device(
-    slot_id: u8,
+    device_address: u8,
     bus_number: u16,
     device: nusb::Device,
     request: &UsbRequest,
@@ -452,7 +455,7 @@ async fn control_transfer_host_to_device(
         data: &data,
     };
     log_control_submission(
-        slot_id,
+        device_address,
         bus_number,
         request,
         UsbDirection::HostToDevice,
@@ -472,7 +475,7 @@ async fn control_transfer_host_to_device(
             let status = status_from_error(&error);
             log_error(
                 request.address,
-                slot_id,
+                device_address,
                 bus_number,
                 0,
                 UsbEventType::Error,
@@ -489,7 +492,7 @@ async fn control_transfer_host_to_device(
 
     log_control_completion(
         request.address,
-        slot_id,
+        device_address,
         bus_number,
         UsbDirection::HostToDevice,
         status,
@@ -542,11 +545,12 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
 
         let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
         let bus_number = u16::from(worker_info.bus_number);
+        let device_address = worker_info.device_address;
         let endpoint_number = worker_info.endpoint_id;
         let request_id = trb.address;
         log_submission(
             request_id,
-            worker_info.slot_id,
+            device_address,
             bus_number,
             endpoint_number,
             transfer_type,
@@ -596,7 +600,7 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         };
         log_completion(
             request_id,
-            worker_info.slot_id,
+            device_address,
             bus_number,
             endpoint_number,
             transfer_type,
@@ -682,11 +686,12 @@ async fn transfer_out_worker(
             debug!("OUT data: {:?}", data);
         }
         let bus_number = u16::from(worker_info.bus_number);
+        let device_address = worker_info.device_address;
         let endpoint_number = worker_info.endpoint_id;
         let request_id = trb.address;
         log_submission(
             request_id,
-            worker_info.slot_id,
+            device_address,
             bus_number,
             endpoint_number,
             UsbTransferType::Bulk,
@@ -699,7 +704,7 @@ async fn transfer_out_worker(
         endpoint.next_complete().await;
         log_completion(
             request_id,
-            worker_info.slot_id,
+            device_address,
             bus_number,
             endpoint_number,
             UsbTransferType::Bulk,

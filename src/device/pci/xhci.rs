@@ -204,6 +204,17 @@ impl XhciController {
             .map_or(0, |dev| dev.bus_number)
     }
 
+    fn device_number_for_slot(&self, slot_id: u8) -> u8 {
+        let port_id = match self.slot_to_port.get(slot_id as usize) {
+            Some(Some(port_id)) => *port_id,
+            _ => return 0,
+        };
+
+        self.devices[port_id]
+            .as_ref()
+            .map_or(0, |dev| dev.device_number)
+    }
+
     /// Attach a real USB device to the controller.
     ///
     /// The device is connected to the first available USB port and becomes available
@@ -617,6 +628,7 @@ impl XhciController {
         self.slot_to_port[data.slot_id as usize] = Some(port_id);
 
         let bus_number = self.bus_number_for_slot(data.slot_id);
+        let device_number = self.device_number_for_slot(data.slot_id);
 
         let Some(device) =
             Self::device_by_slot_mut(&self.slot_to_port, &mut self.devices, data.slot_id)
@@ -626,6 +638,7 @@ impl XhciController {
 
         let worker_info = EndpointWorkerInfo {
             slot_id: data.slot_id,
+            device_address: device_number,
             bus_number,
             endpoint_id: 1,
             transfer_ring: device_context.get_transfer_ring(1),
@@ -652,6 +665,7 @@ impl XhciController {
         };
         let enabled_endpoints = device_context.configure_endpoints(data.input_context_pointer);
         let bus_number = self.bus_number_for_slot(data.slot_id);
+        let device_number = self.device_number_for_slot(data.slot_id);
         let Some(device) =
             Self::device_by_slot_mut(&self.slot_to_port, &mut self.devices, data.slot_id)
         else {
@@ -661,6 +675,7 @@ impl XhciController {
         for (i, ep_type) in enabled_endpoints {
             let worker_info = EndpointWorkerInfo {
                 slot_id: data.slot_id,
+                device_address: device_number,
                 bus_number,
                 endpoint_id: i,
                 transfer_ring: device_context.get_transfer_ring(i as u64),

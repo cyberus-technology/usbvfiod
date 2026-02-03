@@ -290,7 +290,7 @@ impl UsbPcapManager {
 
 /// Emit a PCAP record for a control transfer submission event.
 pub fn log_control_submission(
-    slot_id: u8,
+    device_address: u8,
     bus_number: u16,
     request: &UsbRequest,
     direction: UsbDirection,
@@ -298,7 +298,7 @@ pub fn log_control_submission(
 ) {
     log_submission(
         request.address,
-        slot_id,
+        device_address,
         bus_number,
         0,
         UsbTransferType::Control,
@@ -312,7 +312,7 @@ pub fn log_control_submission(
 /// Emit a PCAP record for a control transfer completion event.
 pub fn log_control_completion(
     request_id: u64,
-    slot_id: u8,
+    device_address: u8,
     bus_number: u16,
     direction: UsbDirection,
     status: i32,
@@ -321,7 +321,7 @@ pub fn log_control_completion(
 ) {
     log_completion(
         request_id,
-        slot_id,
+        device_address,
         bus_number,
         0,
         UsbTransferType::Control,
@@ -336,7 +336,7 @@ pub fn log_control_completion(
 #[allow(clippy::too_many_arguments)]
 pub fn log_error(
     request_id: u64,
-    slot_id: u8,
+    device_address: u8,
     bus_number: u16,
     endpoint_id: u8,
     event: UsbEventType,
@@ -348,7 +348,7 @@ pub fn log_error(
 ) {
     log_packet(
         request_id,
-        slot_id,
+        device_address,
         bus_number,
         endpoint_id,
         event,
@@ -365,7 +365,7 @@ pub fn log_error(
 #[allow(clippy::too_many_arguments)]
 pub fn log_submission(
     request_id: u64,
-    slot_id: u8,
+    device_address: u8,
     bus_number: u16,
     endpoint_id: u8,
     transfer_type: UsbTransferType,
@@ -376,7 +376,7 @@ pub fn log_submission(
 ) {
     log_packet(
         request_id,
-        slot_id,
+        device_address,
         bus_number,
         endpoint_id,
         UsbEventType::Submission,
@@ -393,7 +393,7 @@ pub fn log_submission(
 #[allow(clippy::too_many_arguments)]
 pub fn log_completion(
     request_id: u64,
-    slot_id: u8,
+    device_address: u8,
     bus_number: u16,
     endpoint_id: u8,
     transfer_type: UsbTransferType,
@@ -404,7 +404,7 @@ pub fn log_completion(
 ) {
     log_packet(
         request_id,
-        slot_id,
+        device_address,
         bus_number,
         endpoint_id,
         UsbEventType::Completion,
@@ -435,7 +435,7 @@ pub(super) const fn build_setup_bytes(request: &UsbRequest) -> [u8; 8] {
 #[allow(clippy::too_many_arguments)]
 fn log_packet(
     request_id: u64,
-    slot_id: u8,
+    device_address: u8,
     bus_number: u16,
     endpoint_number: u8,
     event: UsbEventType,
@@ -451,7 +451,7 @@ fn log_packet(
         event_type: event.code(),
         transfer_type: transfer_type.code(),
         endpoint_address: direction.endpoint_address(endpoint_number),
-        device_address: slot_id,
+        device_address,
         bus_number,
         setup_flag: setup_flag_value(transfer_type, setup.is_some()),
         data_flag: data_flag_value(payload.len()),
