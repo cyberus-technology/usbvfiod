@@ -198,19 +198,6 @@
         };
 
         devShells.default = craneLib.devShell {
-          # Inherit inputs from checks.
-          inherit (self)
-            checks
-            ;
-
-          # Additional dev-shell environment variables can be set directly
-          # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
-
-          # Extra inputs can be added here; cargo and rustc are provided by default.
-          packages = [
-            # pkgs.ripgrep
-          ];
-
           shellHook = ''
             ${self.checks.pre-commit-check.shellHook}
             alias sshhost=ssh\ -p\ 2000\ root@localhost\ -o\ UserKnownHostsFile=/dev/null\ -o\ StrictHostKeyChecking=no
