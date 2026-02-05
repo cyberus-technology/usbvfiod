@@ -254,7 +254,7 @@ let
 
   # Fill in a template for a udev rule.
   mkUdevRule = pciAddr: controller: port: symlink: ''
-    ACTION=="add|change", ATTRS{serial}=="0000:00:${pciAddr}.0", SUBSYSTEM=="usb", ATTRS{product}=="${controller}", ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
+    ACTION=="add|change|bind", ATTRS{serial}=="0000:00:${pciAddr}.0", SUBSYSTEM=="usb", ATTRS{product}=="${controller}", ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
   '';
 
   # Fill in a template for the qemu.options list for a blockdevice.
@@ -871,10 +871,6 @@ blockdeviceTests
         machine.wait_until_succeeds("lsusb | grep 'QEMU QEMU USB HARDDRIVE'", timeout=120)
         machine.wait_until_succeeds("lsblk /dev/sd*", timeout=120)
 
-        # Attaching a blockdevice with qmp seems to not trigger the udev rule.
-        # This is probably the case because of ATTRS{serial} that need the grand/-parent
-        # to confirm it is the correct USB controller we will be talking to.
-        machine.succeed("udevadm trigger", timeout=60)
         machine.wait_until_succeeds("ls /dev/bus/usb/hotplug", timeout=60)
 
         # Attach a device.
