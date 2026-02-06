@@ -4,16 +4,22 @@ This document lists code design and style choices that developers
 should adhere to when modifying or extending the source code.
 
 ## Formatting
-In general, the nix flake enforces rules with a pre-commit check we adhere to.
+In general, we adhere to the following formatter/linter:
+- clippy: https://github.com/rust-lang/rust-clippy
+- deadnix: https://github.com/astro/deadnix
+- nixfmt: https://github.com/NixOS/nixfmt
+- rustfmt: https://github.com/rust-lang/rustfmt
+- statix: https://github.com/oppiliappan/statix
+- taplo: https://github.com/tamasfe/taplo
+- typos: https://github.com/crate-ci/typos
 
-### Temporarily Ignoring Pre-Commit Checks
+Most of them (currently all except clippy) are available in the pre-commit hook of the provided Nix development shell.
 
-When committing incomplete or work-in-progress changes, the pre-commit
-checks can become annoying. In this case, use:
-
-```console
-$ git commit --no-verify
-```
+> [!TIP]
+> To disable pre-commit checks for an incomplete or work-in-progress commit use:
+> ```console
+> $ git commit --no-verify
+> ```
 
 ## DMA Address Calculations
 

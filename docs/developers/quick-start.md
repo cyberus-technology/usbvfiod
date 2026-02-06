@@ -1,4 +1,4 @@
-# Testing without a NixOS integration test
+# Quick Start
 > [!NOTE]
 > This section needs updates.
 

@@ -5,7 +5,7 @@ We provide a number of NixOS integration tests that run in our CI and can be use
 > An overview about nix vm tests is helpful and can be found here: https://nix.dev/tutorials/nixos/integration-testing-using-virtual-machines.html
 
 ## Interactive testing with ssh access
-The integration test includes a static port forward of SSH to the developers machine port 2000. This provides a `root` login to the virtual machine with empty password.
+The integration tests include a static port forward of SSH to the developers machine port 2000. This provides a `root` login to the virtual machine with empty password.
 ```mermaid
 graph LR;
   id1[Developer Machine]
@@ -15,19 +15,17 @@ graph LR;
   id2--ssh root@192.168.100.2--->id3
 ```
 
-### Quick Start
-To build and run the interactive VM test driver:
+### How to
+Build and run the interactive VM test driver:
 ```
 nix run .\#checks.x86_64-linux.<name>.driverInteractive
 ```
-
 This will start a python environment where you can run the `test_script()`. Manually starting the VM with `start_all()` is also possible, but QEMU hardware emulation might not work as expected because the backing file for the emulated blockdevices needs to be created.
 
-The QEMU VM will be accessible with the alias `sshhost` (available in the Nix developer shell) or:
+The QEMU VM will be accessible with the alias `sshhost` (available in the Nix development shell) or:
 ```
 ssh -p 2000 root@localhost -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
 ```
-
 Using the QEMU VM as a proxy the nested cloud-hypervisor vm will be accessible with the alias `sshguest`:
 ```
 ssh -o ProxyCommand="ssh -W %h:%p -p 2000 root@localhost -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2
