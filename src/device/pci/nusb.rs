@@ -27,8 +27,7 @@ use std::{
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
     interfaces: Vec<nusb::Interface>,
-    endpoints: [Option<Arc<Notify>>; 32],
-    cancel: CancellationToken,
+    endpoints: [Option<(Arc<Notify>, CancellationToken)>; 32],
 }
 
 impl Debug for NusbDeviceWrapper {
@@ -58,7 +57,6 @@ impl TryFrom<nusb::Device> for NusbDeviceWrapper {
             device,
             interfaces,
             endpoints: std::array::from_fn(|_| None),
-            cancel: CancellationToken::new(),
         })
     }
 }
@@ -79,7 +77,7 @@ impl NusbDeviceWrapper {
         endpoint_number: u8,
         endpoint_type: EndpointType,
         worker_info: EndpointWorkerInfo,
-        receiver: Arc<Notify>,
+        receiver: (Arc<Notify>, CancellationToken),
     ) {
         // unwrap can fail when
         // - driver asks for invalid endpoint (driver's fault)
@@ -95,34 +93,19 @@ impl NusbDeviceWrapper {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Bulk, Out>(endpoint_number)
                     .unwrap();
-                runtime().spawn(transfer_out_worker(
-                    endpoint,
-                    worker_info,
-                    receiver,
-                    self.cancel.clone(),
-                ));
+                runtime().spawn(transfer_out_worker(endpoint, worker_info, receiver));
             }
             EndpointType::BulkIn => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Bulk, In>(endpoint_number)
                     .unwrap();
-                runtime().spawn(transfer_in_worker(
-                    endpoint,
-                    worker_info,
-                    receiver,
-                    self.cancel.clone(),
-                ));
+                runtime().spawn(transfer_in_worker(endpoint, worker_info, receiver));
             }
             EndpointType::InterruptIn => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Interrupt, In>(endpoint_number)
                     .unwrap();
-                runtime().spawn(transfer_in_worker(
-                    endpoint,
-                    worker_info,
-                    receiver,
-                    self.cancel.clone(),
-                ));
+                runtime().spawn(transfer_in_worker(endpoint, worker_info, receiver));
             }
             endpoint_type => {
                 todo!(
@@ -155,7 +138,7 @@ impl RealDevice for NusbDeviceWrapper {
     fn transfer(&mut self, endpoint_id: u8) {
         // transfer requires targeted endpoint to be enabled, panic if not
         match self.endpoints[endpoint_id as usize].as_mut() {
-            Some(worker_notifier) => {
+            Some((worker_notifier, _)) => {
                 trace!("Sending wake up to worker of ep {}", endpoint_id);
                 worker_notifier.notify_one();
             }
@@ -180,20 +163,21 @@ impl RealDevice for NusbDeviceWrapper {
 
         let endpoint_number = endpoint_id / 2;
 
-        let wakeup = match endpoint_type {
+        let sender = match endpoint_type {
             EndpointType::Control => {
                 let wakeup = Arc::new(Notify::new());
+                let cancel = CancellationToken::new();
                 let device = self.device.clone();
                 runtime().spawn(control_worker(
                     device,
                     worker_info,
-                    wakeup.clone(),
-                    self.cancel.clone(),
+                    (wakeup.clone(), cancel.clone()),
                 ));
-                wakeup
+                (wakeup, cancel)
             }
             endpoint_type => {
                 let wakeup = Arc::new(Notify::new());
+                let cancel = CancellationToken::new();
                 let is_out_endpoint = endpoint_id.is_multiple_of(2);
                 match is_out_endpoint {
                     true => {
@@ -201,7 +185,7 @@ impl RealDevice for NusbDeviceWrapper {
                             endpoint_number,
                             endpoint_type,
                             worker_info,
-                            wakeup.clone(),
+                            (wakeup.clone(), cancel.clone()),
                         );
                     }
                     false => {
@@ -212,14 +196,14 @@ impl RealDevice for NusbDeviceWrapper {
                             endpoint_number,
                             endpoint_type,
                             worker_info,
-                            wakeup.clone(),
+                            (wakeup.clone(), cancel.clone()),
                         );
                     }
                 }
-                wakeup
+                (wakeup, cancel)
             }
         };
-        self.endpoints[endpoint_id as usize] = Some(wakeup);
+        self.endpoints[endpoint_id as usize] = Some(sender);
         debug!("enabled Endpoint ID/DCI: {} on real device", endpoint_id);
     }
 }
@@ -229,9 +213,9 @@ impl RealDevice for NusbDeviceWrapper {
 async fn control_worker(
     device: nusb::Device,
     worker_info: EndpointWorkerInfo,
-    wakeup: Arc<Notify>,
-    cancel: CancellationToken,
+    receiver: (Arc<Notify>, CancellationToken),
 ) {
+    let (wakeup, cancel) = receiver;
     let dma_bus = worker_info.dma_bus;
 
     let transfer_ring = worker_info.transfer_ring;
@@ -383,9 +367,9 @@ async fn control_transfer_host_to_device(
 async fn transfer_in_worker<EpType: BulkOrInterrupt>(
     mut endpoint: nusb::Endpoint<EpType, In>,
     worker_info: EndpointWorkerInfo,
-    wakeup: Arc<Notify>,
-    cancel: CancellationToken,
+    receiver: (Arc<Notify>, CancellationToken),
 ) {
+    let (wakeup, cancel) = receiver;
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
             Some(trb) => trb,
@@ -493,9 +477,9 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
 async fn transfer_out_worker(
     mut endpoint: nusb::Endpoint<Bulk, Out>,
     worker_info: EndpointWorkerInfo,
-    wakeup: Arc<Notify>,
-    cancel: CancellationToken,
+    receiver: (Arc<Notify>, CancellationToken),
 ) {
+    let (wakeup, cancel) = receiver;
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
             Some(trb) => trb,
