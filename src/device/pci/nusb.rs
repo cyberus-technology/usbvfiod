@@ -172,15 +172,15 @@ impl RealDevice for NusbDeviceWrapper {
 
         let endpoint_number = endpoint_id / 2;
 
-        let sender = match endpoint_type {
+        // buffer of 10 is arbitrarily chosen. We do not expect messages to queue much at all.
+        let (sender, receiver) = mpsc::channel(10);
+
+        match endpoint_type {
             EndpointType::Control => {
-                let (sender, receiver) = mpsc::channel(10);
                 let device = self.device.clone();
                 runtime().spawn(control_worker(device, worker_info, receiver));
-                sender
             }
             endpoint_type => {
-                let (sender, receiver) = mpsc::channel(10);
                 let is_out_endpoint = endpoint_id.is_multiple_of(2);
                 match is_out_endpoint {
                     true => {
@@ -203,9 +203,8 @@ impl RealDevice for NusbDeviceWrapper {
                         );
                     }
                 }
-                sender
             }
-        };
+        }
         self.endpoints[endpoint_id as usize] = Some(sender);
         debug!("enabled Endpoint ID/DCI: {} on real device", endpoint_id);
     }
