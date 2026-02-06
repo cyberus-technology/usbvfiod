@@ -31,13 +31,6 @@ pub struct NusbDeviceWrapper {
     cancel: CancellationToken,
 }
 
-impl Drop for NusbDeviceWrapper {
-    fn drop(&mut self) {
-        debug!("NusbDeviceWrapper dropped, stopping all endpoints");
-        self.cancel.cancel();
-    }
-}
-
 impl Debug for NusbDeviceWrapper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The active configuration is either cached or not available
