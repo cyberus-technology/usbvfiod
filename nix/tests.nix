@@ -861,6 +861,10 @@ blockdeviceTests
       for i in range(1,20):
         print(f"ATTACH DETACH LOOP {i}")
 
+        # Expect no attached devices.
+        out = machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
+        search("No attached devices", out)
+
         # plug in a blockdevice
         os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
         {"execute": "qmp_capabilities"}
@@ -905,6 +909,13 @@ blockdeviceTests
         {"execute": "qmp_capabilities"}
         {"execute": "device_del", "arguments": { "id": "hotplug" } }
         EOF""")
+
+        # Trigger the guest to access the device and get the nusb error that would otherwise come eventually.
+        # If it did not already happen the xHC should then start the detach process of the device.
+        cloud_hypervisor.wait_until_succeeds("lsusb -vvv", timeout=120)
+
+        # Wait until the xHC can confirm there is no device attached anymore.
+        machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list | grep 'No attached devices'", timeout=60)
 
         # Wait for the qemu host to realize the missing usb device.
         machine.wait_until_fails("lsusb | grep 'QEMU QEMU USB HARDDRIVE'")
