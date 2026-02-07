@@ -24,6 +24,7 @@ clap = { version = "4.5.35", features = [
   "std",
   "usage",
 ], default-features = false }
+libc = "0.2.172"
 memmap2 = "0.9.5"
 nusb = { version = "0.2.0", default-features = false }
 thiserror = { version = "2.0.12" }
@@ -50,7 +51,6 @@ vmm-sys-util = { version = "0.15.0" }
 
 [dev-dependencies]
 proptest = "1.6.0"
-libc = "0.2.172"
 
 [lints.rust]
 missing_debug_implementations = "deny"

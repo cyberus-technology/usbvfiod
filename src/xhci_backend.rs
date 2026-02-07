@@ -113,7 +113,7 @@ impl XhciBackend {
         // to reopen.
         let file = open_file("Failed to open USB device file after device reset")?;
         let device = nusb::Device::from_fd(file.into()).wait()?;
-        let wrapped_device = Box::new(NusbDeviceWrapper::try_from(device)?);
+        let wrapped_device = Box::new(NusbDeviceWrapper::try_from((device, bus))?);
         self.controller
             .lock()
             .unwrap()

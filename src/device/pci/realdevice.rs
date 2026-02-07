@@ -55,6 +55,10 @@ pub enum EndpointType {
 pub struct EndpointWorkerInfo {
     /// The slot ID of the device.
     pub slot_id: u8,
+    /// The USB device address assigned by the guest.
+    pub device_address: u8,
+    /// The USB bus number of the attached device.
+    pub bus_number: u8,
     /// The endpoint the worker should service.
     pub endpoint_id: u8,
     /// Transfer ring of the endpoint to retrieve TRBs.
