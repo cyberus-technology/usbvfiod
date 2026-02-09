@@ -11,21 +11,29 @@ use tracing::{debug, trace, warn};
 
 use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
+use crate::device::pci::error_map::status_from_error;
+use crate::device::pci::pcap::{
+    build_setup_bytes, log_completion, log_control_completion, log_control_submission, log_error,
+    log_submission, UsbDirection, UsbEventType, UsbTransferType,
+};
 use crate::device::pci::trb::{CompletionCode, EventTrb};
 
 use super::realdevice::{EndpointType, EndpointWorkerInfo, Speed};
 use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
 use super::{realdevice::RealDevice, usbrequest::UsbRequest};
 use std::cmp::Ordering::*;
-use std::sync::Arc;
 use std::{
     fmt::Debug,
-    sync::atomic::{fence, Ordering},
+    sync::{
+        atomic::{fence, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
 pub struct NusbDeviceWrapper {
     device: nusb::Device,
+    bus_number: u8,
     interfaces: Vec<nusb::Interface>,
     endpoints: [Option<Arc<Notify>>; 32],
     cancel: CancellationToken,
@@ -44,17 +52,33 @@ impl Debug for NusbDeviceWrapper {
         // for unconfigured devices. There is no I/O for this.
         f.debug_struct("NusbDeviceWrapper")
             .field("device", &self.device.active_configuration())
+            .field("bus_number", &self.bus_number)
             .finish()
     }
 }
 
-impl TryFrom<nusb::Device> for NusbDeviceWrapper {
+impl TryFrom<(nusb::Device, u8)> for NusbDeviceWrapper {
     type Error = Error;
 
-    fn try_from(device: nusb::Device) -> Result<Self, Error> {
+    fn try_from((device, bus_number): (nusb::Device, u8)) -> Result<Self, Error> {
         // Claim all interfaces
         let mut interfaces = vec![];
-        let desc = device.active_configuration()?;
+        let desc = device.active_configuration().map_err(|error| {
+            let status = status_from_error(&error);
+            log_error(
+                0,
+                0,
+                u16::from(bus_number),
+                0,
+                UsbEventType::Completion,
+                UsbTransferType::Control,
+                UsbDirection::HostToDevice,
+                status,
+                &[],
+                None,
+            );
+            Error::from(error)
+        })?;
         for interface in desc.interfaces() {
             let interface_number = interface.interface_number();
             debug!("Enabling interface {}", interface_number);
@@ -63,13 +87,13 @@ impl TryFrom<nusb::Device> for NusbDeviceWrapper {
 
         Ok(Self {
             device,
+            bus_number,
             interfaces,
             endpoints: std::array::from_fn(|_| None),
             cancel: CancellationToken::new(),
         })
     }
 }
-
 impl NusbDeviceWrapper {
     fn get_interface_number_containing_endpoint(&self, endpoint_id: u8) -> Option<usize> {
         self.interfaces.iter().position(|interface| {
@@ -115,6 +139,7 @@ impl NusbDeviceWrapper {
                     .unwrap();
                 runtime().spawn(transfer_in_worker(
                     endpoint,
+                    UsbTransferType::Bulk,
                     worker_info,
                     receiver,
                     self.cancel.clone(),
@@ -126,6 +151,7 @@ impl NusbDeviceWrapper {
                     .unwrap();
                 runtime().spawn(transfer_in_worker(
                     endpoint,
+                    UsbTransferType::Interrupt,
                     worker_info,
                     receiver,
                     self.cancel.clone(),
@@ -282,9 +308,29 @@ async fn control_worker(
 
         // forward request to device
         let direction = request.request_type & 0x80 != 0;
+        let bus_number = u16::from(worker_info.bus_number);
+        let device_address = worker_info.device_address;
         match direction {
-            true => control_transfer_device_to_host(device.clone(), &request, &dma_bus).await,
-            false => control_transfer_host_to_device(device.clone(), &request, &dma_bus).await,
+            true => {
+                control_transfer_device_to_host(
+                    device_address,
+                    bus_number,
+                    device.clone(),
+                    &request,
+                    &dma_bus,
+                )
+                .await;
+            }
+            false => {
+                control_transfer_host_to_device(
+                    device_address,
+                    bus_number,
+                    device.clone(),
+                    &request,
+                    &dma_bus,
+                )
+                .await;
+            }
         }
 
         // send transfer event
@@ -320,6 +366,8 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
 }
 
 async fn control_transfer_device_to_host(
+    device_address: u8,
+    bus_number: u16,
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
@@ -333,18 +381,48 @@ async fn control_transfer_device_to_host(
         index: request.index,
         length: request.length,
     };
+    log_control_submission(
+        device_address,
+        bus_number,
+        request,
+        UsbDirection::DeviceToHost,
+        &[],
+    );
 
     debug!("sending control in request to device");
-    let data = match device.control_in(control, Duration::from_millis(200)).await {
+    let (data, status) = match device.control_in(control, Duration::from_millis(200)).await {
         Ok(data) => {
             debug!("control in data {:?}", data);
-            data
+            (data, 0)
         }
         Err(error) => {
+            let status = status_from_error(&error);
+            log_error(
+                request.address,
+                device_address,
+                bus_number,
+                0,
+                UsbEventType::Error,
+                UsbTransferType::Control,
+                UsbDirection::DeviceToHost,
+                status,
+                &[],
+                Some(build_setup_bytes(request)),
+            );
             warn!("control in request failed: {:?}", error);
-            vec![0; 0]
+            (vec![0; 0], status)
         }
     };
+
+    log_control_completion(
+        request.address,
+        device_address,
+        bus_number,
+        UsbDirection::DeviceToHost,
+        status,
+        data.len() as u32,
+        &data,
+    );
 
     // TODO: ideally the control transfer targets the right location for us and we get rid
     // of the additional DMA write here.
@@ -356,6 +434,8 @@ async fn control_transfer_device_to_host(
 }
 
 async fn control_transfer_host_to_device(
+    device_address: u8,
+    bus_number: u16,
     device: nusb::Device,
     request: &UsbRequest,
     dma_bus: &BusDeviceRef,
@@ -374,21 +454,58 @@ async fn control_transfer_host_to_device(
         index: request.index,
         data: &data,
     };
+    log_control_submission(
+        device_address,
+        bus_number,
+        request,
+        UsbDirection::HostToDevice,
+        &data,
+    );
 
     debug!("sending control out request to device");
-    match device
+    let status = match device
         .control_out(control, Duration::from_millis(200))
         .await
     {
-        Ok(_) => debug!("control out success"),
-        Err(error) => warn!("control out request failed: {:?}", error),
-    }
+        Ok(_) => {
+            debug!("control out success");
+            0
+        }
+        Err(error) => {
+            let status = status_from_error(&error);
+            log_error(
+                request.address,
+                device_address,
+                bus_number,
+                0,
+                UsbEventType::Error,
+                UsbTransferType::Control,
+                UsbDirection::HostToDevice,
+                status,
+                &data,
+                Some(build_setup_bytes(request)),
+            );
+            warn!("control out request failed: {:?}", error);
+            status
+        }
+    };
+
+    log_control_completion(
+        request.address,
+        device_address,
+        bus_number,
+        UsbDirection::HostToDevice,
+        status,
+        u32::from(request.length),
+        &[],
+    );
 }
 
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
 async fn transfer_in_worker<EpType: BulkOrInterrupt>(
     mut endpoint: nusb::Endpoint<EpType, In>,
+    transfer_type: UsbTransferType,
     worker_info: EndpointWorkerInfo,
     wakeup: Arc<Notify>,
     cancel: CancellationToken,
@@ -427,6 +544,21 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         let transfer_length = normal_data.transfer_length as usize;
 
         let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
+        let bus_number = u16::from(worker_info.bus_number);
+        let device_address = worker_info.device_address;
+        let endpoint_number = worker_info.endpoint_id;
+        let request_id = trb.address;
+        log_submission(
+            request_id,
+            device_address,
+            bus_number,
+            endpoint_number,
+            transfer_type,
+            UsbDirection::DeviceToHost,
+            normal_data.transfer_length,
+            &[],
+            None,
+        );
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
         let buffer = select! {
@@ -466,6 +598,17 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
                 transfer_length
             }
         };
+        log_completion(
+            request_id,
+            device_address,
+            bus_number,
+            endpoint_number,
+            transfer_type,
+            UsbDirection::DeviceToHost,
+            0,
+            byte_count_dma as u32,
+            &buffer.buffer[..byte_count_dma],
+        );
         worker_info
             .dma_bus
             .write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
@@ -542,8 +685,34 @@ async fn transfer_out_worker(
         if normal_data.transfer_length == 31 {
             debug!("OUT data: {:?}", data);
         }
+        let bus_number = u16::from(worker_info.bus_number);
+        let device_address = worker_info.device_address;
+        let endpoint_number = worker_info.endpoint_id;
+        let request_id = trb.address;
+        log_submission(
+            request_id,
+            device_address,
+            bus_number,
+            endpoint_number,
+            UsbTransferType::Bulk,
+            UsbDirection::HostToDevice,
+            normal_data.transfer_length,
+            &data,
+            None,
+        );
         endpoint.submit(data.into());
         endpoint.next_complete().await;
+        log_completion(
+            request_id,
+            device_address,
+            bus_number,
+            endpoint_number,
+            UsbTransferType::Bulk,
+            UsbDirection::HostToDevice,
+            0,
+            normal_data.transfer_length,
+            &[],
+        );
 
         if !normal_data.interrupt_on_completion {
             trace!("Processed TRB without IOC flag; sending no transfer event");

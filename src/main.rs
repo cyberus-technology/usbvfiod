@@ -10,6 +10,7 @@ mod xhci_backend;
 
 use std::{os::unix::net::UnixListener, thread};
 
+use crate::device::pci::pcap::UsbPcapManager;
 use anyhow::{Context, Result};
 use async_runtime::init_runtime;
 use clap::Parser;
@@ -21,6 +22,7 @@ use vfio_user::Server;
 
 fn main() -> Result<()> {
     let args = Cli::parse();
+    UsbPcapManager::init(args.pcap_path.clone());
 
     let subscriber = FmtSubscriber::builder()
         .with_max_level(match args.verbose {

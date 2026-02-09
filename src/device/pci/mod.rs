@@ -6,8 +6,10 @@
 pub mod config_space;
 pub mod constants;
 pub mod device_slots;
+pub mod error_map;
 pub mod msix_table;
 pub mod nusb;
+pub mod pcap;
 pub mod realdevice;
 pub mod registers;
 pub mod rings;
