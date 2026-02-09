@@ -155,6 +155,10 @@
         // (import ./nix/tests.nix {
           inherit lib pkgs;
           usbvfiod = self.packages.default;
+        })
+        // (import ./nix/windows/windows-test.nix {
+          inherit lib pkgs;
+          usbvfiod = self.packages.default;
         });
 
         packages = {
@@ -167,6 +171,9 @@
               inherit cargoArtifacts;
             }
           );
+        }
+        // {
+          windows-image = import ./windows-image.nix { inherit pkgs; };
         };
 
         apps = {
@@ -192,6 +199,10 @@
             ${self.checks.pre-commit-check.shellHook}
             alias sshhost=ssh\ -p\ 2000\ root@localhost\ -o\ UserKnownHostsFile=/dev/null\ -o\ StrictHostKeyChecking=no
             alias sshguest=ssh\ -o\ ProxyCommand="ssh\ -W\ %h:%p\ -p\ 2000\ root@localhost\ -o\ UserKnownHostsFile=/dev/null\ -o\ StrictHostKeyChecking=no"\ -o\ UserKnownHostsFile=/dev/null\ -o\ StrictHostKeyChecking=no\ root@192.168.100.2
+            alias wintestDriver=env\ XDG_RUNTIME_DIR='/tmp'\ nix\ run\ .#checks.x86_64-linux.windows-test.driver\ --impure\ --print-build-logs
+            alias wintest=env\ XDG_RUNTIME_DIR='/tmp'\ nix\ run\ .#checks.x86_64-linux.windows-test.driverInteractive\ --impure\ --print-build-logs
+            alias portforward=ssh\ -L\ 3389:192.168.249.2:3389\ -p\ 2000\ root@localhost\ -o\ UserKnownHostsFile=/dev/null\ -o\ StrictHostKeyChecking=no
+            alias rdpme=nix\ shell\ nixpkgs#freerdp\ --command\ xfreerdp\ /v:localhost:3389\ /u:lucas
           '';
         };
 
