@@ -129,11 +129,6 @@
             }
           );
 
-          # Check formatting
-          usbvfiod-fmt = craneLib.cargoFmt {
-            inherit src;
-          };
-
           # Audit dependencies
           usbvfiod-audit = craneLib.cargoAudit {
             inherit src advisory-db;
