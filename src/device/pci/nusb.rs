@@ -423,11 +423,11 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         // doorbell might interrupt us, so we need the loop
         let buffer = loop {
             select! {
-                buf =  endpoint.next_complete() => {break buf;}
+                buf = endpoint.next_complete() => break buf,
                 msg = receiver.recv() => {
                     match msg.expect("The worker channel should never close while the worker is alive.") {
                         EndpointMessage::Doorbell => {},
-                        EndpointMessage::Terminate => {return},
+                        EndpointMessage::Terminate => return,
                     }
                 }
             };
