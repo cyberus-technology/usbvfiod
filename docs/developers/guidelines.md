@@ -3,7 +3,25 @@
 This document lists code design and style choices that developers
 should adhere to when modifying or extending the source code.
 
-## DMA Address Calculations 
+## Formatting
+In general, we adhere to the following formatter/linter:
+- [clippy](https://github.com/rust-lang/rust-clippy)
+- [deadnix](https://github.com/astro/deadnix)
+- [nixfmt](https://github.com/NixOS/nixfmt)
+- [rustfmt](https://github.com/rust-lang/rustfmt)
+- [statix](https://github.com/oppiliappan/statix)
+- [taplo](https://github.com/tamasfe/taplo)
+- [typos](https://github.com/crate-ci/typos)
+
+Most of them (currently all except clippy) are available in the pre-commit hook of the provided Nix development shell.
+
+> [!TIP]
+> To disable pre-commit checks for an incomplete or work-in-progress commit use:
+> ```console
+> $ git commit --no-verify
+> ```
+
+## DMA Address Calculations
 
 When calculating DMA addresses to access guest memory, you should use
 wrap-around calculations such as `u64::wrapping_add`.
@@ -19,17 +37,17 @@ Explicitly treating the calculations as wrapping aligns the behavior between deb
 
 Deriving standard traits improves debuggability, testability, and code clarity. While not strictly mandatory, developers are encouraged to apply them where safe and semantically appropriate.
 
-- **Always derive `Debug`**  
+- **Always derive `Debug`**<br>
   Include `#[derive(Debug)]` for all structs and enums to enable diagnostic output and logging.
 
-- **Derive `Clone` or `Copy`**  
-  Use `Copy` only for small types with trivial duplication semantics (e.g., numeric types). Use `Clone` for safe but potentially more complex duplication.  
+- **Derive `Clone` or `Copy`**<br>
+  Use `Copy` only for small types with trivial duplication semantics (e.g., numeric types). Use `Clone` for safe but potentially more complex duplication.
   _Avoid both_ if the type encapsulates ownership-sensitive resources (e.g., file handles, raw pointers, custom lifetimes).
 
-- **Derive `PartialEq`, `Eq`**  
+- **Derive `PartialEq`, `Eq`**<br>
   Enable equality checks, especially useful in test assertions and control logic. Only add when comparisons are semantically meaningful.
 
-- **Derive `Default`**  
+- **Derive `Default`**<br>
   Provide `Default` when a clear and unambiguous zero-configuration or initial state exists.
 
 Derives may be added proactively for likely future needs (e.g., test support or logging), provided they don’t introduce ambiguity or misuse.
