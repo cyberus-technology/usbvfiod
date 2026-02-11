@@ -101,6 +101,7 @@
               typos.enable = true;
               deadnix.enable = true;
               statix.enable = true;
+              taplo.enable = true;
             };
           };
 
@@ -127,17 +128,6 @@
               inherit cargoArtifacts;
             }
           );
-
-          # Check formatting
-          usbvfiod-fmt = craneLib.cargoFmt {
-            inherit src;
-          };
-
-          usbvfiod-toml-fmt = craneLib.taploFmt {
-            src = pkgs.lib.sources.sourceFilesBySuffices src [ ".toml" ];
-            # taplo arguments can be further customized below as needed
-            # taploExtraArgs = "--config ./taplo.toml";
-          };
 
           # Audit dependencies
           usbvfiod-audit = craneLib.cargoAudit {
