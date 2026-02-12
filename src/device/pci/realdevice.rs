@@ -47,6 +47,7 @@ pub enum EndpointType {
     BulkIn,
     BulkOut,
     InterruptIn,
+    InterruptOut,
 }
 
 /// This struct provides all required information to a worker thread to handle
