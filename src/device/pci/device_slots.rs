@@ -270,6 +270,7 @@ impl DeviceContext {
                 6 => EndpointType::BulkIn,
                 4 => EndpointType::Control,
                 7 => EndpointType::InterruptIn,
+                3 => EndpointType::InterruptOut,
                 val => todo!("encountered unsupported endpoint type: {}", val),
             };
             enabled_endpoints.push((i as u8, ep_type));
