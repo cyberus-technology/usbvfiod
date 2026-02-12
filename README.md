@@ -36,3 +36,12 @@ professional support.
 ## Documentation
 
 Find the overview of documentation [here](./docs/overview.md).
+
+## Funding
+
+This open-source project was developed within the *Edge Gateway Platform* project and is sponsored by **secunet Security Networks AG**. 
+This project has received public funding from the **European Union** NextGenerationEU within the Important Project of Common European Interest – Cloud Infrastructures and Services (IPCEI-CIS) under grant agreement 13IPC022.
+
+<p align="center">
+  <img alt="Bundesministerium für Wirtschaft und Energie (BMWE)-EU and secunet funding logo" src="docs/images/logo_sponsored_funding_ic_sec.png" width="400"/>
+</p>
