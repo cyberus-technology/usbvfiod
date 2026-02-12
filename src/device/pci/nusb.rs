@@ -113,6 +113,12 @@ impl NusbDeviceWrapper {
                     .unwrap();
                 runtime().spawn(transfer_in_worker(endpoint, worker_info, receiver));
             }
+            EndpointType::InterruptOut => {
+                let endpoint = interface_of_endpoint
+                    .endpoint::<Interrupt, Out>(endpoint_number)
+                    .unwrap();
+                runtime().spawn(transfer_out_worker(endpoint, worker_info, receiver));
+            }
             endpoint_type => {
                 todo!(
                     "can not enable endpoint type {:?}; worker not yet implemented",
@@ -496,8 +502,8 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
 
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
-async fn transfer_out_worker(
-    mut endpoint: nusb::Endpoint<Bulk, Out>,
+async fn transfer_out_worker<EpType: BulkOrInterrupt>(
+    mut endpoint: nusb::Endpoint<EpType, Out>,
     worker_info: EndpointWorkerInfo,
     mut receiver: mpsc::Receiver<EndpointMessage>,
 ) {
