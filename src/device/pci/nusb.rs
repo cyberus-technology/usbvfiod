@@ -376,6 +376,15 @@ async fn control_transfer_host_to_device(
     }
 }
 
+#[derive(Debug)]
+enum EndpointState {
+    WaitingForDoorbell,
+    LookingForTrb,
+    // stores transfer_length of the awaited completion
+    WaitingForNusbCompletion(TransferTrb),
+    Terminating,
+}
+
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
 async fn transfer_in_worker<EpType: BulkOrInterrupt>(
@@ -383,120 +392,118 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
     worker_info: EndpointWorkerInfo,
     mut receiver: mpsc::Receiver<EndpointMessage>,
 ) {
+    let mut state = EndpointState::WaitingForDoorbell;
+
     loop {
-        let trb = match worker_info.transfer_ring.next_transfer_trb() {
-            Some(trb) => trb,
-            None => {
-                trace!(
-                    "worker thread ep {}: No TRB on transfer ring, going to sleep",
-                    worker_info.endpoint_id
-                );
-                match receiver
-                    .recv()
-                    .await
-                    .expect("The worker channel should never close while the worker is alive.")
-                {
-                    EndpointMessage::Doorbell => {
-                        trace!(
-                            "worker thread ep {}: Received wake up",
-                            worker_info.endpoint_id
+        debug!("{:?}", state);
+        match state {
+            EndpointState::WaitingForDoorbell => match receiver
+                .recv()
+                .await
+                .expect("The worker channel should never close while the worker is alive.")
+            {
+                EndpointMessage::Doorbell => state = EndpointState::LookingForTrb,
+                EndpointMessage::Terminate => state = EndpointState::Terminating,
+            },
+            EndpointState::LookingForTrb => match worker_info.transfer_ring.next_transfer_trb() {
+                None => state = EndpointState::WaitingForDoorbell,
+                Some(trb) => {
+                    assert!(
+                        matches!(trb.variant, TransferTrbVariant::Normal(_)),
+                        "Expected Normal TRB but got {trb:?}"
+                    );
+
+                    // The assertion above guarantees that the TRB is a normal TRB. A wrong
+                    // TRB type is the only reason the unwrap can fail.
+                    let normal_data = extract_normal_trb_data(&trb).unwrap();
+                    let transfer_length = normal_data.transfer_length as usize;
+
+                    let buffer_size =
+                        determine_buffer_size(transfer_length, endpoint.max_packet_size());
+                    let buffer = Buffer::new(buffer_size);
+                    endpoint.submit(buffer);
+
+                    state = EndpointState::WaitingForNusbCompletion(trb);
+                }
+            },
+            EndpointState::WaitingForNusbCompletion(ref trb) => {
+                select! {
+                    msg = receiver.recv() => {
+                        match msg.expect("The worker channel should never close while the worker is alive.") {
+                            EndpointMessage::Doorbell => {},
+                            EndpointMessage::Terminate => state = EndpointState::Terminating,
+                        }
+                    },
+                    buffer = endpoint.next_complete() => {
+                        let normal_data = extract_normal_trb_data(trb).unwrap();
+                        let transfer_length = normal_data.transfer_length as usize;
+                        let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
+                            Greater => {
+                                // Got more data than requested. We must not write more data than
+                                // the guest driver requested with the transfer length, otherwise
+                                // we might write out of the buffer.
+                                //
+                                // Why does this case happen? Sometimes the driver asks for, e.g.,
+                                // 36 bytes. We have to request max_packet_size (e.g., 1024 bytes).
+                                // The real device then provides 1024 bytes of data (looks like
+                                // zero padding).
+                                transfer_length
+                            }
+                            Less => {
+                                // Got less data than requested. That case happens for example when
+                                // the driver sends a Mode Sense(6) SCSI command. The response size
+                                // is variable, so the driver asks for 192 bytes but is also fine
+                                // with less.
+                                //
+                                // We copy all the data over that we got.
+                                // TODO: currently, we just report success and 0 residual bytes,
+                                // even though we probably should report something like short
+                                // packet and the difference between requested and actual byte
+                                // count. We get away with the simplified handling for now.
+                                // The Mode Sense(6) response encodes the size of the response in
+                                // the first byte, so the driver is not unhappy that we reported
+                                // 192 bytes but only deliver, e.g., 36 bytes.
+                                buffer.actual_len
+                            }
+                            Equal => {
+                                // We got exactly the right amount of bytes.
+                                transfer_length
+                            }
+                        };
+                        worker_info
+                            .dma_bus
+                            .write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
+
+                        if !normal_data.interrupt_on_completion {
+                            trace!("Processed TRB without IOC flag; sending no transfer event");
+                            state = EndpointState::LookingForTrb;
+                            continue;
+                        }
+
+                        let (completion_code, residual_bytes) = (CompletionCode::Success, 0);
+
+                        let transfer_event = EventTrb::new_transfer_event_trb(
+                            trb.address,
+                            residual_bytes,
+                            completion_code,
+                            false,
+                            worker_info.endpoint_id,
+                            worker_info.slot_id,
                         );
-                        continue;
-                    }
-                    EndpointMessage::Terminate => {
-                        debug!(
-                            "worker thread ep {}: Stopped by terminate message",
-                            worker_info.endpoint_id
-                        );
-                        return;
+                        worker_info
+                            .event_ring
+                            .lock()
+                            .unwrap()
+                            .enqueue(&transfer_event);
+                        worker_info.interrupt_line.interrupt();
+                        debug!("sent Transfer Event and signaled interrupt");
+
+                        state = EndpointState::LookingForTrb;
                     }
                 };
             }
-        };
-        assert!(
-            matches!(trb.variant, TransferTrbVariant::Normal(_)),
-            "Expected Normal TRB but got {trb:?}"
-        );
-
-        // The assertion above guarantees that the TRB is a normal TRB. A wrong
-        // TRB type is the only reason the unwrap can fail.
-        let normal_data = extract_normal_trb_data(&trb).unwrap();
-        let transfer_length = normal_data.transfer_length as usize;
-
-        let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
-        let buffer = Buffer::new(buffer_size);
-        endpoint.submit(buffer);
-        // doorbell might interrupt us, so we need the loop
-        let buffer = loop {
-            select! {
-                buf = endpoint.next_complete() => break buf,
-                msg = receiver.recv() => {
-                    match msg.expect("The worker channel should never close while the worker is alive.") {
-                        EndpointMessage::Doorbell => {},
-                        EndpointMessage::Terminate => return,
-                    }
-                }
-            };
-        };
-        let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
-            Greater => {
-                // Got more data than requested. We must not write more data than
-                // the guest driver requested with the transfer length, otherwise
-                // we might write out of the buffer.
-                //
-                // Why does this case happen? Sometimes the driver asks for, e.g.,
-                // 36 bytes. We have to request max_packet_size (e.g., 1024 bytes).
-                // The real device then provides 1024 bytes of data (looks like
-                // zero padding).
-                transfer_length
-            }
-            Less => {
-                // Got less data than requested. That case happens for example when
-                // the driver sends a Mode Sense(6) SCSI command. The response size
-                // is variable, so the driver asks for 192 bytes but is also fine
-                // with less.
-                //
-                // We copy all the data over that we got.
-                // TODO: currently, we just report success and 0 residual bytes,
-                // even though we probably should report something like short
-                // packet and the difference between requested and actual byte
-                // count. We get away with the simplified handling for now.
-                // The Mode Sense(6) response encodes the size of the response in
-                // the first byte, so the driver is not unhappy that we reported
-                // 192 bytes but only deliver, e.g., 36 bytes.
-                buffer.actual_len
-            }
-            Equal => {
-                // We got exactly the right amount of bytes.
-                transfer_length
-            }
-        };
-        worker_info
-            .dma_bus
-            .write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
-
-        if !normal_data.interrupt_on_completion {
-            trace!("Processed TRB without IOC flag; sending no transfer event");
-            continue;
+            EndpointState::Terminating => break,
         }
-
-        let (completion_code, residual_bytes) = (CompletionCode::Success, 0);
-
-        let transfer_event = EventTrb::new_transfer_event_trb(
-            trb.address,
-            residual_bytes,
-            completion_code,
-            false,
-            worker_info.endpoint_id,
-            worker_info.slot_id,
-        );
-        worker_info
-            .event_ring
-            .lock()
-            .unwrap()
-            .enqueue(&transfer_event);
-        worker_info.interrupt_line.interrupt();
-        debug!("sent Transfer Event and signaled interrupt");
     }
 }
 
