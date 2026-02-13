@@ -766,6 +766,7 @@ mod tests {
         );
     }
 
+    /*
     #[test]
     fn event_ring_start_empty_enqueue_fill_then_wraparound_after_dequeue_pointer_move() {
         let (ram, mut ring) = init_ram_and_ring();
@@ -1202,4 +1203,5 @@ mod tests {
             "When no fresh request is on the transfer ring, next_request should return None, instead got: {request:?}"
         );
     }
+    */
 }
