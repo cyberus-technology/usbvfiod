@@ -1,6 +1,4 @@
 # Quick Start
-> [!NOTE]
-> This section needs updates.
 
 ## Testing with Cloud Hypervisor
 
@@ -48,8 +46,10 @@ command line.
 > ```
 
 ## Attaching USB Devices
-For the time being, USB devices can only be attached when `usbvfiod`
-is started. `usbvfiod` takes the path to the USB device node. These
+Currently USB devices can be attached when (1) `usbvfiod`
+is started and (2) at runtime by sending a specific command to the hotplug socket.
+
+In both cases pass-through devices are identified by the path to the USB device node. These
 paths are of the form `/dev/bus/usb/$BUS/$DEVICE`.
 
 To figure out the bus and device numbers of a specific USB device, use
@@ -63,9 +63,9 @@ Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
 Bus 002 Device 003: ID 18a5:0243 Verbatim, Ltd Flash Drive (Store'n'Go)
 ```
 
-So for attaching the flash drive you would add `--device
-/dev/bus/usb/002/003` as a parameter to `usbvfiod`. `usbvfiod` must
-have permission to read and write the device node.
+To attach the specific USB device you would:
+- (1) add `--device /dev/bus/usb/002/003` as a parameter to `usbvfiod` for attachment at startup, and/or
+- (2) add `--hotplug-socket-path /tmp/hotplug.sock` as a parameter to `usbvfiod` and later run the provided `remote` binary as `remote --socket /tmp/hotplug.sock --attach /dev/bus/usb/002/003`.
 
 ### Kernel Debug Messages for XHCI
 
