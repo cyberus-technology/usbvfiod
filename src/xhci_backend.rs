@@ -212,8 +212,6 @@ impl ServerBackend for XhciBackend {
         offset: u64,
         data: &mut [u8],
     ) -> Result<(), std::io::Error> {
-        trace!("read  region {region} offset {offset:#x}+{}", data.len());
-
         let value: u64 = match region {
             VFIO_PCI_CONFIG_REGION_INDEX => self.controller.read_cfg(Request::new(
                 offset,
@@ -233,6 +231,12 @@ impl ServerBackend for XhciBackend {
         };
 
         data.copy_from_slice(&value.to_le_bytes()[0..data.len()]);
+
+        trace!(
+            "read region {region} offset {offset:#x}+{} val {:?}",
+            data.len(),
+            data
+        );
 
         Ok(())
     }
