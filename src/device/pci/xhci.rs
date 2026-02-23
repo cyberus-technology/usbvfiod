@@ -1,7 +1,6 @@
 //! Emulation of a USB3 Host (XHCI) controller.
 //!
-//! The specification is available
-//! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
+//! See XHCI specification Section 3 for an overview about the scope of the xHC.
 
 use std::sync::{
     atomic::{fence, Ordering},
