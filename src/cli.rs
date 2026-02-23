@@ -1,4 +1,4 @@
-//! This module implements the CLI interface.
+//! Implements the CLI interface.
 //!
 //! The main external constraint here is that we need to be compatible
 //! to the vfio-user [Backend Program
