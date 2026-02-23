@@ -75,10 +75,11 @@ impl<T, const S: usize> OneIndexed<T, S> {
     }
     /// Enumerating elements with correct index.
     ///
-    /// Using some_one_indexed.iter().enumerate() generates an iterator like
-    /// (0, some_one_indexed[1]), (1, some_one_indexed[2]), ...
-    /// some_one_indexed.enumerate instead generates an iterator like
-    /// (1, some_one_indexed[1]), (2, some_one_indexed[2]), ...
+    /// Using `some_one_indexed.iter().enumerate()` generates an iterator like
+    /// `(0, some_one_indexed[1]), (1, some_one_indexed[2]), ...`
+    ///
+    /// Using `some_one_indexed.enumerate()` instead generates an iterator like
+    /// `(1, some_one_indexed[1]), (2, some_one_indexed[2]), ...`
     ///
     /// This method is useful for avoiding manual "one-shifting" when trying to
     /// filter for the indices of items with specific properties.
