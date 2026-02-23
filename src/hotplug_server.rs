@@ -1,3 +1,5 @@
+//! Receive runtime commands
+
 use std::{
     fs::File,
     os::unix::net::{UnixListener, UnixStream},
