@@ -219,6 +219,7 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
             offset::DOORBELL_CONTROLLER => 0, // kernel reads the doorbell after write
             // Device Doorbell Registers (DOORBELL_DEVICE)
             offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE_END => 0,
+            offset::MFINDEX => 0x0,
 
             // Port Status and Control Register (PORTSC)
             addr if get_portsc_index(addr).is_some() => {
