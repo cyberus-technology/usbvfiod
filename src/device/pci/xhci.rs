@@ -816,6 +816,8 @@ impl PciDevice for Mutex<XhciController> {
             // Port Link Info Register (PORTLI_USB3)
             addr if guard.get_portli_index(addr).is_some() => 0,
 
+            offset::MFINDEX => 0x0,
+
             // Everything else is Reserved Zero
             addr => {
                 todo!("unknown read {}", addr);
