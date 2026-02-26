@@ -3,6 +3,8 @@
 //! The specification is available
 //! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
 
+use std::{thread, time::Duration};
+
 use std::sync::{
     atomic::{fence, Ordering},
     Arc, Mutex,
@@ -228,6 +230,22 @@ impl XhciController {
                     | portsc::PP
                     | portsc::CSC
                     | portsc::PEC
+                    | portsc::PR
+                    //| portsc::PRC
+                    | (speed as u64) << 10,
+            );
+
+            // have reset status active for at least 10ms according to USB 2.0 spec
+            let duration = Duration::from_millis(20);
+            thread::sleep(duration);
+
+            self.portsc[available_port_id] = PortscRegister::new(
+                portsc::CCS
+                    | portsc::PED
+                    | portsc::PP
+                    | portsc::CSC
+                    | portsc::PEC
+                    //| portsc::PR
                     | portsc::PRC
                     | (speed as u64) << 10,
             );
