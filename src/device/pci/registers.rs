@@ -1,3 +1,15 @@
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    Arc,
+};
+
+use tokio::sync::Notify;
+
+use crate::device::pci::constants::xhci::{
+    operational::{portsc, usbsts},
+    MAX_SLOTS,
+};
+
 /// A simple PORTSC register implementation supporting RW1C bits.
 ///
 /// The PORTSC register requires us to initially set some bits and
@@ -8,6 +20,15 @@
 pub struct PortscRegister {
     value: u64,
     bitmask_rw1c: u64,
+}
+
+impl Default for PortscRegister {
+    fn default() -> Self {
+        Self {
+            value: portsc::PP,
+            bitmask_rw1c: 0x00260000,
+        }
+    }
 }
 
 impl PortscRegister {
@@ -38,6 +59,120 @@ impl PortscRegister {
     pub const fn write(&mut self, new_value: u64) {
         let bits_to_clear = new_value & self.bitmask_rw1c;
         self.value &= !bits_to_clear;
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ConfigureRegister {
+    value: Arc<AtomicU32>,
+}
+
+impl ConfigureRegister {
+    pub fn read(&self) -> u32 {
+        self.value.load(Ordering::Relaxed)
+    }
+
+    pub fn write(&self, value: u32) {
+        let slots_enabled = (value & 0xff) as u8;
+        assert!(slots_enabled <= MAX_SLOTS as u8);
+        self.value.store(value, Ordering::Relaxed);
+    }
+
+    pub fn num_slots_enabled(&self) -> u8 {
+        (self.read() & 0xff) as u8
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct DcbaapRegister {
+    value: Arc<AtomicU64>,
+}
+
+impl DcbaapRegister {
+    pub fn read(&self) -> u64 {
+        self.value.load(Ordering::Relaxed)
+    }
+
+    pub fn write(&self, new_value: u64) {
+        self.value.store(new_value & !0x1f, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+pub struct UsbcmdRegister {
+    running: Arc<AtomicBool>,
+}
+
+impl UsbcmdRegister {
+    pub fn write(&self, value: u64) {
+        self.running.store(value & 0x1 != 0, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+pub struct UsbstsRegister {
+    running: Arc<AtomicBool>,
+}
+
+impl UsbstsRegister {
+    pub fn read(&self) -> u64 {
+        let hch = if self.running.load(Ordering::Relaxed) {
+            0
+        } else {
+            usbsts::HCH
+        };
+        hch | usbsts::EINT | usbsts::PCD
+    }
+}
+
+pub fn new_usbcmd_and_usbsts() -> (UsbcmdRegister, UsbstsRegister) {
+    let running = Arc::new(AtomicBool::new(false));
+    let usbcmd = UsbcmdRegister {
+        running: running.clone(),
+    };
+    let usbsts = UsbstsRegister { running };
+    (usbcmd, usbsts)
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct GenericRwRegister {
+    value: Arc<AtomicU64>,
+}
+
+impl GenericRwRegister {
+    pub fn new(value: u64) -> Self {
+        Self {
+            value: Arc::new(AtomicU64::new(value)),
+        }
+    }
+
+    pub fn read(&self) -> u64 {
+        self.value.load(Ordering::Relaxed)
+    }
+
+    pub fn write(&self, new_value: u64) {
+        self.value.store(new_value, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ErstbaRegister {
+    value: Arc<AtomicU64>,
+    notify: Arc<Notify>,
+}
+
+impl ErstbaRegister {
+    pub fn read(&self) -> u64 {
+        self.value.load(Ordering::Relaxed)
+    }
+
+    pub fn write(&self, new_value: u64) {
+        self.value.store(new_value, Ordering::Relaxed);
+        self.notify.notify_waiters();
+    }
+
+    pub async fn write_notification(&self) {
+        self.notify.notified().await
     }
 }
 
