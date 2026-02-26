@@ -12,6 +12,12 @@ use super::constants::xhci::rings::trb_types::{self, *};
 /// of a Transfer Request Block.
 pub type RawTrbBuffer = [u8; 16];
 
+#[derive(Debug)]
+pub struct RawTrb {
+    pub address: u64,
+    pub buffer: RawTrbBuffer,
+}
+
 /// Create a zero-initiliated TRB buffer.
 pub const fn zeroed_trb_buffer() -> RawTrbBuffer {
     [0; 16]
@@ -84,7 +90,6 @@ impl EventTrb {
     ///   command.
     /// - `slot_id`: The slot associated with command that generated this
     ///   event.
-    #[allow(unused)]
     pub fn new_command_completion_event_trb(
         command_trb_pointer: u64,
         command_completion_parameter: u32,

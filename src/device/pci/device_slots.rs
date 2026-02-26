@@ -7,11 +7,10 @@ use tracing::{debug, info};
 use crate::device::{
     bus::{BusDeviceRef, Request, RequestSize},
     pci::constants::xhci::device_slots::{endpoint_state, slot_state},
+    xhci::linked_ring::LinkedRing,
 };
 
-use super::{
-    constants::xhci::device_slots::endpoint_state::*, realdevice::EndpointType, rings::TransferRing,
-};
+use super::{constants::xhci::device_slots::endpoint_state::*, realdevice::EndpointType};
 
 /// Abstraction for Device Slots.
 ///
@@ -324,7 +323,7 @@ impl DeviceContext {
         EndpointContext::new(addr, self.dma_bus.clone())
     }
 
-    pub fn get_transfer_ring(&self, endpoint_id: u64) -> TransferRing {
+    pub fn get_transfer_ring(&self, endpoint_id: u64) -> LinkedRing {
         let endpoint_context = self.get_endpoint_context_internal(endpoint_id);
         match endpoint_context.get_state() {
             DISABLED => {
@@ -333,7 +332,8 @@ impl DeviceContext {
             RUNNING => {}
             _ => endpoint_context.set_state(RUNNING),
         }
-        TransferRing::new(endpoint_context, self.dma_bus.clone())
+        let (dequeue_pointer, cycle_state) = endpoint_context.get_dequeue_pointer_and_cycle_state();
+        LinkedRing::new(self.dma_bus.clone(), dequeue_pointer, cycle_state)
     }
 }
 
@@ -394,7 +394,7 @@ impl EndpointContext {
             .read(Request::new(self.address, RequestSize::Size1)) as u8
     }
 
-    fn set_state(&self, state: u8) {
+    pub fn set_state(&self, state: u8) {
         self.dma_bus
             .write(Request::new(self.address, RequestSize::Size1), state as u64);
     }

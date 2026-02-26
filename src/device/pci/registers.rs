@@ -1,3 +1,5 @@
+use crate::device::pci::constants::xhci::operational::portsc;
+
 /// A simple PORTSC register implementation supporting RW1C bits.
 ///
 /// The PORTSC register requires us to initially set some bits and
@@ -8,6 +10,15 @@
 pub struct PortscRegister {
     value: u64,
     bitmask_rw1c: u64,
+}
+
+impl Default for PortscRegister {
+    fn default() -> Self {
+        Self {
+            value: portsc::PP,
+            bitmask_rw1c: 0x00260000,
+        }
+    }
 }
 
 impl PortscRegister {
