@@ -68,7 +68,7 @@ let
 
   windowsImageRaw = pkgs.callPackage ./windows-image-raw.nix { inherit pkgs; };
 
-  fd = "blockdevice";
+  usb-symlink = "blockdevice";
 in
 {
   windows-test = pkgs.testers.runNixOSTest {
@@ -153,7 +153,7 @@ in
           "-mon chardev=qmp,mode=control,pretty=on"
 
           # a blockdevice device
-          #"${mkQemuBlockdevice "someId" imagePathPart usbVersions."3".busName "1"}"
+          "${mkQemuBlockdevice "someId" imagePathPart usbVersions."3".busName "1"}"
         ];
       };
 
@@ -179,7 +179,7 @@ in
       };
 
       services.udev.extraRules = ''
-        ${mkUdevRule usbVersions."3".addr usbVersions."3".controller "1" fd}
+        ${mkUdevRule usbVersions."3".addr usbVersions."3".controller "1" usb-symlink}
       '';
       systemd.services = {
         usbvfiod = {
@@ -193,8 +193,8 @@ in
               ${lib.getExe usbvfiod} -vv \
                 --socket-path ${usbvfiodSocket} \
                 --hotplug-socket-path ${usbvfiodSocketHotplug} \
+                --device "/dev/bus/usb/${usb-symlink}"
             '';
-            #                --device "/dev/bus/usb/${fd}"
           };
         };
       };
@@ -221,10 +221,10 @@ in
 
     testScript = ''
       # prepare blockdevice images if necessary
-      #import os
-      #os.system("rm ${imagePathPart}")
-      #print("Creating file image at ${imagePathPart}")
-      #os.system("dd bs=1  count=1 seek=${imageSize} if=/dev/zero of=${imagePathPart}")
+      import os
+      os.system("rm ${imagePathPart}")
+      print("Creating file image at ${imagePathPart}")
+      os.system("dd bs=1  count=1 seek=${imageSize} if=/dev/zero of=${imagePathPart}")
 
       print("STARTING QEMU")
       start_all()
