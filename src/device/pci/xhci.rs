@@ -185,9 +185,13 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
 
             // xHC Extended Capability ("Supported Protocols Capability")
             offset::SUPPORTED_PROTOCOLS => capability::supported_protocols::CAP_INFO,
+            offset::SUPPORTED_PROTOCOLS_STRING => capability::USB_STRING,
             offset::SUPPORTED_PROTOCOLS_CONFIG => capability::supported_protocols::CONFIG,
+            offset::SUPPORTED_PROTOCOLS_CONFIG_RESERVED => 0,
             offset::SUPPORTED_PROTOCOLS_USB2 => capability::supported_protocols_usb2::CAP_INFO,
+            offset::SUPPORTED_PROTOCOLS_USB2_STRING => capability::USB_STRING,
             offset::SUPPORTED_PROTOCOLS_USB2_CONFIG => capability::supported_protocols_usb2::CONFIG,
+            offset::SUPPORTED_PROTOCOLS_USB2_CONFIG_RESERVED => 0,
 
             // xHC Operational Registers
             offset::USBCMD => 0,

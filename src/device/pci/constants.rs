@@ -244,9 +244,13 @@ pub mod xhci {
 
         /// Extended Capabilities
         pub const SUPPORTED_PROTOCOLS: u64 = 0x20;
+        pub const SUPPORTED_PROTOCOLS_STRING: u64 = 0x24;
         pub const SUPPORTED_PROTOCOLS_CONFIG: u64 = 0x28;
+        pub const SUPPORTED_PROTOCOLS_CONFIG_RESERVED: u64 = 0x2c;
         pub const SUPPORTED_PROTOCOLS_USB2: u64 = 0x30;
+        pub const SUPPORTED_PROTOCOLS_USB2_STRING: u64 = 0x34;
         pub const SUPPORTED_PROTOCOLS_USB2_CONFIG: u64 = 0x38;
+        pub const SUPPORTED_PROTOCOLS_USB2_CONFIG_RESERVED: u64 = 0x3c;
 
         /// Operational Register Offsets
         pub const USBCMD: u64 = super::OP_BASE;
@@ -293,6 +297,8 @@ pub mod xhci {
             (super::MAX_PORTS << 24) | (super::MAX_INTRS << 8) | super::MAX_SLOTS;
         pub const HCSPARAMS2: u64 = super::MAX_ERST_SIZE_EXP << 4;
         pub const HCCPARAMS1: u64 = super::offset::SUPPORTED_PROTOCOLS << 14;
+
+        pub const USB_STRING: u64 = 0x20425355;
 
         pub mod supported_protocols {
             const ID: u64 = 2;
