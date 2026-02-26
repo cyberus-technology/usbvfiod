@@ -15,3 +15,4 @@ pub mod traits;
 pub mod trb;
 pub mod usbrequest;
 pub mod xhci;
+pub mod xhci_async;
