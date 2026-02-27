@@ -609,6 +609,7 @@ impl TransferRing {
             }) => {
                 // happy case, we got a Data Stage TRB
                 if data.chain {
+                    // MARKER HIT WITH WINDOWS
                     todo!("encountered DataStage with chain bit set");
                 }
                 Ok(data)
