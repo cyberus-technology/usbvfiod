@@ -1,8 +1,7 @@
 //! Abstractions of the rings (Event Ring, Command Ring, Transfer Ring) of a
 //! USB3 Host (XHCI) controller.
 //!
-//! The specification is available
-//! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
+//! See XHCI specification Section 3.2.6 for an overview on rings.
 
 use thiserror::Error;
 use tracing::{debug, trace, warn};

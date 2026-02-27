@@ -1,3 +1,5 @@
+//! Register to notify changes from the xHC to system software.
+
 /// A simple PORTSC register implementation supporting RW1C bits.
 ///
 /// The PORTSC register requires us to initially set some bits and

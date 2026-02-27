@@ -1,4 +1,4 @@
-//! usbvfiod
+//! Passthrough of individual USB devices using the vfio-user protocol
 
 mod async_runtime;
 mod cli;

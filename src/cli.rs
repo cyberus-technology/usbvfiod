@@ -1,8 +1,8 @@
-//! This module implements the CLI interface.
+//! Implements the CLI interface.
 //!
 //! The main external constraint here is that we need to be compatible
 //! to the vfio-user [Backend Program
-//! Conventions](https://github.com/nutanix/libvfio-user/blob/master/docs/vfio-user.rst#backend-program-conventions).
+//! Conventions](https://www.qemu.org/docs/master/interop/vfio-user.html).
 use std::{
     os::fd::RawFd,
     path::{Path, PathBuf},

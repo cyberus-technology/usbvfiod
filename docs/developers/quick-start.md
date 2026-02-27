@@ -1,5 +1,7 @@
 # Quick Start
 
+The specification reference is available at [https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
+
 ## Testing with Cloud Hypervisor
 
 An easy way to get a testing setup is to connect `usbvfiod` with Cloud
