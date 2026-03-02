@@ -347,7 +347,7 @@ impl XhciController {
 
     fn write_portsc(&mut self, port_id: usize, value: u64) {
         self.portsc[port_id].write(value);
-        let status = Self::describe_portsc_status(value);
+        let status = Self::describe_portsc_status(self.portsc[port_id].read());
         let (version, id) = Self::version_relative_id(port_id).unwrap();
         trace!("{:?} port {} status: {}", version, id, status);
     }
