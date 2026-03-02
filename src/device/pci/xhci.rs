@@ -174,7 +174,7 @@ impl XhciController {
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
-            portsc: [PortscRegister::new(portsc::PP); MAX_PORTS as usize].into(),
+            portsc: [PortscRegister::new(portsc::PP | 0b010100000); MAX_PORTS as usize].into(),
         }
     }
 
