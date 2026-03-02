@@ -609,7 +609,39 @@ impl TransferRing {
             }) => {
                 // happy case, we got a Data Stage TRB
                 if data.chain {
-                    todo!("encountered DataStage with chain bit set");
+                    trace!("chain bit in DataStageTrb detected");
+                    loop {
+                        // SAFETY: according to spec there are an unknown number of data trb
+                        // in case of driver mistake this is not safe
+                        let next = self.next_transfer_trb();
+                        trace!("getting next trb: {:?}", next);
+                        match next {
+                            Some(TransferTrb {
+                                address: _,
+                                variant: TransferTrbVariant::DataStage(data),
+                            }) => {
+                                if !data.chain {
+                                    trace!("data trb without chain bit");
+                                    break;
+                                } else {
+                                    trace!("data trb with chain bit");
+                                }
+                            }
+                            a => {
+                                trace!(
+                                    "data trb with chain bit did not follow a data trb: {:?}",
+                                    a
+                                );
+                                loop {
+                                    let next = self.next_transfer_trb().unwrap();
+                                    trace!("getting next trb: {:?}", next);
+                                }
+                            }
+                        }
+                    }
+
+                    // MARKER HIT WITH WINDOWS
+                    //todo!("encountered DataStage with chain bit set");
                 }
                 Ok(data)
             }
