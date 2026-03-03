@@ -1,3 +1,5 @@
+//! Implementation for hardware interactions using the nusb crate.
+
 use anyhow::{Error, Result};
 use nusb::transfer::{
     Buffer, Bulk, BulkOrInterrupt, ControlIn, ControlOut, ControlType, In, Interrupt, Out,

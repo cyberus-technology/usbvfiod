@@ -1,4 +1,6 @@
-/// Represent a USB control request.
+//! Represents a USB control request.
+
+/// Represents a USB control request.
 ///
 /// For documentation of the fields other than `address`, see Section "9.3 USB
 /// Device Requests" in the USB 2.0 specification.

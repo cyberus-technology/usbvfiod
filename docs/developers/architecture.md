@@ -34,7 +34,7 @@ graph LR
 ```
 
 `usbvfiod` connects to Cloud Hypervisor via the [`vfio-user`
-protocol](https://github.com/nutanix/libvfio-user/blob/master/docs/vfio-user.rst). It
+protocol](https://www.qemu.org/docs/master/interop/vfio-user.html). It
 emulates a [USB host
 controller](https://en.wikipedia.org/wiki/Extensible_Host_Controller_Interface)
 for the VM running inside of Cloud Hypervisor.
@@ -57,7 +57,7 @@ because it creates a large single point of failure and security
 liability.
 
 `usbvfiod` adheres to the `vfio-user` [Backend Program
-Conventions](https://github.com/nutanix/libvfio-user/blob/master/docs/vfio-user.rst#backend-program-conventions).
+Conventions](https://www.qemu.org/docs/master/interop/vfio-user.html#backend-program-conventions).
 
 ### Sandboxing
 

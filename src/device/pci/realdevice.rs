@@ -1,3 +1,5 @@
+//! Trait required for hardware interactions.
+
 use crate::device::{bus::BusDeviceRef, interrupt_line::InterruptLine};
 
 use super::rings::{EventRing, TransferRing};

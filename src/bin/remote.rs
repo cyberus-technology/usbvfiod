@@ -9,9 +9,7 @@
 #![deny(missing_debug_implementations)]
 #![deny(rustdoc::all)]
 
-//! remote
-//!
-//! Command-line tool to attach/detach/list USB devices to/from usbvfiod.
+//! Command-line tool to attach/detach/list USB devices to/from usbvfiod at runtime.
 
 use std::{
     os::unix::net::UnixStream,

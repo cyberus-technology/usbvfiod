@@ -1,7 +1,6 @@
 //! Emulation of a USB3 Host (XHCI) controller.
 //!
-//! The specification is available
-//! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
+//! See XHCI specification Section 3 for an overview about the scope of the xHC.
 
 use std::sync::{
     atomic::{fence, Ordering},
@@ -75,10 +74,11 @@ impl<T, const S: usize> OneIndexed<T, S> {
     }
     /// Enumerating elements with correct index.
     ///
-    /// Using some_one_indexed.iter().enumerate() generates an iterator like
-    /// (0, some_one_indexed[1]), (1, some_one_indexed[2]), ...
-    /// some_one_indexed.enumerate instead generates an iterator like
-    /// (1, some_one_indexed[1]), (2, some_one_indexed[2]), ...
+    /// Using `some_one_indexed.iter().enumerate()` generates an iterator like
+    /// `(0, some_one_indexed[1]), (1, some_one_indexed[2]), ...`
+    ///
+    /// Using `some_one_indexed.enumerate()` instead generates an iterator like
+    /// `(1, some_one_indexed[1]), (2, some_one_indexed[2]), ...`
     ///
     /// This method is useful for avoiding manual "one-shifting" when trying to
     /// filter for the indices of items with specific properties.

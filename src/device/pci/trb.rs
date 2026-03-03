@@ -1,7 +1,6 @@
-//! Abstraction of the Transfer Request Block of a USB3 Host (XHCI) controller.
+//! Abstraction of the Transfer Request Block (TRB) of a USB3 Host (XHCI) controller.
 //!
-//! The specification is available
-//! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
+//! See XHCI specification Section 3.2.7 for an overview on TRB.
 
 use thiserror::Error;
 
