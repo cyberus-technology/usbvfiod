@@ -785,7 +785,7 @@ pub enum TransferTrbVariant {
     StatusStage(StatusStageTrbData),
     Isoch,
     Link(LinkTrbData),
-    EventData,
+    EventData(EventDataTrbData),
     NoOp,
     #[allow(unused)]
     Unrecognized(RawTrbBuffer, TrbParseError),
@@ -813,7 +813,7 @@ impl TransferTrbVariant {
             trb_types::STATUS_STAGE => parse(Self::StatusStage, bytes),
             trb_types::ISOCH => Self::Isoch,
             trb_types::LINK => parse(Self::Link, bytes),
-            trb_types::EVENT_DATA => Self::EventData,
+            trb_types::EVENT_DATA => parse(Self::EventData, bytes),
             trb_types::NO_OP => Self::NoOp,
             trb_type => Self::Unrecognized(bytes, TrbParseError::UnknownTrbType(trb_type)),
         }
@@ -987,6 +987,48 @@ impl TrbData for StatusStageTrbData {
             chain,
             interrupt_on_completion,
             direction,
+        })
+    }
+}
+
+/// Event Data TRB data structure.
+///
+/// See XHCI specification Section 6.4.4.2 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct EventDataTrbData {
+    pub event_data: u64,
+    pub chain: bool,
+    pub interrupt_on_completion: bool,
+}
+
+impl TrbData for EventDataTrbData {
+    /// Parse data of a Event Data TRB.
+    ///
+    /// Only `TransferTrb::try_from` should call this function.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects RsvdZ
+    /// fields.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::EVENT_DATA,
+            trb_type,
+            "EventDataTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
+        );
+
+        // SAFETY: range matches array length
+        let ed_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
+        let event_data = u64::from_le_bytes(ed_bytes);
+
+        let chain = trb_bytes[12] & 0x10 != 0;
+        let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
+
+        Ok(Self {
+            event_data,
+            chain,
+            interrupt_on_completion,
         })
     }
 }
