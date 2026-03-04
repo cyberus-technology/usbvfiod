@@ -781,7 +781,7 @@ pub enum TransferTrbVariant {
     Normal(NormalTrbData),
     SetupStage(SetupStageTrbData),
     DataStage(DataStageTrbData),
-    StatusStage,
+    StatusStage(StatusStageTrbData),
     Isoch,
     Link(LinkTrbData),
     EventData,
@@ -809,7 +809,7 @@ impl TransferTrbVariant {
             trb_types::NORMAL => parse(Self::Normal, bytes),
             trb_types::SETUP_STAGE => parse(Self::SetupStage, bytes),
             trb_types::DATA_STAGE => parse(Self::DataStage, bytes),
-            trb_types::STATUS_STAGE => Self::StatusStage,
+            trb_types::STATUS_STAGE => parse(Self::StatusStage, bytes),
             trb_types::ISOCH => Self::Isoch,
             trb_types::LINK => parse(Self::Link, bytes),
             trb_types::EVENT_DATA => Self::EventData,
@@ -947,6 +947,45 @@ impl TrbData for DataStageTrbData {
         Ok(Self {
             data_pointer,
             chain,
+        })
+    }
+}
+
+/// Status Stage TRB data structure.
+///
+/// See XHCI specification Section 6.4.1.2.3 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StatusStageTrbData {
+    pub chain: bool,
+    pub interrupt_on_completion: bool,
+    pub direction: bool,
+}
+
+impl TrbData for StatusStageTrbData {
+    /// Parse data of a Status Stage TRB.
+    ///
+    /// Only `TransferTrb::try_from` should call this function.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects RsvdZ
+    /// fields.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::STATUS_STAGE,
+            trb_type,
+            "StatusStageTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
+        );
+
+        let chain = trb_bytes[12] & 0x10 != 0;
+        let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
+        let direction = trb_bytes[14] & 0x1 != 0;
+
+        Ok(Self {
+            chain,
+            interrupt_on_completion,
+            direction,
         })
     }
 }
@@ -1112,6 +1151,20 @@ mod tests {
         let expected = TransferTrbVariant::DataStage(DataStageTrbData {
             data_pointer: 0x1122334455667788,
             chain: false,
+        });
+        assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
+    }
+
+    #[test]
+    fn test_parse_status_stage_trb() {
+        let trb_bytes = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x10,
+            0x01, 0x00,
+        ];
+        let expected = TransferTrbVariant::StatusStage(StatusStageTrbData {
+            chain: true,
+            interrupt_on_completion: true,
+            direction: true,
         });
         assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
     }
