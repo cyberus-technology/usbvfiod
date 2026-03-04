@@ -4,6 +4,7 @@
 //! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
 
 use thiserror::Error;
+use tracing::warn;
 
 use super::constants::xhci::rings::trb_types::{self, *};
 
@@ -358,7 +359,6 @@ pub enum CommandTrbVariant {
     ResetDevice(ResetDeviceCommandTrbData),
     ForceHeader,
     NoOp,
-    Link(LinkTrbData),
     Unrecognized(RawTrbBuffer, TrbParseError),
 }
 
@@ -379,7 +379,6 @@ impl CommandTrbVariant {
     pub fn parse(bytes: RawTrbBuffer) -> Self {
         let trb_type = bytes[13] >> 2;
         match trb_type {
-            trb_types::LINK => parse(Self::Link, bytes),
             // EnableSlotCommand does not contain information apart from the
             // type; thus, no further parsing is necessary and we can just
             // return the enum variant.
@@ -428,43 +427,34 @@ impl CommandTrbVariant {
 ///
 /// See XHCI specification Section 6.4.4.1 for detailed descriptions
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinkTrbData {
+pub struct LinkTrb {
     /// The address of the next ring segment.
     pub ring_segment_pointer: u64,
     /// The flag that indicates whether to toggle the cycle bit.
     pub toggle_cycle: bool,
 }
 
-impl TrbData for LinkTrbData {
+impl LinkTrb {
     /// Parse data of a Link TRB.
-    ///
-    /// Only `CommandTrb::try_from` and `TransferTrb::try_from` should call
-    /// this function.
-    ///
-    /// # Limitations
-    ///
-    /// The function currently does not check if the slice respects all RsvdZ
-    /// fields.
-    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+    pub fn parse(trb_bytes: RawTrbBuffer) -> Option<Self> {
         let trb_type = trb_bytes[13] >> 2;
-        assert_eq!(
-            trb_types::LINK,
-            trb_type,
-            "LinkTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
-        );
+        if trb_type != trb_types::LINK {
+            return None;
+        }
 
         // SAFETY: range matches array length
         let rsp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
-        let ring_segment_pointer = u64::from_le_bytes(rsp_bytes);
+        let mut ring_segment_pointer = u64::from_le_bytes(rsp_bytes);
         let toggle_cycle = trb_bytes[12] & 0x2 != 0;
 
         // the lowest four bit of the pointer are RsvdZ to ensure 16-byte
         // alignment.
         if ring_segment_pointer & 0xf != 0 {
-            return Err(TrbParseError::RsvdZViolation);
+            warn!("RsvdZ violation in link TRB");
+            ring_segment_pointer &= !0xf;
         }
 
-        Ok(Self {
+        Some(Self {
             ring_segment_pointer,
             toggle_cycle,
         })
@@ -784,7 +774,6 @@ pub enum TransferTrbVariant {
     DataStage(DataStageTrbData),
     StatusStage,
     Isoch,
-    Link(LinkTrbData),
     EventData,
     NoOp,
     #[allow(unused)]
@@ -812,7 +801,6 @@ impl TransferTrbVariant {
             trb_types::DATA_STAGE => parse(Self::DataStage, bytes),
             trb_types::STATUS_STAGE => Self::StatusStage,
             trb_types::ISOCH => Self::Isoch,
-            trb_types::LINK => parse(Self::Link, bytes),
             trb_types::EVENT_DATA => Self::EventData,
             trb_types::NO_OP => Self::NoOp,
             trb_type => Self::Unrecognized(bytes, TrbParseError::UnknownTrbType(trb_type)),
@@ -968,25 +956,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_link_trb() {
+        let trb_bytes = [
+            0x80, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x02, 0x18,
+            0x00, 0x00,
+        ];
+        let expected = Some(LinkTrb {
+            ring_segment_pointer: 0x1122334455667780,
+            toggle_cycle: true,
+        });
+        assert_eq!(LinkTrb::parse(trb_bytes), expected);
+    }
+
+    #[test]
     fn parse_enable_slot_command_trb() {
         let trb_bytes = [
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24,
             0x00, 0x00,
         ];
         let expected = CommandTrbVariant::EnableSlot;
-        assert_eq!(CommandTrbVariant::parse(trb_bytes), expected);
-    }
-
-    #[test]
-    fn parse_link_trb_as_command() {
-        let trb_bytes = [
-            0x80, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x02, 0x18,
-            0x00, 0x00,
-        ];
-        let expected = CommandTrbVariant::Link(LinkTrbData {
-            ring_segment_pointer: 0x1122334455667780,
-            toggle_cycle: true,
-        });
         assert_eq!(CommandTrbVariant::parse(trb_bytes), expected);
     }
 
@@ -1058,19 +1046,6 @@ mod tests {
             ],
             trb.to_bytes(true),
         );
-    }
-
-    #[test]
-    fn test_parse_link_trb_as_transfer() {
-        let trb_bytes = [
-            0x80, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x02, 0x18,
-            0x00, 0x00,
-        ];
-        let expected = TransferTrbVariant::Link(LinkTrbData {
-            ring_segment_pointer: 0x1122334455667780,
-            toggle_cycle: true,
-        });
-        assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
     }
 
     #[test]
