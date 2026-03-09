@@ -877,6 +877,7 @@ pub struct SetupStageTrbData {
     pub value: u16,
     pub index: u16,
     pub length: u16,
+    pub interrupt_on_completion: bool,
 }
 
 impl TrbData for SetupStageTrbData {
@@ -901,6 +902,7 @@ impl TrbData for SetupStageTrbData {
         let value = trb_bytes[2] as u16 + ((trb_bytes[3] as u16) << 8);
         let index = trb_bytes[4] as u16 + ((trb_bytes[5] as u16) << 8);
         let length = trb_bytes[6] as u16 + ((trb_bytes[7] as u16) << 8);
+        let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
 
         Ok(Self {
             request_type,
@@ -908,6 +910,7 @@ impl TrbData for SetupStageTrbData {
             value,
             index,
             length,
+            interrupt_on_completion,
         })
     }
 }
@@ -1180,6 +1183,7 @@ mod tests {
             value: 0x3344,
             index: 0x5566,
             length: 0x7788,
+            interrupt_on_completion: false,
         });
         assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
     }
