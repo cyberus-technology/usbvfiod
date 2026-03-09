@@ -1229,4 +1229,18 @@ mod tests {
         });
         assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
     }
+
+    #[test]
+    fn test_parse_event_data_trb() {
+        let trb_bytes = [
+            0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x10, 0x00, 0x00, 0x00, 0x30, 0x1c,
+            0x00, 0x00,
+        ];
+        let expected = TransferTrbVariant::EventData(EventDataTrbData {
+            event_data: 0x1122334455667788,
+            chain: true,
+            interrupt_on_completion: true,
+        });
+        assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
+    }
 }
