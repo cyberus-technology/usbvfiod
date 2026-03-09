@@ -922,7 +922,10 @@ impl TrbData for SetupStageTrbData {
 #[derive(Debug, PartialEq, Eq)]
 pub struct DataStageTrbData {
     pub data_pointer: u64,
+    pub transfer_length: u16,
     pub chain: bool,
+    pub interrupt_on_completion: bool,
+    pub direction: bool,
 }
 
 impl TrbData for DataStageTrbData {
@@ -946,11 +949,19 @@ impl TrbData for DataStageTrbData {
         let dp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
         let data_pointer = u64::from_le_bytes(dp_bytes);
 
+        let tl_bytes: [u8; 2] = trb_bytes[8..10].try_into().unwrap();
+        let transfer_length = u16::from_le_bytes(tl_bytes);
+
         let chain = trb_bytes[12] & 0x10 != 0;
+        let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
+        let direction = trb_bytes[14] & 0x1 != 0;
 
         Ok(Self {
             data_pointer,
+            transfer_length,
             chain,
+            interrupt_on_completion,
+            direction,
         })
     }
 }
@@ -1192,12 +1203,15 @@ mod tests {
     #[test]
     fn test_parse_data_stage_trb() {
         let trb_bytes = [
-            0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c,
+            0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x10, 0x00, 0x00, 0x00, 0x00, 0x0c,
             0x00, 0x00,
         ];
         let expected = TransferTrbVariant::DataStage(DataStageTrbData {
             data_pointer: 0x1122334455667788,
+            transfer_length: 0x0010,
             chain: false,
+            interrupt_on_completion: false,
+            direction: false,
         });
         assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
     }
