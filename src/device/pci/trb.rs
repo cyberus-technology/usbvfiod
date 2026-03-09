@@ -1215,4 +1215,18 @@ mod tests {
         });
         assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
     }
+
+    #[test]
+    fn test_parse_status_stage_trb() {
+        let trb_bytes = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x10,
+            0x01, 0x00,
+        ];
+        let expected = TransferTrbVariant::StatusStage(StatusStageTrbData {
+            chain: true,
+            interrupt_on_completion: true,
+            direction: true,
+        });
+        assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
+    }
 }
