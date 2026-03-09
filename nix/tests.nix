@@ -474,12 +474,6 @@ let
         imports = [ basicMachineConfig ];
 
         services = {
-          # The framework automatically forwards all journal output to ttyS0,
-          # slowing down the test significantly if there is a lot of logs.
-          journald.extraConfig = lib.mkForce ''
-            ForwardToConsole=yes
-            TTYPath=/dev/hvc1
-          '';
           # Create a udev rule for every device listed that enables it.
           udev.extraRules = lib.concatStrings (
             builtins.map (
@@ -543,7 +537,7 @@ let
               RestartSec = "2s";
               ExecStart = ''
                 ${lib.getExe usbvfiod} ${
-                  if args.debug then "-v" else ""
+                  if args.debug then "-vv" else ""
                 } --socket-path ${usbvfiodSocket} --hotplug-socket-path ${usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
               '';
             };

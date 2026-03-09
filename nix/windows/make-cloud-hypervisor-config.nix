@@ -13,7 +13,7 @@ let
   mkOptionName = k: if builtins.stringLength k == 1 then "-${k}" else "--${k}";
 in
 
-lib.cli.toGNUCommandLineShell { mkList = k: v: [ (mkOptionName k) ] ++ v; } ({
+lib.cli.toGNUCommandLineShell { mkList = k: v: [ (mkOptionName k) ] ++ v; } {
   inherit kernel;
   disk = "path=${diskPath}";
   cpus = "boot=${toString vcpus},kvm_hyperv=on";
@@ -22,4 +22,4 @@ lib.cli.toGNUCommandLineShell { mkList = k: v: [ (mkOptionName k) ] ++ v; } ({
   serial = "tty";
   console = "off";
   net = "tap=tap0,mac=,ip=192.168.249.1,mask=255.255.255.0";
-})
+}
