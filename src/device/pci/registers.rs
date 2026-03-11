@@ -39,6 +39,13 @@ impl PortscRegister {
         let bits_to_clear = new_value & self.bitmask_rw1c;
         self.value &= !bits_to_clear;
     }
+
+    pub const fn set_bit(&mut self, new_value: u64) {
+        self.value |= new_value;
+    }
+    pub const fn unset_bit(&mut self, index: u8) {
+        self.value &= !(1 << index);
+    }
 }
 
 #[cfg(test)]

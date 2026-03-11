@@ -3,10 +3,14 @@
 //! The specification is available
 //! [here](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf).
 
-use std::sync::{
-    atomic::{fence, Ordering},
-    Arc, Mutex,
+use std::{
+    sync::{
+        atomic::{fence, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
 };
+use tokio::time::{sleep_until, Instant};
 use tracing::{debug, info, trace, warn};
 
 use crate::device::{
@@ -222,15 +226,27 @@ impl XhciController {
                 };
 
             self.devices[available_port_id] = Some(device);
-            self.portsc[available_port_id] = PortscRegister::new(
-                portsc::CCS
-                    | portsc::PED
-                    | portsc::PP
-                    | portsc::CSC
-                    | portsc::PEC
-                    | portsc::PRC
-                    | (speed as u64) << 10,
-            );
+
+            // spec: 4.3.
+            self.portsc[available_port_id] = match version {
+                UsbVersion::USB3 => PortscRegister::new(
+                    portsc::CCS
+                        | portsc::PED
+                        | portsc::PP
+                        | portsc::CSC
+                        | portsc::PEC
+                        | portsc::PRC
+                        | (speed as u64) << 10,
+                ),
+                UsbVersion::USB2 => {
+                    PortscRegister::new(
+                        portsc::CCS | portsc::PP | portsc::CSC | 0b011100000 // polling
+                                                                              //| portsc::PEC // not mentioned
+                                                                              //| portsc::PRC // not mentioned
+                                                                              | (speed as u64) << 10,
+                    )
+                }
+            };
 
             // Safety: the call for the same id succeeded before in the filter.
             let port_id = Self::version_relative_id(available_port_id).unwrap().1;
@@ -347,9 +363,52 @@ impl XhciController {
 
     fn write_portsc(&mut self, port_id: usize, value: u64) {
         self.portsc[port_id].write(value);
-        let status = Self::describe_portsc_status(value);
-        let (version, id) = Self::version_relative_id(port_id).unwrap();
-        trace!("{:?} port {} status: {}", version, id, status);
+        let (version, _id) = Self::version_relative_id(port_id).unwrap();
+
+        if value & portsc::CSC != 0 {
+            self.portsc[port_id].unset_bit(17); // CSC
+        }
+
+        if value & portsc::PR != 0 {
+            match version {
+                UsbVersion::USB2 => {
+                    // PLS Transition: RxDetect -> U0
+                    self.portsc[port_id].unset_bit(5);
+                    self.portsc[port_id].unset_bit(6);
+                    self.portsc[port_id].unset_bit(7);
+                    self.portsc[port_id].unset_bit(8);
+
+                    // Port Enable/Disable
+                    self.portsc[port_id].set_bit(portsc::PED);
+
+                    // Port Reset Change
+                    self.portsc[port_id].set_bit(portsc::PRC);
+
+                    // Over-current Change
+                    // no condition met, no action
+
+                    // Port Link Status Change
+                    // no condition met, no action
+
+                    // Port Config Error Change
+                    // no condition met, no action
+                }
+                UsbVersion::USB3 => {
+                    // Port Reset Change
+                    self.portsc[port_id].set_bit(portsc::PRC);
+                }
+            }
+        }
+
+        /*
+        // if value had a PR (port reset) then we immediately confirm and set PRC (port reset change)
+        if value & portsc::PR != 0 {
+            // instantly confirm the reset as successful
+            self.portsc[port_id].set_bit(portsc::PR);
+            self.send_port_status_change_event(port_id as u8);
+
+            self.portsc[port_id].unset_bit(4); // PR
+        */
     }
 
     /// Configure the interrupt line for the controller.
