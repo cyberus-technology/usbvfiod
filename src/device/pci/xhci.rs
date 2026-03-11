@@ -372,6 +372,18 @@ impl XhciController {
         if value & portsc::PR != 0 {
             match version {
                 UsbVersion::USB2 => {
+                    // Set PR bit
+                    self.portsc[port_id].set_bit(portsc::PR);
+
+                    // tell the driver to observe the reset procedure is ongoing
+                    self.send_port_status_change_event(port_id as u8);
+
+                    // make sure the 10ms in port reset phase are guaranteed
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+
+                    // Remove PR bit
+                    self.portsc[port_id].unset_bit(4);
+
                     // PLS Transition: RxDetect -> U0
                     self.portsc[port_id].unset_bit(5);
                     self.portsc[port_id].unset_bit(6);
