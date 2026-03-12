@@ -437,6 +437,7 @@ fn interrupt_on_completion(
 #[derive(PartialEq, Eq)]
 enum ControlTransferState {
     None,
+    Error,
     SetupStage,
     DataStage,
     StatusStage,
@@ -523,6 +524,8 @@ async fn control_worker(
                 trace!("Control Chain Stage: None -> SetupStage");
                 state = ControlTransferState::SetupStage;
                 edtla = 0;
+            } else if state == ControlTransferState::Error {
+                trace!("Control Chain Stage: Error, attempting to clean the broken Control Transfer Chain");
             } else if state == ControlTransferState::SetupStage
                 && matches!(current_trb.variant, TransferTrbVariant::DataStage(_))
             {
@@ -561,6 +564,36 @@ async fn control_worker(
                 ControlTransferState::None => {
                     panic!("We should never get here without recognizing a SetupStage TRB");
                 }
+                ControlTransferState::Error => match current_trb {
+                    TransferTrb {
+                        address: _,
+                        variant: TransferTrbVariant::DataStage(_),
+                    } => {
+                        trace!("in Error State, skipping data stage trb");
+                    }
+                    TransferTrb {
+                        address: _,
+                        variant: TransferTrbVariant::EventData(_),
+                    } => {
+                        trace!("in Error State, skipping event data trb");
+                    }
+                    TransferTrb {
+                        address: _,
+                        variant: TransferTrbVariant::StatusStage(status_stage_trb_data),
+                    } => {
+                        trace!("in Error State, skipping status stage");
+
+                        // Status Stage Trb is usually last, unless followed by a single event data.
+                        if status_stage_trb_data.chain {
+                            worker_info.transfer_ring.next_transfer_trb();
+                            trace!("in Error State, skipping event data after status stage");
+                        }
+                        break;
+                    }
+                    _ => {
+                        todo!()
+                    }
+                },
                 ControlTransferState::SetupStage => match current_trb {
                     TransferTrb {
                         address: _,
@@ -581,7 +614,8 @@ async fn control_worker(
                                 edtla += 8;
                             }
                             Err(e) => {
-                                todo!("handle the errors in a control chain properly (clear remaining chain from TransferRing) {e}");
+                                warn!("some TransferError: {e}");
+                                state = ControlTransferState::Error;
                             }
                         }
                     }
