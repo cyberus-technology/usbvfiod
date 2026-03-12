@@ -285,11 +285,6 @@ async fn handle_data_stage_trb(
         // slice the data and handle each trb
         ControlTransferDirection::In => {
             trace!("DataStage TRB with ControlIn");
-            trace!(
-                ">>>>>>>>>>>>>> DataStage TRB TRBDATA{:?}",
-                data_stage_trb_data
-            );
-            trace!(">>>>>>>>>>>>>> DataStage TRB DATA {:?}", data.len());
 
             let byte_slice: Vec<u8> = data
                 .drain(0..data_stage_trb_data.transfer_length.into())
