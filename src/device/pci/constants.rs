@@ -21,6 +21,9 @@ pub const MAX_DEVICE_FUNCTIONS: usize = 8;
 /// The maximum number of devices on a PCI segment.
 pub const MAX_DEVICES: usize = MAX_BUSES * MAX_BUS_DEVICES * MAX_DEVICE_FUNCTIONS;
 
+/// Convenience when using only the first 24 bit.
+pub const MASK_24BIT: u64 = 0xffffff;
+
 /// Constants related to the configuration space.
 pub mod config_space {
 

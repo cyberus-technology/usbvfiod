@@ -12,6 +12,7 @@ use tracing::{debug, trace, warn};
 
 use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
+use crate::device::pci::constants::MASK_24BIT;
 use crate::device::pci::trb::{
     CompletionCode, DataStageTrbData, EventDataTrbData, EventTrb, SetupStageTrbData,
     StatusStageTrbData,
@@ -223,6 +224,7 @@ async fn handle_setup_stage_trb(
     control: &mut ControlTransferDirection<'_>,
     device: &nusb::Device,
     data: &mut Vec<u8>,
+    previous_completion_code: &mut CompletionCode,
 ) -> Result<(), TransferError> {
     let (recipient, control_type) = extract_recipient_and_type(setup_stage_trb_data.request_type);
 
@@ -246,6 +248,7 @@ async fn handle_setup_stage_trb(
                 data.append(&mut device_data);
 
                 data.resize(setup_stage_trb_data.length as usize, 0);
+                *previous_completion_code = CompletionCode::Success;
             }
             Err(error) => {
                 warn!("control in request failed: {:?}", error);
@@ -275,6 +278,7 @@ async fn handle_data_stage_trb(
     address: u64,
     data_stage_trb_data: DataStageTrbData,
     worker_info: &EndpointWorkerInfo,
+    edtla: &mut u64,
     control: &ControlTransferDirection<'_>,
     data: &mut Vec<u8>,
     dma_bus: BusDeviceRef,
@@ -284,16 +288,29 @@ async fn handle_data_stage_trb(
         ControlTransferDirection::In => {
             trace!("DataStage TRB with ControlIn");
 
+            // All is done but to have to expected value in the Event we keep
+            // count of singular pretend transfers.
+            *edtla += data_stage_trb_data.transfer_length as u64;
+
             let byte_slice: Vec<u8> = data
                 .drain(0..data_stage_trb_data.transfer_length.into())
                 .collect();
 
-            trace!("DataStage TRB slice: {:?}", byte_slice);
+            trace!(
+                "DataStage TRB len: {} slice: {:?}",
+                byte_slice.len(),
+                byte_slice
+            );
             dma_bus.write_bulk(data_stage_trb_data.data_pointer, &byte_slice);
         }
         // accumulate data needed for ControlOut from all TRB's of the stage
         ControlTransferDirection::Out(_) => {
             trace!("DataStage TRB with ControlOut");
+
+            // All is done but to have to expected value in the Event we keep
+            // count of singular pretend transfers.
+            *edtla += data_stage_trb_data.transfer_length as u64;
+
             let mut byte_slice = vec![0; data_stage_trb_data.transfer_length as usize];
             dma_bus.read_bulk(data_stage_trb_data.data_pointer, &mut byte_slice);
             data.append(&mut byte_slice);
@@ -318,6 +335,7 @@ async fn handle_status_stage_trb(
     control: &mut ControlTransferDirection<'_>,
     device: &nusb::Device,
     data: &Vec<u8>,
+    previous_completion_code: &mut CompletionCode,
 ) -> Result<(), TransferError> {
     match control {
         ControlTransferDirection::In => {
@@ -347,6 +365,7 @@ async fn handle_status_stage_trb(
             {
                 Ok(_) => {
                     debug!("control out success");
+                    *previous_completion_code = CompletionCode::Success;
                 }
                 Err(error) => {
                     warn!("control in request failed: {:?}", error);
@@ -370,18 +389,17 @@ async fn handle_event_data_trb(
     event_data_trb_data: &EventDataTrbData,
     worker_info: &EndpointWorkerInfo,
     edtla: &mut u64,
+    previous_completion_code: &CompletionCode,
 ) {
     trace!("EventData TRB");
 
-    // TODO get completion code of previous trb
-    let completion_code = CompletionCode::Success;
-
-    // TODO use edtla correctly -> does that mean "just" implement remaining bytes?
+    // Edlta is supposed to be a 24 bit value, it being larger is a spec violation.
+    let masked_edtla = (MASK_24BIT & *edtla) as u32;
 
     let event = EventTrb::new_transfer_event_trb(
         event_data_trb_data.event_data,
-        0, // residual bytes are not counted right now
-        completion_code,
+        masked_edtla, // residual bytes unless from an event data, then edtla
+        *previous_completion_code,
         true,
         worker_info.endpoint_id,
         worker_info.slot_id,
@@ -445,6 +463,7 @@ async fn control_worker(
     loop {
         let mut state = ControlTransferState::None;
         let mut current_trb: TransferTrb;
+        let mut previous_completion_code = CompletionCode::UndefinedError;
 
         // A data buffer since nusb does not take individual control request TRB
         // but only a whole chain.
@@ -519,7 +538,6 @@ async fn control_worker(
                     || matches!(current_trb.variant, TransferTrbVariant::EventData(_)))
             {
                 trace!("Control Chain Stage: DataStage -> DataStage");
-                edtla += 1;
             } else if state == ControlTransferState::DataStage
                 && (matches!(current_trb.variant, TransferTrbVariant::StatusStage(_))
                     || matches!(current_trb.variant, TransferTrbVariant::EventData(_)))
@@ -531,7 +549,6 @@ async fn control_worker(
                 && matches!(current_trb.variant, TransferTrbVariant::EventData(_))
             {
                 trace!("Control Chain Stage: StatusStage -> StatusStage");
-                edtla += 1;
             } else {
                 panic!("wrong order or unexpected {:?}", current_trb.variant);
             }
@@ -554,10 +571,13 @@ async fn control_worker(
                             &mut control,
                             &device,
                             &mut data,
+                            &mut previous_completion_code,
                         )
                         .await
                         {
-                            Ok(_) => {}
+                            Ok(_) => {
+                                edtla += 8;
+                            }
                             Err(e) => {
                                 todo!("handle the errors in a control chain properly (clear remaining chain from TransferRing) {e}");
                             }
@@ -574,6 +594,7 @@ async fn control_worker(
                             address,
                             data_stage_trb_data,
                             &worker_info,
+                            &mut edtla,
                             &control,
                             &mut data,
                             worker_info.dma_bus.clone(),
@@ -589,6 +610,7 @@ async fn control_worker(
                             &event_data_trb_data,
                             &worker_info,
                             &mut edtla,
+                            &previous_completion_code,
                         )
                         .await;
                     }
@@ -606,10 +628,13 @@ async fn control_worker(
                             &mut control,
                             &device,
                             &data,
+                            &mut previous_completion_code,
                         )
                         .await
                         {
-                            Ok(_) => {}
+                            Ok(_) => {
+                                edtla += 8;
+                            }
                             Err(e) => {
                                 todo!("handle the errors in a control chain properly (clear remaining chain from TransferRing) {e}");
                             }
@@ -629,6 +654,7 @@ async fn control_worker(
                             &event_data_trb_data,
                             &worker_info,
                             &mut edtla,
+                            &previous_completion_code,
                         )
                         .await;
 
