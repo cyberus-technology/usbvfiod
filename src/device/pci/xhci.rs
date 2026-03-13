@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{fence, Ordering},
     Arc, Mutex,
 };
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use crate::device::{
     bus::{BusDeviceRef, Request, SingleThreadedBusDevice},
@@ -347,9 +347,6 @@ impl XhciController {
 
     fn write_portsc(&mut self, port_id: usize, value: u64) {
         self.portsc[port_id].write(value);
-        let status = Self::describe_portsc_status(value);
-        let (version, id) = Self::version_relative_id(port_id).unwrap();
-        trace!("{:?} port {} status: {}", version, id, status);
     }
 
     /// Configure the interrupt line for the controller.
@@ -429,16 +426,6 @@ impl XhciController {
         debug!("Ding Dong!");
         while let Some(cmd) = self.command_ring.next_command_trb() {
             self.handle_command(cmd);
-        }
-    }
-
-    const fn describe_portsc_status(value: u64) -> &'static str {
-        if value & portsc::CCS != 0 {
-            "device connected"
-        } else if value & portsc::PP != 0 {
-            "empty port"
-        } else {
-            "port powered off"
         }
     }
 
