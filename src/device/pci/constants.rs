@@ -326,29 +326,45 @@ pub mod xhci {
             pub const CRR: u64 = 0x8;
         }
 
+        /// See xhci specification chapter 5.4.8
+        ///
+        /// Tuple of offset and length of the specific field in the portsc register.
         pub mod portsc {
-            pub const CCS: u64 = 0x1;
-            pub const PED: u64 = 0x2;
-            pub const OCA: u64 = 0x8;
-            pub const PR: u64 = 0x10;
-            pub const PLS: u64 = 0x1e0;
-            pub const PP: u64 = 0x200;
-            pub const PORT_SPEED: u64 = 0x3c00;
-            pub const PIC: u64 = 0xc000;
-            pub const LWS: u64 = 0x10000;
-            pub const CSC: u64 = 0x20000;
-            pub const PEC: u64 = 0x40000;
-            pub const WRC: u64 = 0x80000;
-            pub const OCC: u64 = 0x100000;
-            pub const PRC: u64 = 0x200000;
-            pub const PLC: u64 = 0x400000;
-            pub const CEC: u64 = 0x800000;
-            pub const CAS: u64 = 0x1000000;
-            pub const WCE: u64 = 0x2000000;
-            pub const WDE: u64 = 0x4000000;
-            pub const WOE: u64 = 0x8000000;
-            pub const DR: u64 = 0x40000000;
-            pub const WPR: u64 = 0x80000000;
+            pub const CCS: (u64, u64) = (0, 1);
+            pub const PED: (u64, u64) = (1, 1);
+            pub const OCA: (u64, u64) = (3, 1);
+            pub const PR: (u64, u64) = (4, 1);
+            pub const PLS: (u64, u64) = (5, 4);
+            pub const PP: (u64, u64) = (9, 1);
+            pub const PORT_SPEED: (u64, u64) = (10, 4);
+            pub const PIC: (u64, u64) = (14, 1);
+            pub const LWS: (u64, u64) = (16, 1);
+            pub const CSC: (u64, u64) = (17, 1);
+            pub const PEC: (u64, u64) = (18, 1);
+            pub const WRC: (u64, u64) = (19, 1);
+            pub const OCC: (u64, u64) = (20, 1);
+            pub const PRC: (u64, u64) = (21, 1);
+            pub const PLC: (u64, u64) = (22, 1);
+            pub const CEC: (u64, u64) = (23, 1);
+            pub const CAS: (u64, u64) = (24, 1);
+            pub const WCE: (u64, u64) = (25, 1);
+            pub const WDE: (u64, u64) = (26, 1);
+            pub const WOE: (u64, u64) = (27, 1);
+            pub const PDR: (u64, u64) = (30, 1);
+            pub const WPR: (u64, u64) = (31, 1);
+
+            // This should be moved when other registers than portsc would use this
+            /// A bitmask with bits in the specified field set to 1.
+            pub const fn mask(field: (u64, u64)) -> u64 {
+                (!0u64 >> (64 - field.1)) << field.0
+            }
+
+            /// Some values of some portsc fields when the field is larger than one bit.
+            pub mod value {
+                pub const PLS_U0: u64 = 0b0000;
+                pub const PLS_RXDETECT: u64 = 0b0101;
+                pub const PLS_POLLING: u64 = 0b0111;
+            }
         }
 
         pub mod usbsts {
