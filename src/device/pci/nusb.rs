@@ -727,6 +727,8 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
     worker_info: EndpointWorkerInfo,
     mut receiver: mpsc::Receiver<EndpointMessage>,
 ) {
+    // TODO edtla counter needs to track the whole TD (i.e. chain of normal  and event data trb)
+    let mut my_length: usize = 31;
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
             Some(trb) => trb,
@@ -757,6 +759,22 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
                 };
             }
         };
+
+        if let TransferTrbVariant::EventData(event_data_trb_data) = trb.variant {
+            // TODO this will cause issues
+            let mut fake_edtla = 31;
+            fake_edtla = my_length as u64;
+            handle_event_data_trb(
+                trb.address,
+                event_data_trb_data,
+                &worker_info,
+                &mut fake_edtla,
+                &CompletionCode::ShortPacket,
+            )
+            .await;
+            continue;
+        };
+
         assert!(
             matches!(trb.variant, TransferTrbVariant::Normal(_)),
             "Expected Normal TRB but got {trb:?}"
@@ -771,7 +789,7 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
         let buffer = Buffer::new(buffer_size);
         endpoint.submit(buffer);
         // doorbell might interrupt us, so we need the loop
-        let buffer = loop {
+        let mut buffer = loop {
             select! {
                 buf = endpoint.next_complete() => break buf,
                 msg = receiver.recv() => {
@@ -809,15 +827,24 @@ async fn transfer_in_worker<EpType: BulkOrInterrupt>(
                 // the first byte, so the driver is not unhappy that we reported
                 // 192 bytes but only deliver, e.g., 36 bytes.
                 buffer.actual_len
+
+                // driver could have requested way too much here so we pad it as a easy jsut for now solution
+                //transfer_length
             }
             Equal => {
                 // We got exactly the right amount of bytes.
                 transfer_length
             }
         };
+
+        let data = &buffer.buffer[..buffer.actual_len];
+        //let mut data = data.to_vec();
+        //data.resize(transfer_length, 0);
+        my_length = byte_count_dma;
+
         worker_info
             .dma_bus
-            .write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
+            .write_bulk(normal_data.data_pointer, &data);
 
         if !normal_data.interrupt_on_completion {
             trace!("Processed TRB without IOC flag; sending no transfer event");
@@ -851,6 +878,8 @@ async fn transfer_out_worker<EpType: BulkOrInterrupt>(
     worker_info: EndpointWorkerInfo,
     mut receiver: mpsc::Receiver<EndpointMessage>,
 ) {
+    // TODO edtla counter needs to track the whole TD (i.e. chain of normal  and event data trb)
+    let mut my_length: usize = 31;
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
             Some(trb) => trb,
@@ -881,6 +910,22 @@ async fn transfer_out_worker<EpType: BulkOrInterrupt>(
                 };
             }
         };
+
+        if let TransferTrbVariant::EventData(event_data_trb_data) = trb.variant {
+            // TODO this will cause issues
+            let mut fake_edtla = 31;
+            fake_edtla = my_length as u64;
+            handle_event_data_trb(
+                trb.address,
+                event_data_trb_data,
+                &worker_info,
+                &mut fake_edtla,
+                &CompletionCode::Success,
+            )
+            .await;
+            continue;
+        };
+
         assert!(
             matches!(trb.variant, TransferTrbVariant::Normal(_)),
             "Expected Normal TRB but got {trb:?}"
@@ -889,7 +934,7 @@ async fn transfer_out_worker<EpType: BulkOrInterrupt>(
         // The assertion above guarantees that the TRB is a normal TRB. A wrong
         // TRB type is the only reason the unwrap can fail.
         let normal_data = extract_normal_trb_data(&trb).unwrap();
-
+        my_length = normal_data.transfer_length as usize;
         let mut data = vec![0; normal_data.transfer_length as usize];
         worker_info
             .dma_bus
