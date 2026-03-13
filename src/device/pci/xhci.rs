@@ -392,6 +392,8 @@ impl XhciController {
 
                     // Port Config Error Change
                     // no condition met, no action
+
+                    self.send_port_status_change_event(port_id as u8);
                 }
                 UsbVersion::USB3 => {
                     // Port Reset Change
