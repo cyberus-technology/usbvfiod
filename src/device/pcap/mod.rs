@@ -85,8 +85,34 @@ pub fn in_submission(
     writer::log_submission(meta, urb_id, event_timestamp, expected_len, None, &[]);
 }
 
+pub fn in_submission_with_meta(
+    base: EndpointPcapMeta,
+    urb_id: u64,
+    expected_len: u32,
+    event_timestamp: Timestamp,
+) {
+    let meta = EndpointPcapMeta {
+        direction: UsbDirection::DeviceToHost,
+        ..base
+    };
+    in_submission(meta, urb_id, expected_len, event_timestamp);
+}
+
 pub fn in_completion(meta: EndpointPcapMeta, urb_id: u64, data: &[u8], event_timestamp: Timestamp) {
     writer::log_completion(meta, urb_id, event_timestamp, 0, data.len() as u32, data);
+}
+
+pub fn in_completion_with_meta(
+    base: EndpointPcapMeta,
+    urb_id: u64,
+    data: &[u8],
+    event_timestamp: Timestamp,
+) {
+    let meta = EndpointPcapMeta {
+        direction: UsbDirection::DeviceToHost,
+        ..base
+    };
+    in_completion(meta, urb_id, data, event_timestamp);
 }
 
 pub fn out_submission(
