@@ -521,6 +521,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
 struct InEndpointHandle<RIEH: RealInEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
+    pcap_meta: Option<EndpointPcapMeta>,
     real_ep: RIEH,
     dma_bus: BusDeviceRef,
     event_sender: mpsc::Sender<EventTrb>,
@@ -544,8 +545,16 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         let transfer_trb = TransferTrbVariant::parse(trb.buffer);
         match &transfer_trb {
             TransferTrbVariant::Normal(normal_data) => {
-                // USB linktype timestamp for URB submission.
-                let _event_timestamp = SystemTime::now();
+                if let Some(meta) = self.pcap_meta {
+                    // USB linktype timestamp for URB submission.
+                    let event_timestamp = Timestamp::from(SystemTime::now());
+                    pcap::in_submission_with_meta(
+                        meta,
+                        trb.address,
+                        normal_data.transfer_length,
+                        event_timestamp,
+                    );
+                }
                 self.real_ep.submit(normal_data.transfer_length as usize);
                 self.submission_state = NormalSubmissionState::AwaitingRealTransfer(TransferTrb {
                     address: trb.address,
@@ -594,8 +603,16 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                                 TrbProcessingResult::TransactionError,
                             ),
                             InTrbProcessingResult::Success(data) => {
-                                // USB linktype timestamp for URB completion.
-                                let _event_timestamp = SystemTime::now();
+                                if let Some(meta) = self.pcap_meta {
+                                    // USB linktype timestamp for URB completion.
+                                    let event_timestamp = Timestamp::from(SystemTime::now());
+                                    pcap::in_completion_with_meta(
+                                        meta,
+                                        transfer_trb.address,
+                                        &data,
+                                        event_timestamp,
+                                    );
+                                }
                                 if let TransferTrbVariant::Normal(normal_data) =
                                     transfer_trb.variant
                                 {
