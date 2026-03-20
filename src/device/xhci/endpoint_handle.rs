@@ -1,4 +1,6 @@
-use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin, sync::Arc};
+use std::{
+    fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin, sync::Arc, time::SystemTime,
+};
 
 use tokio::{runtime, select, sync::Mutex};
 use tokio_util::sync::CancellationToken;
@@ -265,6 +267,9 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     let request_copy = request.clone_without_data();
                     let is_out_request = request.request_type & 0x80 == 0;
 
+                    // USB linktype timestamp for control submission.
+                    let _event_timestamp = SystemTime::now();
+
                     self.real_ep.submit_control_request(request);
 
                     self.submission_state = match is_out_request {
@@ -302,6 +307,8 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     match processing_result {
                         ControlRequestProcessingResult::SuccessfulControlIn(data) => {
                             debug!("got data from control in: {data:?}");
+                            // USB linktype timestamp for control completion (IN).
+                            let _event_timestamp = SystemTime::now();
                             if let Some(data_pointer) = usb_request.data_pointer {
                                 debug!("writing data to {data_pointer}");
                                 self.dma_bus.write_bulk(data_pointer, &data);
@@ -332,6 +339,8 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                             unreachable!()
                         }
                         ControlRequestProcessingResult::SuccessfulControlOut => {
+                            // USB linktype timestamp for control completion (OUT).
+                            let _event_timestamp = SystemTime::now();
                             let event = EventTrb::new_transfer_event_trb(
                                 usb_request.address,
                                 0,
@@ -679,6 +688,8 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         let transfer_trb = TransferTrbVariant::parse(trb.buffer);
         match &transfer_trb {
             TransferTrbVariant::Normal(normal_data) => {
+                // USB linktype timestamp for URB submission.
+                let _event_timestamp = SystemTime::now();
                 self.real_ep.submit(normal_data.transfer_length as usize);
                 self.submission_state = NormalSubmissionState::AwaitingRealTransfer(TransferTrb {
                     address: trb.address,
@@ -725,6 +736,8 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                                 TrbProcessingResult::TransactionError,
                             ),
                             InTrbProcessingResult::Success(data) => {
+                                // USB linktype timestamp for URB completion.
+                                let _event_timestamp = SystemTime::now();
                                 let completion_code =
                                     if let TransferTrbVariant::Normal(normal_data) =
                                         transfer_trb.variant
