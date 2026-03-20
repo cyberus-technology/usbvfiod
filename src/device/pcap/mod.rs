@@ -6,7 +6,7 @@ pub use writer::{Timestamp, UsbDirection, UsbEventType, UsbPcapManager, UsbTrans
 
 use crate::device::pci::usbrequest::UsbRequest;
 
-pub fn control_submission(meta: EndpointPcapMeta, req: &UsbRequest, event_timestamp: Timestamp) {
+fn control_submission(meta: EndpointPcapMeta, req: &UsbRequest, event_timestamp: Timestamp) {
     let payload = req.data.as_deref().unwrap_or(&[]);
     writer::log_submission(
         meta,
@@ -18,7 +18,21 @@ pub fn control_submission(meta: EndpointPcapMeta, req: &UsbRequest, event_timest
     );
 }
 
-pub fn control_completion_in(
+pub fn control_submission_with_req(
+    base: EndpointPcapMeta,
+    req: &UsbRequest,
+    event_timestamp: Timestamp,
+) {
+    let direction = if req.request_type & 0x80 == 0 {
+        UsbDirection::HostToDevice
+    } else {
+        UsbDirection::DeviceToHost
+    };
+    let meta = EndpointPcapMeta { direction, ..base };
+    control_submission(meta, req, event_timestamp);
+}
+
+fn control_completion_in(
     meta: EndpointPcapMeta,
     urb_id: u64,
     data: &[u8],
@@ -27,13 +41,39 @@ pub fn control_completion_in(
     writer::log_completion(meta, urb_id, event_timestamp, 0, data.len() as u32, data);
 }
 
-pub fn control_completion_out(
+pub fn control_completion_in_with_meta(
+    base: EndpointPcapMeta,
+    urb_id: u64,
+    data: &[u8],
+    event_timestamp: Timestamp,
+) {
+    let meta = EndpointPcapMeta {
+        direction: UsbDirection::DeviceToHost,
+        ..base
+    };
+    control_completion_in(meta, urb_id, data, event_timestamp);
+}
+
+fn control_completion_out(
     meta: EndpointPcapMeta,
     urb_id: u64,
     len: u32,
     event_timestamp: Timestamp,
 ) {
     writer::log_completion(meta, urb_id, event_timestamp, 0, len, &[]);
+}
+
+pub fn control_completion_out_with_meta(
+    base: EndpointPcapMeta,
+    urb_id: u64,
+    len: u32,
+    event_timestamp: Timestamp,
+) {
+    let meta = EndpointPcapMeta {
+        direction: UsbDirection::HostToDevice,
+        ..base
+    };
+    control_completion_out(meta, urb_id, len, event_timestamp);
 }
 
 pub fn in_submission(

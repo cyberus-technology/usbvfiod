@@ -8,6 +8,7 @@ use tracing::debug;
 
 use crate::device::{
     bus::BusDeviceRef,
+    pcap::{self, EndpointPcapMeta, Timestamp, UsbDirection},
     pci::{
         trb::{CompletionCode, EventTrb, RawTrb, TransferTrb, TransferTrbVariant},
         usbrequest::UsbRequest,
@@ -213,6 +214,7 @@ impl HotplugEndpointHandle<DummyEndpointHandle> {
 pub struct ControlEndpointHandle<RCEH: RealControlEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
+    pcap_meta: Option<EndpointPcapMeta>,
     real_ep: RCEH,
     trb_parser: ControlRequestParser,
     dma_bus: BusDeviceRef,
@@ -267,8 +269,10 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     let request_copy = request.clone_without_data();
                     let is_out_request = request.request_type & 0x80 == 0;
 
-                    // USB linktype timestamp for control submission.
-                    let _event_timestamp = SystemTime::now();
+                    if let Some(meta) = self.pcap_meta {
+                        let event_timestamp = Timestamp::from(SystemTime::now());
+                        pcap::control_submission_with_req(meta, &request, event_timestamp);
+                    }
 
                     self.real_ep.submit_control_request(request);
 
@@ -307,8 +311,15 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     match processing_result {
                         ControlRequestProcessingResult::SuccessfulControlIn(data) => {
                             debug!("got data from control in: {data:?}");
-                            // USB linktype timestamp for control completion (IN).
-                            let _event_timestamp = SystemTime::now();
+                            if let Some(meta) = self.pcap_meta {
+                                let event_timestamp = Timestamp::from(SystemTime::now());
+                                pcap::control_completion_in_with_meta(
+                                    meta,
+                                    usb_request.address,
+                                    &data,
+                                    event_timestamp,
+                                );
+                            }
                             if let Some(data_pointer) = usb_request.data_pointer {
                                 debug!("writing data to {data_pointer}");
                                 self.dma_bus.write_bulk(data_pointer, &data);
@@ -339,8 +350,15 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                             unreachable!()
                         }
                         ControlRequestProcessingResult::SuccessfulControlOut => {
-                            // USB linktype timestamp for control completion (OUT).
-                            let _event_timestamp = SystemTime::now();
+                            if let Some(meta) = self.pcap_meta {
+                                let event_timestamp = Timestamp::from(SystemTime::now());
+                                pcap::control_completion_out_with_meta(
+                                    meta,
+                                    usb_request.address,
+                                    u32::from(usb_request.length),
+                                    event_timestamp,
+                                );
+                            }
                             let event = EventTrb::new_transfer_event_trb(
                                 usb_request.address,
                                 0,
