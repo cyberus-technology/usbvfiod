@@ -4,7 +4,7 @@ mod async_runtime;
 mod cli;
 mod device;
 mod dynamic_bus;
-mod hotplug_server;
+//mod hotplug_server;
 mod memory_segment;
 mod one_indexed_array;
 mod xhci_backend;
@@ -15,10 +15,12 @@ use anyhow::{Context, Result};
 use async_runtime::init_runtime;
 use clap::Parser;
 use cli::Cli;
-use hotplug_server::run_hotplug_server;
+//use hotplug_server::run_hotplug_server;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 use vfio_user::Server;
+
+use crate::{device::xhci::nusb::NusbRealDevice, xhci_backend::XhciBackend};
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -39,8 +41,9 @@ fn main() -> Result<()> {
 
     init_runtime().context("Failed to initialize async runtime")?;
 
-    let mut backend = xhci_backend::XhciBackend::new(&args.devices)
-        .context("Failed to create virtual XHCI controller")?;
+    let mut backend: XhciBackend<NusbRealDevice, (u8, u8)> =
+        xhci_backend::XhciBackend::new(&args.devices)
+            .context("Failed to create virtual XHCI controller")?;
 
     let server = if let cli::ServerSocket::Path(socket_path) = args.server_socket() {
         Server::new(socket_path, true, backend.irqs(), backend.regions())
@@ -50,14 +53,14 @@ fn main() -> Result<()> {
     };
 
     // listen on socket for hot-attach fds
-    if let Some(hotplug_socket_path) = args.hotplug_socket_path {
-        let controller = backend.get_controller();
-        let socket = UnixListener::bind(hotplug_socket_path.as_path()).unwrap();
-        thread::Builder::new()
-            .name("hot-attach-socket listener".to_string())
-            .spawn(move || run_hotplug_server(socket, controller))
-            .unwrap();
-    }
+    // if let Some(hotplug_socket_path) = args.hotplug_socket_path {
+    //     let controller = backend.get_controller();
+    //     let socket = UnixListener::bind(hotplug_socket_path.as_path()).unwrap();
+    //     thread::Builder::new()
+    //         .name("hot-attach-socket listener".to_string())
+    //         .spawn(move || run_hotplug_server(socket, controller))
+    //         .unwrap();
+    // }
 
     info!("We're up!");
 

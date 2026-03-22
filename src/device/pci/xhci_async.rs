@@ -1,9 +1,10 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tokio::{runtime, sync::mpsc};
 
 use crate::device::{
     bus::{BusDeviceRef, SingleThreadedBusDevice},
+    interrupt_line::InterruptLine,
     pci::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
         constants::xhci::{offset, MAX_INTRS, RUN_BASE},
@@ -37,7 +38,7 @@ pub struct XhciController<RD: RealDevice, ID: Identifier> {
 }
 
 impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
-    fn new(dma_bus: BusDeviceRef, async_runtime: runtime::Handle) -> Self {
+    pub fn new(dma_bus: BusDeviceRef, async_runtime: runtime::Handle) -> Self {
         let interrupter = Interrupter::new(dma_bus.clone(), &async_runtime);
         let port_array = PortArray::new(interrupter.create_event_sender(), async_runtime.clone());
         let (ep_launch_sender, ep_launch_recv) = mpsc::channel(10);
@@ -79,6 +80,10 @@ impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
             .mem32_nonprefetchable_bar(3, 2 * 0x1000)
             .msix_capability(MAX_INTRS.try_into().unwrap(), 3, 0, 3, 0x1000)
             .config_space()
+    }
+
+    pub fn connect_irq(&self, irq: Arc<dyn InterruptLine>) {
+        self.interrupter.set_interrupt_line(irq);
     }
 }
 

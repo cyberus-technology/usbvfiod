@@ -93,13 +93,13 @@ const fn endpoint_id_to_address(endpoint_id: u8) -> u8 {
 }
 
 #[derive(Debug)]
-struct NusbRealDevice {
+pub struct NusbRealDevice {
     device_wrapper: Arc<NusbDeviceWrapper>,
     async_runtime: runtime::Handle,
 }
 
 impl NusbRealDevice {
-    fn try_new(device: nusb::Device, async_runtime: runtime::Handle) -> Result<Self, Error> {
+    pub fn try_new(device: nusb::Device, async_runtime: runtime::Handle) -> Result<Self, Error> {
         let device_wrapper = NusbDeviceWrapper::try_from(device)?;
 
         Ok(Self {
@@ -142,7 +142,7 @@ impl RealDevice for NusbRealDevice {
 }
 
 #[derive(Debug)]
-struct ControlEndpointHandle {
+pub struct ControlEndpointHandle {
     cancel: CancellationToken,
     request_submitter: mpsc::Sender<UsbRequest>,
     response_receiver: mpsc::Receiver<ControlRequestProcessingResult>,
@@ -286,7 +286,7 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
     (recipient, control_type)
 }
 
-struct NormalEndpointHandle<EpType: EndpointType + 'static, Dir: EndpointDirection + 'static> {
+pub struct NormalEndpointHandle<EpType: EndpointType + 'static, Dir: EndpointDirection + 'static> {
     id: u8,
     device_wrapper: Arc<NusbDeviceWrapper>,
     endpoint: Option<Endpoint<EpType, Dir>>,

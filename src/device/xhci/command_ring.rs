@@ -259,8 +259,7 @@ impl CommandWorker {
                     let (send, recv) = oneshot::channel();
                     let msg = SlotMessage::DisableSlot(data.slot_id, send);
                     self.slot_msg_sender.send(msg);
-                    let response = recv.await.expect("channel should never close");
-                    let completion_code = response.err().unwrap_or(CompletionCode::Success);
+                    let completion_code = recv.await.expect("channel should never close");
                     EventTrb::new_command_completion_event_trb(
                         trb.address,
                         0,

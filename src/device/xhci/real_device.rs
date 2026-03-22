@@ -52,6 +52,8 @@ pub trait RealDevice: Debug + Send + Sync + 'static {
 
 pub trait Identifier: Debug + Copy + Eq + Send + Sync + 'static {}
 
+impl Identifier for (u8, u8) {}
+
 // A RealDevice trait coupled with bus and device number for identification.
 //
 // A real device alone might not be able to identify itself: An nusb device can

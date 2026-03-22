@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 use crate::device::xhci::{
     endpoint::EndpointMessage,
     real_device::{Identifier, RealDevice},
-    slot_manager::SlotManager,
+    slot_manager::SlotWorker,
 };
 
 #[derive(Debug)]
@@ -17,7 +17,7 @@ pub struct DoorbellArray {
 impl DoorbellArray {
     pub fn new<RD: RealDevice, ID: Identifier>(
         async_runtime: runtime::Handle,
-        slot_manager: Arc<RwLock<SlotManager>>,
+        slot_manager: Arc<RwLock<SlotWorker>>,
     ) -> Self {
         let (sender, recv) = mpsc::channel(10);
 
@@ -35,26 +35,11 @@ impl DoorbellArray {
 
 struct DoorbellWorker {
     recv: mpsc::Receiver<(u8, u8)>,
-    slot_manager: Arc<RwLock<SlotManager>>,
+    slot_manager: Arc<RwLock<SlotWorker>>,
 }
 
 impl DoorbellWorker {
     async fn run(mut self) {
-        while let Some((slot_id, endpoint_id)) = self.recv.recv().await {
-            if let Some(slot) = self.slot_manager.read().unwrap().slot_ref(slot_id) {
-                debug!("Doorbell (Slot {slot_id}, Endpoint {endpoint_id})");
-
-                let result = slot.send_to_endpoint(endpoint_id, EndpointMessage::Doorbell);
-
-                if let Err(_) = result {
-                    warn!(
-                        "Doorbell for disabled endpoint (Slot {slot_id}, Endpoint {endpoint_id})"
-                    );
-                }
-            } else {
-                warn!("Doorbell for disabled slot (Slot {slot_id}, Endpoint {endpoint_id})");
-            }
-        }
-        debug!("Doorbell worker stopped (channel has closed)");
+        todo!();
     }
 }
