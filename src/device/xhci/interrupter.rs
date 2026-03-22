@@ -131,7 +131,7 @@ impl EventWorker {
             }
         }
         self.event_ring.configure(
-            self.registers.erst_base_address.read(),
+            self.registers.erst_base_address.erstba(),
             self.registers.erst_size.read() as u32,
         );
 

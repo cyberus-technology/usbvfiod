@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use tokio::sync::Notify;
+use tracing::trace;
 
 use crate::device::pci::constants::xhci::{
     operational::{portsc, usbsts},
@@ -164,6 +165,10 @@ pub struct ErstbaRegister {
 impl ErstbaRegister {
     pub fn read(&self) -> u64 {
         self.value.load(Ordering::Relaxed)
+    }
+
+    pub fn erstba(&self) -> u64 {
+        self.value.load(Ordering::Relaxed) & !0x1f
     }
 
     pub fn write(&self, new_value: u64) {
