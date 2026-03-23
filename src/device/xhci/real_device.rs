@@ -70,7 +70,7 @@ pub struct CompleteRealDevice<RD: RealDevice, ID: Identifier> {
 }
 
 impl<RD: RealDevice, ID: Identifier> CompleteRealDevice<RD, ID> {
-    fn new(identifier: ID, real_device: RD) -> Self {
+    pub fn new(identifier: ID, real_device: RD) -> Self {
         Self {
             identifier,
             real_device,

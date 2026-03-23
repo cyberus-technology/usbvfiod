@@ -13,7 +13,7 @@ use crate::device::{
     },
     xhci::{
         endpoint_launcher::EndpointLauncher,
-        port::{get_portli_index, get_portsc_index, PortArray},
+        port::{get_portli_index, get_portsc_index, HotplugControl, PortArray},
         real_device::{Identifier, RealDevice},
         slot_manager::SlotManager,
     },
@@ -82,6 +82,10 @@ impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
 
     pub fn connect_irq(&self, irq: Arc<dyn InterruptLine>) {
         self.interrupter.set_interrupt_line(irq);
+    }
+
+    pub fn hotplug_control(&self) -> HotplugControl<RD, ID> {
+        self.port_array.create_hotplug_control()
     }
 }
 

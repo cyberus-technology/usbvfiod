@@ -24,7 +24,10 @@ use crate::{
         bus::{Request, RequestSize},
         interrupt_line::{DummyInterruptLine, InterruptLine},
         pci::{traits::PciDevice, xhci_async::XhciController},
-        xhci::real_device::{Identifier, RealDevice},
+        xhci::{
+            port::HotplugControl,
+            real_device::{Identifier, RealDevice},
+        },
     },
 };
 use usbvfiod::hotplug_protocol::device_paths::resolve_path;
@@ -120,6 +123,10 @@ impl<RD: RealDevice, ID: Identifier> XhciBackend<RD, ID> {
     //         .map_err(|response| anyhow!("Error during device attach: {response:?}"))?;
     //     Ok(())
     // }
+
+    pub fn hotplug_control(&self) -> HotplugControl<RD, ID> {
+        self.controller.hotplug_control()
+    }
 }
 
 impl<RD: RealDevice, ID: Identifier> XhciBackend<RD, ID> {

@@ -4,7 +4,7 @@ mod async_runtime;
 mod cli;
 mod device;
 mod dynamic_bus;
-//mod hotplug_server;
+mod hotplug_server;
 mod memory_segment;
 mod one_indexed_array;
 mod xhci_backend;
@@ -15,12 +15,14 @@ use anyhow::{Context, Result};
 use async_runtime::init_runtime;
 use clap::Parser;
 use cli::Cli;
-//use hotplug_server::run_hotplug_server;
+use hotplug_server::run_hotplug_server;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 use vfio_user::Server;
 
-use crate::{device::xhci::nusb::NusbRealDevice, xhci_backend::XhciBackend};
+use crate::{
+    async_runtime::runtime, device::xhci::nusb::NusbRealDevice, xhci_backend::XhciBackend,
+};
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -53,14 +55,14 @@ fn main() -> Result<()> {
     };
 
     // listen on socket for hot-attach fds
-    // if let Some(hotplug_socket_path) = args.hotplug_socket_path {
-    //     let controller = backend.get_controller();
-    //     let socket = UnixListener::bind(hotplug_socket_path.as_path()).unwrap();
-    //     thread::Builder::new()
-    //         .name("hot-attach-socket listener".to_string())
-    //         .spawn(move || run_hotplug_server(socket, controller))
-    //         .unwrap();
-    // }
+    if let Some(hotplug_socket_path) = args.hotplug_socket_path {
+        let hotplug_control = backend.hotplug_control();
+        let socket = UnixListener::bind(hotplug_socket_path.as_path()).unwrap();
+        thread::Builder::new()
+            .name("hot-attach-socket listener".to_string())
+            .spawn(move || run_hotplug_server(socket, hotplug_control, runtime().clone()))
+            .unwrap();
+    }
 
     info!("We're up!");
 
