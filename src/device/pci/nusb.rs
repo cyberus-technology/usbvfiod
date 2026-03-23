@@ -648,6 +648,7 @@ async fn control_worker(
                         )
                         .await;
                     }
+                    // TODO add normal trb handler
                     _ => panic!("DataStage: not a DataStage or EventData TRB"),
                 },
                 ControlTransferState::StatusStage => match current_trb {
