@@ -52,6 +52,14 @@ impl<RD: RealDevice, ID: Identifier> PortArray<RD, ID> {
         Self { portsc, msg_sender }
     }
 
+    pub fn write_portsc(&self, port_id: usize, value: u64) {
+        self.portsc[port_id].write(value);
+    }
+
+    pub fn read_portsc(&self, port_id: usize) -> u64 {
+        self.portsc[port_id].read()
+    }
+
     pub fn create_hotplug_control(&self) -> HotplugControl<RD, ID> {
         HotplugControl {
             msg_send: self.msg_sender.clone(),
@@ -80,16 +88,6 @@ pub enum PortMessage<RD: RealDevice, ID: Identifier> {
         usize,
         oneshot::Sender<Option<Arc<CompleteRealDevice<RD, ID>>>>,
     ),
-}
-
-impl<RD: RealDevice, ID: Identifier> PortArray<RD, ID> {
-    pub fn write_portsc(&self, port_id: usize, value: u64) {
-        self.portsc[port_id].write(value);
-    }
-
-    pub fn read_portsc(&self, port_id: usize) -> u64 {
-        self.portsc[port_id].read()
-    }
 }
 
 impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
