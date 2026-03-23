@@ -51,6 +51,12 @@ impl<RD: RealDevice, ID: Identifier> PortArray<RD, ID> {
 
         Self { portsc, msg_sender }
     }
+
+    pub fn create_hotplug_control(&self) -> HotplugControl<RD, ID> {
+        HotplugControl {
+            msg_send: self.msg_sender.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -323,6 +329,40 @@ pub const fn get_portsc_index(addr: u64) -> Option<usize> {
 
 pub const fn get_portli_index(addr: u64) -> Option<usize> {
     get_port_index_from_addr(addr, offset::PORTSC, MAX_PORTS, 0x8)
+}
+
+#[derive(Debug, Clone)]
+pub struct HotplugControl<RD: RealDevice, ID: Identifier> {
+    msg_send: mpsc::UnboundedSender<PortMessage<RD, ID>>,
+}
+
+impl<RD: RealDevice, ID: Identifier> HotplugControl<RD, ID> {
+    pub async fn attach(&self, device: CompleteRealDevice<RD, ID>) -> Response {
+        let (responder, response_recv) = oneshot::channel();
+        let msg = PortMessage::Attach(device, responder);
+        self.msg_send.send(msg).expect("channel should never close");
+        response_recv
+            .await
+            .expect("oneshot channel should always provide a message")
+    }
+
+    pub async fn detach(&self, identifier: ID) -> Response {
+        let (responder, response_recv) = oneshot::channel();
+        let msg = PortMessage::Detach(identifier, responder);
+        self.msg_send.send(msg).expect("channel should never close");
+        response_recv
+            .await
+            .expect("oneshot channel should always provide a message")
+    }
+
+    pub async fn list_devices(&self) -> Vec<ID> {
+        let (responder, response_recv) = oneshot::channel();
+        let msg = PortMessage::ListAttached(responder);
+        self.msg_send.send(msg).expect("channel should never close");
+        response_recv
+            .await
+            .expect("oneshot channel should always provide a message")
+    }
 }
 
 #[cfg(test)]
