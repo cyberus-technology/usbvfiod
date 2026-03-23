@@ -143,9 +143,16 @@ impl RealDevice for NusbRealDevice {
 
 #[derive(Debug)]
 pub struct ControlEndpointHandle {
+    // signal worker to stop
     cancel: CancellationToken,
     request_submitter: mpsc::UnboundedSender<UsbRequest>,
     response_receiver: mpsc::UnboundedReceiver<ControlRequestProcessingResult>,
+}
+
+impl Drop for ControlEndpointHandle {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 
 impl RealControlEndpointHandle for ControlEndpointHandle {
