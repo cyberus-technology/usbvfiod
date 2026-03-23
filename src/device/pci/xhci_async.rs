@@ -40,7 +40,7 @@ impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
     pub fn new(dma_bus: BusDeviceRef, async_runtime: runtime::Handle) -> Self {
         let interrupter = Interrupter::new(dma_bus.clone(), &async_runtime);
         let port_array = PortArray::new(interrupter.create_event_sender(), async_runtime.clone());
-        let (ep_launch_sender, ep_launch_recv) = mpsc::channel(10);
+        let (ep_launch_sender, ep_launch_recv) = mpsc::unbounded_channel();
         EndpointLauncher::start(
             ep_launch_recv,
             port_array.msg_sender.clone(),

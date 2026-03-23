@@ -13,7 +13,7 @@ use std::sync::Arc;
 pub struct Interrupter {
     pub registers: InterrupterRegisters,
     /// Transmits events to send to the worker
-    msg_sender: mpsc::Sender<InterrupterMessage>,
+    msg_sender: mpsc::UnboundedSender<InterrupterMessage>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +47,7 @@ impl Default for InterrupterRegisters {
 #[derive(Debug)]
 struct EventWorker {
     registers: InterrupterRegisters,
-    msg_recv: mpsc::Receiver<InterrupterMessage>,
+    msg_recv: mpsc::UnboundedReceiver<InterrupterMessage>,
     interrupt_line: Arc<dyn InterruptLine>,
     // // INTE from USBCMD
     // interrupt_enabled: AtomicBool,
@@ -65,7 +65,7 @@ enum InterrupterMessage {
 
 #[derive(Debug, Clone)]
 pub struct EventSender {
-    sender: mpsc::Sender<InterrupterMessage>,
+    sender: mpsc::UnboundedSender<InterrupterMessage>,
 }
 
 impl EventSender {
@@ -83,7 +83,7 @@ impl Interrupter {
         // interrupts_pending: AtomicU16,
         async_runtime: &runtime::Handle,
     ) -> Self {
-        let (msg_sender, msg_recv) = mpsc::channel(10);
+        let (msg_sender, msg_recv) = mpsc::unbounded_channel();
         let registers = InterrupterRegisters::default();
 
         let interrupter = Self {

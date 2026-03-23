@@ -28,7 +28,7 @@ use crate::{
 #[derive(Debug)]
 pub struct PortArray<RD: RealDevice, ID: Identifier> {
     portsc: Arc<OneIndexed<PortscRegister, { MAX_PORTS as usize }>>,
-    pub msg_sender: mpsc::Sender<PortMessage<RD, ID>>,
+    pub msg_sender: mpsc::UnboundedSender<PortMessage<RD, ID>>,
 }
 
 impl<RD: RealDevice, ID: Identifier> PortArray<RD, ID> {
@@ -36,7 +36,7 @@ impl<RD: RealDevice, ID: Identifier> PortArray<RD, ID> {
         let portsc: Arc<OneIndexed<PortscRegister, { MAX_PORTS as usize }>> =
             Arc::new(array::from_fn(|_| PortscRegister::default()).into());
 
-        let (msg_sender, msg_recv) = mpsc::channel(10);
+        let (msg_sender, msg_recv) = mpsc::unbounded_channel();
 
         let worker: PortWorker<RD, ID> = PortWorker {
             devices: [const { None }; MAX_PORTS as usize].into(),
@@ -59,8 +59,8 @@ struct PortWorker<RD: RealDevice, ID: Identifier> {
     portsc: Arc<OneIndexed<PortscRegister, { MAX_PORTS as usize }>>,
     event_sender: EventSender,
     // the worker does not use the sender itself but needs to pass clones of the sender to detach listeners
-    msg_sender: mpsc::Sender<PortMessage<RD, ID>>,
-    msg_recv: mpsc::Receiver<PortMessage<RD, ID>>,
+    msg_sender: mpsc::UnboundedSender<PortMessage<RD, ID>>,
+    msg_recv: mpsc::UnboundedReceiver<PortMessage<RD, ID>>,
     async_runtime: runtime::Handle,
 }
 
@@ -215,7 +215,7 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
 async fn detach_listener<RD: RealDevice, ID: Identifier>(
     cancel: CancellationToken,
     identifier: ID,
-    msg_sender: mpsc::Sender<PortMessage<RD, ID>>,
+    msg_sender: mpsc::UnboundedSender<PortMessage<RD, ID>>,
 ) {
     let (send, recv) = oneshot::channel();
     cancel.cancelled().await;

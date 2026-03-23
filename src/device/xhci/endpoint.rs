@@ -19,7 +19,7 @@ pub struct EndpointWorker {
     state: WorkerState,
     context: EndpointContext,
     transfer_ring: LinkedRing,
-    recv: mpsc::Receiver<EndpointMessage>,
+    recv: mpsc::UnboundedReceiver<EndpointMessage>,
     real_endpoint: HotplugEndpointHandle,
 }
 
@@ -53,8 +53,8 @@ impl EndpointWorker {
         dma_bus: BusDeviceRef,
         trb_consumer: HotplugEndpointHandle,
         context: EndpointContext,
-    ) -> mpsc::Sender<EndpointMessage> {
-        let (sender, recv) = mpsc::channel(10);
+    ) -> mpsc::UnboundedSender<EndpointMessage> {
+        let (sender, recv) = mpsc::unbounded_channel();
 
         context.set_state(endpoint_state::RUNNING);
         let (dequeue_pointer, cycle_state) = context.get_dequeue_pointer_and_cycle_state();

@@ -24,18 +24,18 @@ use crate::{
 pub struct SlotManager {
     pub config_reg: ConfigureRegister,
     pub dcbaap: DcbaapRegister,
-    pub msg_send: mpsc::Sender<SlotMessage>,
+    pub msg_send: mpsc::UnboundedSender<SlotMessage>,
 }
 
 impl SlotManager {
     pub fn new(
         dma_bus: BusDeviceRef,
         async_runtime: &runtime::Handle,
-        ep_launch_sender: mpsc::Sender<LaunchRequest>,
+        ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
     ) -> Self {
         let config_reg = ConfigureRegister::default();
         let dcbaap = DcbaapRegister::default();
-        let (msg_send, msg_recv) = mpsc::channel(10);
+        let (msg_send, msg_recv) = mpsc::unbounded_channel();
 
         let worker = SlotWorker::new(
             dma_bus,
@@ -66,8 +66,8 @@ pub struct SlotWorker {
     config_reg: ConfigureRegister,
     dcbaap: DcbaapRegister,
     dma_bus: BusDeviceRef,
-    ep_launch_sender: mpsc::Sender<LaunchRequest>,
-    msg_recv: mpsc::Receiver<SlotMessage>,
+    ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
+    msg_recv: mpsc::UnboundedReceiver<SlotMessage>,
 }
 
 #[derive(Debug)]
@@ -84,8 +84,8 @@ impl SlotWorker {
         dma_bus: BusDeviceRef,
         config_reg: ConfigureRegister,
         dcbaap: DcbaapRegister,
-        ep_launch_sender: mpsc::Sender<LaunchRequest>,
-        msg_recv: mpsc::Receiver<SlotMessage>,
+        ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
+        msg_recv: mpsc::UnboundedReceiver<SlotMessage>,
     ) -> Self {
         Self {
             slots: [const { None }; MAX_SLOTS as usize].into(),
@@ -193,8 +193,8 @@ struct Slot {
     // read from dcbaae once valid (through AddressDevice)
     base_address: Option<u64>,
     dma_bus: BusDeviceRef,
-    endpoint_senders: OneIndexed<Option<mpsc::Sender<EndpointMessage>>, 31>,
-    ep_launch_sender: mpsc::Sender<LaunchRequest>,
+    endpoint_senders: OneIndexed<Option<mpsc::UnboundedSender<EndpointMessage>>, 31>,
+    ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -212,7 +212,7 @@ impl Slot {
         id: u8,
         dcbaae: u64,
         dma_bus: BusDeviceRef,
-        ep_launch_sender: mpsc::Sender<LaunchRequest>,
+        ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
     ) -> Self {
         Self {
             id,

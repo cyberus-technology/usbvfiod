@@ -144,8 +144,8 @@ impl RealDevice for NusbRealDevice {
 #[derive(Debug)]
 pub struct ControlEndpointHandle {
     cancel: CancellationToken,
-    request_submitter: mpsc::Sender<UsbRequest>,
-    response_receiver: mpsc::Receiver<ControlRequestProcessingResult>,
+    request_submitter: mpsc::UnboundedSender<UsbRequest>,
+    response_receiver: mpsc::UnboundedReceiver<ControlRequestProcessingResult>,
 }
 
 impl RealControlEndpointHandle for ControlEndpointHandle {
@@ -175,8 +175,8 @@ impl RealControlEndpointHandle for ControlEndpointHandle {
 
 impl ControlEndpointHandle {
     fn new(device: nusb::Device, async_runtime: &runtime::Handle) -> Self {
-        let (request_submitter, request_receiver) = mpsc::channel(10);
-        let (response_submitter, response_receiver) = mpsc::channel(10);
+        let (request_submitter, request_receiver) = mpsc::unbounded_channel();
+        let (response_submitter, response_receiver) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
 
         async_runtime.spawn(cancellable_control_endpoint_worker(
@@ -196,8 +196,8 @@ impl ControlEndpointHandle {
 
 async fn cancellable_control_endpoint_worker(
     device: nusb::Device,
-    request_receiver: mpsc::Receiver<UsbRequest>,
-    response_submitter: mpsc::Sender<ControlRequestProcessingResult>,
+    request_receiver: mpsc::UnboundedReceiver<UsbRequest>,
+    response_submitter: mpsc::UnboundedSender<ControlRequestProcessingResult>,
     cancel: CancellationToken,
 ) {
     select! {
@@ -208,8 +208,8 @@ async fn cancellable_control_endpoint_worker(
 
 async fn control_endpoint_worker(
     device: nusb::Device,
-    mut request_receiver: mpsc::Receiver<UsbRequest>,
-    response_submitter: mpsc::Sender<ControlRequestProcessingResult>,
+    mut request_receiver: mpsc::UnboundedReceiver<UsbRequest>,
+    response_submitter: mpsc::UnboundedSender<ControlRequestProcessingResult>,
 ) {
     loop {
         if let Some(request) = request_receiver.recv().await {

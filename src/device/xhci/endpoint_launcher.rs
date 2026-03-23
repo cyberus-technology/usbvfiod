@@ -17,8 +17,8 @@ use crate::device::{
 
 #[derive(Debug)]
 pub struct EndpointLauncher<RD: RealDevice, ID: Identifier> {
-    request_recv: mpsc::Receiver<LaunchRequest>,
-    port_msg_sender: mpsc::Sender<PortMessage<RD, ID>>,
+    request_recv: mpsc::UnboundedReceiver<LaunchRequest>,
+    port_msg_sender: mpsc::UnboundedSender<PortMessage<RD, ID>>,
     async_runtime: runtime::Handle,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
@@ -29,13 +29,13 @@ pub struct LaunchRequest {
     pub slot_id: u8,
     pub endpoint_id: u8,
     pub endpoint_context: EndpointContext,
-    pub responder: oneshot::Sender<mpsc::Sender<EndpointMessage>>,
+    pub responder: oneshot::Sender<mpsc::UnboundedSender<EndpointMessage>>,
 }
 
 impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
     pub fn start(
-        request_recv: mpsc::Receiver<LaunchRequest>,
-        port_msg_sender: mpsc::Sender<PortMessage<RD, ID>>,
+        request_recv: mpsc::UnboundedReceiver<LaunchRequest>,
+        port_msg_sender: mpsc::UnboundedSender<PortMessage<RD, ID>>,
         async_runtime: runtime::Handle,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,

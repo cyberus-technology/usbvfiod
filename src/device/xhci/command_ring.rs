@@ -26,17 +26,17 @@ use crate::device::{
 #[derive(Debug)]
 pub struct CommandRing {
     running: Arc<AtomicBool>,
-    sender_to_worker: mpsc::Sender<WorkerMessage>,
+    sender_to_worker: mpsc::UnboundedSender<WorkerMessage>,
 }
 
 #[derive(Debug)]
 struct CommandWorker {
     state: WorkerState,
-    receiver: mpsc::Receiver<WorkerMessage>,
+    receiver: mpsc::UnboundedReceiver<WorkerMessage>,
     running: Arc<AtomicBool>,
     event_sender: EventSender,
     ring: LinkedRing,
-    slot_msg_sender: mpsc::Sender<SlotMessage>,
+    slot_msg_sender: mpsc::UnboundedSender<SlotMessage>,
 }
 
 #[derive(Debug)]
@@ -71,9 +71,9 @@ impl CommandRing {
         dma_bus: BusDeviceRef,
         async_runtime: &runtime::Handle,
         event_sender: EventSender,
-        slot_msg_sender: mpsc::Sender<SlotMessage>,
+        slot_msg_sender: mpsc::UnboundedSender<SlotMessage>,
     ) -> Self {
-        let (sender_to_worker, receiver) = mpsc::channel(10);
+        let (sender_to_worker, receiver) = mpsc::unbounded_channel();
         let running = Arc::new(AtomicBool::new(false));
 
         let ring = LinkedRing::new(dma_bus, 0, false);
@@ -143,7 +143,7 @@ impl CommandRing {
     }
 
     fn send_to_worker(&self, msg: WorkerMessage) {
-        match self.sender_to_worker.try_send(msg) {
+        match self.sender_to_worker.send(msg) {
             Ok(_) => {}
             Err(err) => {
                 // The error contains the message
