@@ -1,5 +1,4 @@
 pub mod command_ring;
-pub mod doorbell;
 pub mod endpoint;
 pub mod endpoint_handle;
 pub mod endpoint_launcher;
