@@ -23,7 +23,6 @@ use crate::device::{pci::constants::xhci::OP_BASE, xhci::interrupter::Interrupte
 
 #[derive(Debug)]
 pub struct XhciController<RD: RealDevice, ID: Identifier> {
-    dma_bus: BusDeviceRef,
     /// The PCI Configuration Space of the controller.
     ///
     /// Only the vfio-user thread accesses this field, so we use a standard Mutex
@@ -59,7 +58,6 @@ impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
         let (usbcmd, usbsts) = new_usbcmd_and_usbsts();
 
         Self {
-            dma_bus,
             config_space: Mutex::new(Self::build_config_space()),
             interrupter,
             port_array,
