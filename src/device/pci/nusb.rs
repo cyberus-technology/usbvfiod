@@ -3,7 +3,7 @@
 use anyhow::{Error, Result};
 use nusb::transfer::{
     Buffer, Bulk, BulkOrInterrupt, ControlIn, ControlOut, ControlType, In, Interrupt, Out,
-    Recipient,
+    Recipient, TransferError,
 };
 use nusb::{Interface, MaybeFuture};
 use tokio::select;
@@ -12,17 +12,15 @@ use tracing::{debug, trace, warn};
 
 use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
-use crate::device::pci::trb::{CompletionCode, EventTrb};
-
-use super::realdevice::{EndpointType, EndpointWorkerInfo, Speed};
-use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
-use super::{realdevice::RealDevice, usbrequest::UsbRequest};
-use std::cmp::Ordering::*;
-use std::{
-    fmt::Debug,
-    sync::atomic::{fence, Ordering},
-    time::Duration,
+use crate::device::pci::trb::{
+    CompletionCode, DataStageTrbData, EventDataTrbData, EventTrb, SetupStageTrbData,
+    StatusStageTrbData,
 };
+
+use super::realdevice::{EndpointType, EndpointWorkerInfo, RealDevice, Speed};
+use super::trb::{NormalTrbData, TransferTrb, TransferTrbVariant};
+use std::cmp::Ordering::*;
+use std::{fmt::Debug, time::Duration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointMessage {
@@ -218,6 +216,223 @@ impl RealDevice for NusbDeviceWrapper {
     }
 }
 
+async fn handle_setup_stage_trb(
+    address: u64,
+    setup_stage_trb_data: SetupStageTrbData,
+    worker_info: &EndpointWorkerInfo,
+    control: &mut ControlTransferDirection<'_>,
+    device: &nusb::Device,
+    data: &mut Vec<u8>,
+) -> Result<(), TransferError> {
+    let (recipient, control_type) = extract_recipient_and_type(setup_stage_trb_data.request_type);
+
+    if setup_stage_trb_data.request_type & 0x80 != 0 {
+        trace!("SetupStage TRB with ControlIn");
+        let control_in = ControlIn {
+            control_type,
+            recipient,
+            request: setup_stage_trb_data.request,
+            value: setup_stage_trb_data.value,
+            index: setup_stage_trb_data.index,
+            length: setup_stage_trb_data.length,
+        };
+
+        match device
+            .control_in(control_in, Duration::from_millis(200))
+            .await
+        {
+            Ok(mut device_data) => {
+                debug!("control in data {:?}", device_data);
+                data.append(&mut device_data);
+
+                data.resize(setup_stage_trb_data.length as usize, 0);
+            }
+            Err(error) => {
+                warn!("control in request failed: {:?}", error);
+                return Err(error);
+            }
+        }
+        *control = ControlTransferDirection::In;
+    } else {
+        trace!("SetupStage TRB with ControlOut");
+        *control = ControlTransferDirection::Out(ControlOut {
+            control_type,
+            recipient,
+            request: setup_stage_trb_data.request,
+            value: setup_stage_trb_data.value,
+            index: setup_stage_trb_data.index,
+            data: &[],
+        });
+    }
+
+    if setup_stage_trb_data.interrupt_on_completion {
+        interrupt_on_completion(address, CompletionCode::Success, worker_info, false);
+    }
+    Ok(())
+}
+
+async fn handle_data_stage_trb(
+    address: u64,
+    data_stage_trb_data: DataStageTrbData,
+    worker_info: &EndpointWorkerInfo,
+    control: &ControlTransferDirection<'_>,
+    data: &mut Vec<u8>,
+    dma_bus: BusDeviceRef,
+) {
+    match control {
+        // slice the data and handle each trb
+        ControlTransferDirection::In => {
+            trace!("DataStage TRB with ControlIn");
+
+            let byte_slice: Vec<u8> = data
+                .drain(0..data_stage_trb_data.transfer_length.into())
+                .collect();
+
+            trace!("DataStage TRB slice: {:?}", byte_slice);
+            dma_bus.write_bulk(data_stage_trb_data.data_pointer, &byte_slice);
+        }
+        // accumulate data needed for ControlOut from all TRB's of the stage
+        ControlTransferDirection::Out(_) => {
+            trace!("DataStage TRB with ControlOut");
+            let mut byte_slice = vec![0; data_stage_trb_data.transfer_length as usize];
+            dma_bus.read_bulk(data_stage_trb_data.data_pointer, &mut byte_slice);
+            data.append(&mut byte_slice);
+        }
+        ControlTransferDirection::None => {
+            panic!("this should never be reached with spec compliancy")
+        }
+    }
+
+    if data_stage_trb_data.interrupt_on_completion {
+        interrupt_on_completion(address, CompletionCode::Success, worker_info, false);
+    }
+}
+
+// The clone is explicit so the control_worker loop will not error with a
+// reference being double mutably borrowed.
+#[allow(clippy::ptr_arg)]
+async fn handle_status_stage_trb(
+    address: u64,
+    status_stage_trb_data: &StatusStageTrbData,
+    worker_info: &EndpointWorkerInfo,
+    control: &mut ControlTransferDirection<'_>,
+    device: &nusb::Device,
+    data: &Vec<u8>,
+) -> Result<(), TransferError> {
+    match control {
+        ControlTransferDirection::In => {
+            trace!("StatusStage TRB with ControlIn");
+            // everything should be done:
+            // - nusb transfer is done
+            // - data is copied to the mmio buffer
+        }
+        ControlTransferDirection::Out(control_out) => {
+            trace!("StatusStage TRB with ControlOut");
+            // TODO do request and get the actual completion code
+            // an actual hardware request needs to be done with now accumulated data
+            let owned_data = data.clone();
+
+            let tmp_control_out = ControlOut {
+                control_type: control_out.control_type,
+                recipient: control_out.recipient,
+                request: control_out.request,
+                value: control_out.value,
+                index: control_out.index,
+                data: &owned_data,
+            };
+
+            match device
+                .control_out(tmp_control_out, Duration::from_millis(200))
+                .await
+            {
+                Ok(_) => {
+                    debug!("control out success");
+                }
+                Err(error) => {
+                    warn!("control in request failed: {:?}", error);
+                    return Err(error);
+                }
+            }
+        }
+        ControlTransferDirection::None => {
+            panic!("this should never be reached with spec compliancy")
+        }
+    }
+
+    if status_stage_trb_data.interrupt_on_completion {
+        interrupt_on_completion(address, CompletionCode::Success, worker_info, false);
+    }
+    Ok(())
+}
+
+async fn handle_event_data_trb(
+    address: u64,
+    event_data_trb_data: EventDataTrbData,
+    worker_info: &EndpointWorkerInfo,
+    edtla: &mut u64,
+) {
+    trace!("EventData TRB");
+
+    // TODO get completion code of previous trb
+    let completion_code = CompletionCode::Success;
+
+    // TODO use edtla correctly -> does that mean "just" implement remaining bytes?
+
+    let event = EventTrb::new_transfer_event_trb(
+        event_data_trb_data.event_data,
+        0, // residual bytes are not counted right now
+        completion_code,
+        true,
+        worker_info.endpoint_id,
+        worker_info.slot_id,
+    );
+    worker_info.event_ring.lock().unwrap().enqueue(&event);
+    worker_info.interrupt_line.interrupt();
+
+    *edtla = 0;
+
+    if event_data_trb_data.interrupt_on_completion {
+        interrupt_on_completion(address, CompletionCode::Success, worker_info, false);
+    }
+}
+
+fn interrupt_on_completion(
+    address: u64,
+    completion_code: CompletionCode,
+    worker_info: &EndpointWorkerInfo,
+    event_data: bool,
+) {
+    let event = EventTrb::new_transfer_event_trb(
+        address,
+        0,
+        completion_code,
+        event_data,
+        worker_info.endpoint_id,
+        worker_info.slot_id,
+    );
+    worker_info.event_ring.lock().unwrap().enqueue(&event);
+    worker_info.interrupt_line.interrupt();
+}
+
+#[derive(PartialEq, Eq)]
+enum ControlTransferState {
+    None,
+    SetupStage,
+    DataStage,
+    StatusStage,
+}
+enum ControlTransferDirection<'a> {
+    None,
+    In,
+    Out(ControlOut<'a>),
+}
+
+/// See XHCI specification Section 3.2.9 for an overview and further pointers
+/// to more documentation (e.g. relevant chapters in the USB 2 and USB 3 specification).
+///
+/// The description of a "control chain" is in nusb terms a ControlIn or ControlOut
+/// Object. The Control Transfer is only valid with multiple Control TRBs in a
+/// ordered sequence
 // cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
 async fn control_worker(
@@ -225,74 +440,205 @@ async fn control_worker(
     worker_info: EndpointWorkerInfo,
     mut receiver: mpsc::Receiver<EndpointMessage>,
 ) {
-    let dma_bus = worker_info.dma_bus;
-
-    let transfer_ring = worker_info.transfer_ring;
-
+    // This workers main loop.
+    // Each loop will handle one control (TRB) chain to make one control transfer.
     loop {
-        let request = match transfer_ring.next_request() {
-            None => {
-                trace!(
-                    "worker thread ep {}: No TRB on transfer ring, going to sleep",
-                    worker_info.endpoint_id
-                );
-                match receiver
-                    .recv()
-                    .await
-                    .expect("The worker channel should never close while the worker is alive.")
-                {
-                    EndpointMessage::Doorbell => {
-                        trace!(
-                            "worker thread ep {}: Received wake up",
-                            worker_info.endpoint_id
-                        );
-                        continue;
-                    }
-                    EndpointMessage::Terminate => {
-                        debug!(
-                            "worker thread ep {}: Stopped by terminate message",
-                            worker_info.endpoint_id
-                        );
-                        return;
-                    }
-                };
-            }
-            Some(Err(err)) => {
-                panic!("Failed to retrieve request from control transfer ring: {err:?}")
-            }
-            Some(Ok(res)) => res,
-        };
+        let mut state = ControlTransferState::None;
+        let mut current_trb: TransferTrb;
 
-        debug!(
-            "got request with: request_type={}, request={}, value={}, index={}, length={}, data={:?}",
-            request.request_type,
-            request.request,
-            request.value,
-            request.index,
-            request.length,
-            request.data
-        );
+        // A data buffer since nusb does not take individual control request TRB
+        // but only a whole chain.
+        let mut data: Vec<u8> = vec![];
 
-        // forward request to device
-        let direction = request.request_type & 0x80 != 0;
-        match direction {
-            true => control_transfer_device_to_host(device.clone(), &request, &dma_bus).await,
-            false => control_transfer_host_to_device(device.clone(), &request, &dma_bus).await,
+        // Event Data Transfer Length Accumulator. Refer to section 4.11.5.2 for more information.
+        let mut edtla: u64 = 0;
+
+        // This value should always be overwritten by the SetupStage TRB at
+        // the beginning of any control chain.
+        let mut control = ControlTransferDirection::None;
+
+        loop {
+            match worker_info.transfer_ring.next_transfer_trb() {
+                None => {
+                    trace!(
+                        "worker thread ep {}: No TRB on transfer ring, going to sleep",
+                        worker_info.endpoint_id
+                    );
+                    match receiver
+                        .recv()
+                        .await
+                        .expect("The worker channel should never close while the worker is alive.")
+                    {
+                        EndpointMessage::Doorbell => {
+                            trace!(
+                                "worker thread ep {}: Received wake up",
+                                worker_info.endpoint_id
+                            );
+                            continue;
+                        }
+                        EndpointMessage::Terminate => {
+                            debug!(
+                                "worker thread ep {}: Stopped by terminate message",
+                                worker_info.endpoint_id
+                            );
+                            return;
+                        }
+                    };
+                }
+                Some(transfer_trb) => {
+                    debug!(
+                        "Got a TransferTrb from the TransferRing: {:?}",
+                        transfer_trb
+                    );
+                    current_trb = transfer_trb;
+                }
+            }
+
+            // A upcoming/to-be-handled TRB can trigger the transition to the next stage.
+            // This is also the check for a spec compliant control transfer chain.
+            if (state == ControlTransferState::None)
+                && matches!(current_trb.variant, TransferTrbVariant::SetupStage(_))
+            {
+                trace!("Control Chain Stage: None -> SetupStage");
+                state = ControlTransferState::SetupStage;
+                edtla = 0;
+            } else if state == ControlTransferState::SetupStage
+                && matches!(current_trb.variant, TransferTrbVariant::DataStage(_))
+            {
+                trace!("Control Chain Stage: SetupStage -> DataStage");
+                state = ControlTransferState::DataStage;
+                edtla = 0;
+            } else if state == ControlTransferState::SetupStage
+                && matches!(current_trb.variant, TransferTrbVariant::StatusStage(_))
+            {
+                trace!("Control Chain Stage: SetupStage -> StatusStage");
+                state = ControlTransferState::StatusStage;
+                edtla = 0;
+            } else if state == ControlTransferState::DataStage
+                && (matches!(current_trb.variant, TransferTrbVariant::DataStage(_))
+                    || matches!(current_trb.variant, TransferTrbVariant::EventData(_)))
+            {
+                trace!("Control Chain Stage: DataStage -> DataStage");
+                edtla += 1;
+            } else if state == ControlTransferState::DataStage
+                && (matches!(current_trb.variant, TransferTrbVariant::StatusStage(_))
+                    || matches!(current_trb.variant, TransferTrbVariant::EventData(_)))
+            {
+                trace!("Control Chain Stage: DataStage -> StatusStage");
+                state = ControlTransferState::StatusStage;
+                edtla = 0;
+            } else if state == ControlTransferState::StatusStage
+                && matches!(current_trb.variant, TransferTrbVariant::EventData(_))
+            {
+                trace!("Control Chain Stage: StatusStage -> StatusStage");
+                edtla += 1;
+            } else {
+                panic!("wrong order or unexpected {:?}", current_trb.variant);
+            }
+
+            // Handle the given TRB according to the current stage.
+            // This will also prevent handling a TRB in the wrong stage.
+            match state {
+                ControlTransferState::None => {
+                    panic!("We should never get here without recognizing a SetupStage TRB");
+                }
+                ControlTransferState::SetupStage => match current_trb {
+                    TransferTrb {
+                        address: _,
+                        variant: TransferTrbVariant::SetupStage(setup_stage_trb_data),
+                    } => {
+                        match handle_setup_stage_trb(
+                            current_trb.address,
+                            setup_stage_trb_data,
+                            &worker_info,
+                            &mut control,
+                            &device,
+                            &mut data,
+                        )
+                        .await
+                        {
+                            Ok(_) => {}
+                            Err(e) => {
+                                todo!("handle the errors in a control chain properly (clear remaining chain from TransferRing) {e}");
+                            }
+                        }
+                    }
+                    _ => panic!("SetupStage: not a SetupStage TRB"),
+                },
+                ControlTransferState::DataStage => match current_trb {
+                    TransferTrb {
+                        address,
+                        variant: TransferTrbVariant::DataStage(data_stage_trb_data),
+                    } => {
+                        handle_data_stage_trb(
+                            address,
+                            data_stage_trb_data,
+                            &worker_info,
+                            &control,
+                            &mut data,
+                            worker_info.dma_bus.clone(),
+                        )
+                        .await;
+                    }
+                    TransferTrb {
+                        address,
+                        variant: TransferTrbVariant::EventData(event_data_trb_data),
+                    } => {
+                        handle_event_data_trb(
+                            address,
+                            event_data_trb_data,
+                            &worker_info,
+                            &mut edtla,
+                        )
+                        .await;
+                    }
+                    _ => panic!("DataStage: not a DataStage or EventData TRB"),
+                },
+                ControlTransferState::StatusStage => match current_trb {
+                    TransferTrb {
+                        address,
+                        variant: TransferTrbVariant::StatusStage(status_stage_trb_data),
+                    } => {
+                        match handle_status_stage_trb(
+                            address,
+                            &status_stage_trb_data,
+                            &worker_info,
+                            &mut control,
+                            &device,
+                            &data,
+                        )
+                        .await
+                        {
+                            Ok(_) => {}
+                            Err(e) => {
+                                todo!("handle the errors in a control chain properly (clear remaining chain from TransferRing) {e}");
+                            }
+                        }
+
+                        // one of two ways to successfully end a valid control chain
+                        if !status_stage_trb_data.chain {
+                            break;
+                        }
+                    }
+                    TransferTrb {
+                        address,
+                        variant: TransferTrbVariant::EventData(event_data_trb_data),
+                    } => {
+                        handle_event_data_trb(
+                            address,
+                            event_data_trb_data,
+                            &worker_info,
+                            &mut edtla,
+                        )
+                        .await;
+
+                        // one of two ways to successfully end a valid control chain
+                        break;
+                    }
+                    _ => panic!("StatusStage: not a StatusStage or EventData TRB"),
+                },
+            }
         }
-
-        // send transfer event
-        let trb = EventTrb::new_transfer_event_trb(
-            request.address,
-            0,
-            CompletionCode::Success,
-            false,
-            worker_info.endpoint_id,
-            worker_info.slot_id,
-        );
-
-        worker_info.event_ring.lock().unwrap().enqueue(&trb);
-        worker_info.interrupt_line.interrupt();
-        debug!("sent Transfer Event and signaled interrupt");
     }
 }
 
@@ -310,72 +656,6 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
         val => panic!("invalid type {val}"),
     };
     (recipient, control_type)
-}
-
-async fn control_transfer_device_to_host(
-    device: nusb::Device,
-    request: &UsbRequest,
-    dma_bus: &BusDeviceRef,
-) {
-    let (recipient, control_type) = extract_recipient_and_type(request.request_type);
-    let control = ControlIn {
-        control_type,
-        recipient,
-        request: request.request,
-        value: request.value,
-        index: request.index,
-        length: request.length,
-    };
-
-    debug!("sending control in request to device");
-    let data = match device.control_in(control, Duration::from_millis(200)).await {
-        Ok(data) => {
-            debug!("control in data {:?}", data);
-            data
-        }
-        Err(error) => {
-            warn!("control in request failed: {:?}", error);
-            vec![0; 0]
-        }
-    };
-
-    // TODO: ideally the control transfer targets the right location for us and we get rid
-    // of the additional DMA write here.
-    dma_bus.write_bulk(request.data.unwrap(), &data);
-
-    // Ensure the data copy to guest memory completes before the subsequent
-    // transfer event write completes.
-    fence(Ordering::Release);
-}
-
-async fn control_transfer_host_to_device(
-    device: nusb::Device,
-    request: &UsbRequest,
-    dma_bus: &BusDeviceRef,
-) {
-    let data = request.data.map_or_else(Vec::new, |addr| {
-        let mut data = vec![0; request.length as usize];
-        dma_bus.read_bulk(addr, &mut data);
-        data
-    });
-    let (recipient, control_type) = extract_recipient_and_type(request.request_type);
-    let control = ControlOut {
-        control_type,
-        recipient,
-        request: request.request,
-        value: request.value,
-        index: request.index,
-        data: &data,
-    };
-
-    debug!("sending control out request to device");
-    match device
-        .control_out(control, Duration::from_millis(200))
-        .await
-    {
-        Ok(_) => debug!("control out success"),
-        Err(error) => warn!("control out request failed: {:?}", error),
-    }
 }
 
 // cognitive complexity required because of the high cost of trace! messages
