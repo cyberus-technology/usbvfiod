@@ -53,6 +53,11 @@ impl SlotManager {
             msg_send,
         }
     }
+
+    pub fn doorbell(&self, slot_id: u8, endpoint_id: u8) {
+        self.msg_send
+            .send(SlotMessage::Doorbell(slot_id, endpoint_id));
+    }
 }
 
 #[derive(Debug)]

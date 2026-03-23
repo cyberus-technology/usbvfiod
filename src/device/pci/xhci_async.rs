@@ -133,11 +133,11 @@ impl<RD: RealDevice, ID: Identifier> PciDevice for XhciController<RD, ID> {
                 .eventring_dequeue_pointer
                 .write(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
-            offset::DOORBELL_CONTROLLER => {} //guard.doorbell_controller(),
-            offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE_END => {} //{
-            //     let slot_id = ((req.addr - offset::DOORBELL_CONTROLLER) / 4) as u8;
-            //     guard.doorbell_device(slot_id, value as u32);
-            // }
+            offset::DOORBELL_CONTROLLER => self.command_ring.doorbell(),
+            offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE_END => {
+                let slot_id = ((req.addr - offset::DOORBELL_CONTROLLER) / 4) as u8;
+                self.slot_manager.doorbell(slot_id, value as u8);
+            }
             addr if get_portsc_index(addr).is_some() => {
                 // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
                 let port_index = get_portsc_index(addr).unwrap();

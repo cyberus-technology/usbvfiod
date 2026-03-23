@@ -93,6 +93,10 @@ impl CommandRing {
         }
     }
 
+    pub fn doorbell(&self) {
+        self.send_to_worker(WorkerMessage::Doorbell);
+    }
+
     /// Control the Command Ring.
     ///
     /// Call this function when the driver writes to the CRCR register.
