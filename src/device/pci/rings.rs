@@ -150,7 +150,6 @@ impl EventRing {
     }
 
     pub fn set_erst_size(&mut self, size: u32) {
-        assert!(size >= 1, "erst_size (ERSTSZ) must be >= 1");
         self.erst_size = size;
 
         if self.erst_count >= self.erst_size {
