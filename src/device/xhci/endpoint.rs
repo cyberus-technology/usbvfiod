@@ -2,7 +2,7 @@ use tokio::{
     runtime, select,
     sync::{mpsc, oneshot},
 };
-use tracing::warn;
+use tracing::{debug, trace, warn};
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -182,9 +182,13 @@ impl EndpointWorker {
     }
 
     async fn next_msg(&mut self) -> EndpointMessage {
-        self.recv
+        let msg = self
+            .recv
             .recv()
             .await
-            .expect("Endpoint communication channel must never close during operation")
+            .expect("Endpoint communication channel must never close during operation");
+        trace!("endpoint received: {msg:?}");
+
+        msg
     }
 }
