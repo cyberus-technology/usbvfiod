@@ -72,10 +72,10 @@ impl NusbDeviceWrapper {
         &self,
         endpoint_id: u8,
     ) -> Result<Endpoint<EpType, Dir>, Error> {
-        let interface_num = self
-            .get_interface_number_containing_endpoint(endpoint_id)
-            .ok_or_else(|| anyhow!("Endpoint with id {endpoint_id} is not part of an interface"))?;
         let endpoint_address = endpoint_id_to_address(endpoint_id);
+        let interface_num = self
+            .get_interface_number_containing_endpoint(endpoint_address)
+            .ok_or_else(|| anyhow!("Endpoint with id {endpoint_id} is not part of an interface"))?;
         let endpoint = self.interfaces[interface_num].endpoint(endpoint_address)?;
 
         Ok(endpoint)
