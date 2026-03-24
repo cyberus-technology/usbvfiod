@@ -326,9 +326,7 @@ impl Slot {
                 // no need to read dcbaae again
 
                 // ep0 worker is already running. Terminate before copying ep0 context.
-                let (send, recv) = oneshot::channel();
-                self.send_to_endpoint(1, EndpointMessage::Terminate(send));
-                recv.await;
+                self.deconfigure_endpoint(1).await;
 
                 self.dma_copy_slot_and_ep0_context(input_context_pointer);
 
@@ -346,17 +344,7 @@ impl Slot {
         // set endpoint state here and not in the worker, so we do not need to wait for worker startup
         context.set_state(endpoint_state::RUNNING);
 
-        let (send, recv) = oneshot::channel();
-        let launch_request = LaunchRequest {
-            slot_id: self.id,
-            endpoint_id: 1,
-            root_hub_port: self.root_hub_port(),
-            endpoint_context: context,
-            responder: send,
-        };
-        self.ep_launch_sender.send(launch_request);
-        let ep_sender = recv.await.expect("endpoint launcher should always answer");
-        self.endpoint_senders[1] = Some(ep_sender);
+        self.configure_endpoint(1).await;
 
         CompletionCode::Success
     }
@@ -413,6 +401,37 @@ impl Slot {
 
         todo!();
         // CompletionCode::Success
+    }
+
+    async fn deconfigure_endpoint(&mut self, endpoint_id: u8) {
+        let (send, recv) = oneshot::channel();
+        self.send_to_endpoint(endpoint_id, EndpointMessage::Terminate(send));
+        recv.await;
+        self.endpoint_senders[endpoint_id as usize] = None;
+    }
+
+    async fn configure_endpoint(&mut self, endpoint_id: u8) {
+        // Safety: either base_address was already initialized or we just initialized
+        let context = EndpointContext::new(
+            self.base_address
+                .unwrap()
+                .wrapping_add(endpoint_id as u64 * 32),
+            self.dma_bus.clone(),
+        );
+        // set endpoint state here and not in the worker, so we do not need to wait for worker startup
+        context.set_state(endpoint_state::RUNNING);
+
+        let (send, recv) = oneshot::channel();
+        let launch_request = LaunchRequest {
+            slot_id: self.id,
+            endpoint_id,
+            root_hub_port: self.root_hub_port(),
+            endpoint_context: context,
+            responder: send,
+        };
+        self.ep_launch_sender.send(launch_request);
+        let ep_sender = recv.await.expect("endpoint launcher should always answer");
+        self.endpoint_senders[endpoint_id as usize] = Some(ep_sender);
     }
 
     pub fn handle_evaluate_context(&self, _input_context_pointer: u64) -> CompletionCode {
