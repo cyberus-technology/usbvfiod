@@ -166,8 +166,26 @@ impl SlotWorker {
                         .await;
                     sender.send(result);
                 }
-                SlotMessage::ConfigureEndpoint(data, sender) => {
-                    sender.send(CompletionCode::Success);
+                SlotMessage::ConfigureEndpoint(trb_data, sender) => {
+                    let slot = match self
+                        .slots
+                        .get_mut(trb_data.slot_id as usize)
+                        .and_then(|opt| opt.as_mut())
+                    {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send(CompletionCode::SlotNotEnabledError);
+                            continue;
+                        }
+                    };
+
+                    let result = slot
+                        .handle_configure_endpoint(
+                            trb_data.input_context_pointer,
+                            trb_data.deconfigure,
+                        )
+                        .await;
+                    sender.send(result);
                 }
             }
         }
@@ -375,6 +393,21 @@ impl Slot {
         self.dma_bus.write_bulk(ep_context_addr, &context_buffer);
     }
 
+    fn dma_copy_ep_context(&self, endpoint_id: u8, input_context_pointer: u64) {
+        let base_addr = match self.base_address {
+            Some(base_addr) => base_addr,
+            None => panic!("do not call dma_copy_ep_context when base_addr is not initialized"),
+        };
+        let mut context_buffer = [0; 32];
+
+        let input_ep_context_addr =
+            input_context_pointer.wrapping_add((endpoint_id as u64 + 1) * 32);
+        let ep_context_addr = base_addr.wrapping_add(endpoint_id as u64 * 32);
+        self.dma_bus
+            .read_bulk(input_ep_context_addr, &mut context_buffer);
+        self.dma_bus.write_bulk(ep_context_addr, &context_buffer);
+    }
+
     fn root_hub_port(&self) -> u8 {
         let base_addr = match self.base_address {
             Some(base_addr) => base_addr,
@@ -385,9 +418,9 @@ impl Slot {
             .read(Request::new(base_addr.wrapping_add(6), RequestSize::Size1)) as u8
     }
 
-    pub fn handle_configure_endpoint(
+    pub async fn handle_configure_endpoint(
         &mut self,
-        _input_context_pointer: u64,
+        input_context_pointer: u64,
         deconfigure: bool,
     ) -> CompletionCode {
         // configure endpoint with DC=0 transitions from Addressed/Configured to Configured
@@ -399,8 +432,43 @@ impl Slot {
             return CompletionCode::ContextStateError;
         }
 
-        todo!();
-        // CompletionCode::Success
+        // TODO input checks
+
+        let drop_flags = self
+            .dma_bus
+            .read(Request::new(input_context_pointer, RequestSize::Size4));
+        let add_flags = self.dma_bus.read(Request::new(
+            input_context_pointer.wrapping_add(4),
+            RequestSize::Size4,
+        ));
+
+        let mut to_deconfigure = Vec::new();
+        let mut to_configure = Vec::new();
+
+        for i in 2..=31 {
+            if drop_flags & (1 << i) != 0 {
+                debug!("D{i} set");
+                to_deconfigure.push(i);
+            }
+            if add_flags & (1 << i) != 0 {
+                debug!("A{i} set");
+                to_configure.push(i);
+            }
+        }
+
+        for ep in to_deconfigure {
+            self.deconfigure_endpoint(ep).await;
+        }
+
+        for ep in to_configure {
+            self.dma_copy_ep_context(ep, input_context_pointer);
+            self.configure_endpoint(ep).await;
+        }
+
+        self.state = SlotState::Configured;
+        self.write_slot_state(slot_state::CONFIGURED);
+
+        CompletionCode::Success
     }
 
     async fn deconfigure_endpoint(&mut self, endpoint_id: u8) {
