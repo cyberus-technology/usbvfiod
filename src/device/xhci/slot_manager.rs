@@ -340,6 +340,7 @@ impl Slot {
         let launch_request = LaunchRequest {
             slot_id: self.id,
             endpoint_id: 1,
+            root_hub_port: self.root_hub_port(),
             endpoint_context: context,
             responder: send,
         };
@@ -374,6 +375,16 @@ impl Slot {
         self.dma_bus
             .read_bulk(input_ep_context_addr, &mut context_buffer);
         self.dma_bus.write_bulk(ep_context_addr, &context_buffer);
+    }
+
+    fn root_hub_port(&self) -> u8 {
+        let base_addr = match self.base_address {
+            Some(base_addr) => base_addr,
+            None => panic!("do not call root_hub_port when base_addr is not initialized"),
+        };
+
+        self.dma_bus
+            .read(Request::new(base_addr.wrapping_add(6), RequestSize::Size1)) as u8
     }
 
     pub fn handle_configure_endpoint(

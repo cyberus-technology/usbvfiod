@@ -2,6 +2,7 @@ use tokio::{
     runtime,
     sync::{mpsc, oneshot},
 };
+use tracing::debug;
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -28,6 +29,7 @@ pub struct EndpointLauncher<RD: RealDevice, ID: Identifier> {
 pub struct LaunchRequest {
     pub slot_id: u8,
     pub endpoint_id: u8,
+    pub root_hub_port: u8,
     pub endpoint_context: EndpointContext,
     pub responder: oneshot::Sender<mpsc::UnboundedSender<EndpointMessage>>,
 }
@@ -57,15 +59,19 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                 .recv()
                 .await
                 .expect("channel should never close");
+            debug!(
+                "endpoint launch request for slot {} endpoint {} with device at root hub port {}",
+                request.slot_id, request.endpoint_id, request.root_hub_port
+            );
 
-            let root_hub_port = request.endpoint_context.get_root_hub_port();
             let (send, recv) = oneshot::channel();
             self.port_msg_sender
-                .send(PortMessage::GetDevice(root_hub_port as usize, send));
+                .send(PortMessage::GetDevice(request.root_hub_port as usize, send));
             let device = recv
                 .await
                 .expect("port worker should always send a response");
             let endpoint_type = request.endpoint_context.get_endpoint_type();
+            debug!("endpoint context specifies endpoint type {endpoint_type:?}");
 
             let hotplug_endpoint_handle = match device {
                 Some(device) => {
@@ -87,6 +93,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                         EndpointType::InterruptOut => todo!(),
                         EndpointType::Unsupported => unreachable!("the slot should early-reject configure endpoint commands with unsupported endpoint types"),
                     };
+                    debug!("Created endpoint handle from real device");
                     HotplugEndpointHandle::new(
                         endpoint_handle,
                         device.cancel.clone(),
@@ -96,7 +103,10 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                 // unlikely edge case: The device was very recently detached, we are now handling an address device/configure endpoint command
                 // the endpoint does not depend on the real device, so we need the address device/configure endpoint to succeed (while also not
                 // creating an invalid state)
-                None => HotplugEndpointHandle::dummy(),
+                None => {
+                    debug!("Could not get real device, using dummy endpoint handle");
+                    HotplugEndpointHandle::dummy()
+                }
             };
 
             let sender = EndpointWorker::launch(
