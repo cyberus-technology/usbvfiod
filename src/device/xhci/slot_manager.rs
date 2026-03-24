@@ -2,7 +2,7 @@ use tokio::{
     runtime,
     sync::{mpsc, oneshot},
 };
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 use crate::{
     device::{
@@ -356,15 +356,23 @@ impl Slot {
     }
 
     fn dma_copy_slot_and_ep0_context(&self, input_context_pointer: u64) {
+        let base_addr = match self.base_address {
+            Some(base_addr) => base_addr,
+            None => panic!(
+                "do not call dma_copy_slot_and_ep0_context when base_addr is not initialized"
+            ),
+        };
         let mut context_buffer = [0; 32];
 
-        let slot_context_addr = input_context_pointer;
+        let input_slot_context_addr = input_context_pointer.wrapping_add(32);
         self.dma_bus
-            .read_bulk(slot_context_addr, &mut context_buffer);
-        self.dma_bus.write_bulk(slot_context_addr, &context_buffer);
+            .read_bulk(input_slot_context_addr, &mut context_buffer);
+        self.dma_bus.write_bulk(base_addr, &context_buffer);
 
-        let ep_context_addr = input_context_pointer.wrapping_add(32);
-        self.dma_bus.read_bulk(ep_context_addr, &mut context_buffer);
+        let input_ep_context_addr = input_context_pointer.wrapping_add(64);
+        let ep_context_addr = base_addr.wrapping_add(32);
+        self.dma_bus
+            .read_bulk(input_ep_context_addr, &mut context_buffer);
         self.dma_bus.write_bulk(ep_context_addr, &context_buffer);
     }
 
