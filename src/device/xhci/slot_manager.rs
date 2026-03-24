@@ -2,7 +2,7 @@ use tokio::{
     runtime,
     sync::{mpsc, oneshot},
 };
-use tracing::warn;
+use tracing::{trace, warn};
 
 use crate::{
     device::{
@@ -55,6 +55,7 @@ impl SlotManager {
     }
 
     pub fn doorbell(&self, slot_id: u8, endpoint_id: u8) {
+        trace!("Doorbell for slot {slot_id} endpoint {endpoint_id}");
         self.msg_send
             .send(SlotMessage::Doorbell(slot_id, endpoint_id));
     }

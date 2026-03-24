@@ -1,4 +1,4 @@
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -84,9 +84,10 @@ impl LinkedRing {
         self.dma_bus
             .read_bulk(self.dequeue_pointer, &mut trb_buffer);
 
-        debug!(
+        trace!(
             "interpreting transfer TRB at dequeue pointer; cycle state = {}, TRB = {:?}",
-            self.cycle_state as u8, trb_buffer
+            self.cycle_state as u8,
+            trb_buffer
         );
 
         // check if the TRB is fresh

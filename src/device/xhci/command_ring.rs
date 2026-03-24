@@ -92,6 +92,7 @@ impl CommandRing {
     }
 
     pub fn doorbell(&self) {
+        debug!("Doorbell for the controller");
         self.send_to_worker(WorkerMessage::Doorbell);
     }
 
@@ -235,6 +236,7 @@ impl CommandWorker {
         );
 
         if let WorkerState::ProcessingCommand(trb) = &self.state {
+            debug!("Processing command {:?}", trb);
             let completion_event = match &trb.variant {
                 CommandTrbVariant::EnableSlot => {
                     let (send, recv) = oneshot::channel();
@@ -322,6 +324,7 @@ impl CommandWorker {
                     )
                 }
             };
+            debug!("command {} finished: {completion_event:?}", trb.address);
             self.event_sender.send(completion_event);
         }
     }
