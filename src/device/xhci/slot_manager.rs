@@ -13,7 +13,7 @@ use crate::{
                 MAX_SLOTS,
             },
             registers::{ConfigureRegister, DcbaapRegister},
-            trb::{AddressDeviceCommandTrbData, CompletionCode},
+            trb::{AddressDeviceCommandTrbData, CompletionCode, ConfigureEndpointCommandTrbData},
         },
         xhci::{endpoint::EndpointMessage, endpoint_launcher::LaunchRequest},
     },
@@ -78,6 +78,10 @@ pub enum SlotMessage {
     EnableSlot(oneshot::Sender<Result<u8, CompletionCode>>),
     DisableSlot(u8, oneshot::Sender<CompletionCode>),
     AddressDevice(AddressDeviceCommandTrbData, oneshot::Sender<CompletionCode>),
+    ConfigureEndpoint(
+        ConfigureEndpointCommandTrbData,
+        oneshot::Sender<CompletionCode>,
+    ),
 }
 
 impl SlotWorker {
@@ -161,6 +165,9 @@ impl SlotWorker {
                         )
                         .await;
                     sender.send(result);
+                }
+                SlotMessage::ConfigureEndpoint(data, sender) => {
+                    sender.send(CompletionCode::Success);
                 }
             }
         }

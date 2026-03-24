@@ -553,7 +553,7 @@ impl TrbData for AddressDeviceCommandTrbData {
 /// Configure Endpoint Command TRB data structure.
 ///
 /// See XHCI specification Section 6.4.3.5 for detailed field descriptions.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct ConfigureEndpointCommandTrbData {
     pub input_context_pointer: u64,
     pub deconfigure: bool,

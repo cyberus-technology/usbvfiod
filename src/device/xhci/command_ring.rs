@@ -279,10 +279,14 @@ impl CommandWorker {
                     )
                 }
                 CommandTrbVariant::ConfigureEndpoint(data) => {
+                    let (send, recv) = oneshot::channel();
+                    let msg = SlotMessage::ConfigureEndpoint(*data, send);
+                    self.slot_msg_sender.send(msg);
+                    let completion_code = recv.await.expect("channel should never close");
                     EventTrb::new_command_completion_event_trb(
                         trb.address,
                         0,
-                        CompletionCode::Success,
+                        completion_code,
                         data.slot_id,
                     )
                 }
