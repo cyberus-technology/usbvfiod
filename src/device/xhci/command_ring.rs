@@ -311,7 +311,12 @@ impl CommandWorker {
                         data.slot_id,
                     )
                 }
-                CommandTrbVariant::ResetDevice(_reset_device_command_trb_data) => todo!(),
+                CommandTrbVariant::ResetDevice(data) => EventTrb::new_command_completion_event_trb(
+                    trb.address,
+                    0,
+                    CompletionCode::Success,
+                    data.slot_id,
+                ),
                 CommandTrbVariant::ForceHeader => todo!(),
                 CommandTrbVariant::NoOp => todo!(),
                 CommandTrbVariant::Unrecognized(_, trb_parse_error) => {
