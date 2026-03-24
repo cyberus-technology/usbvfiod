@@ -242,7 +242,9 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     let processing_result = self.real_ep.next_completion().await;
                     match processing_result {
                         ControlRequestProcessingResult::SuccessfulControlIn(data) => {
+                            debug!("got data from control in: {data:?}");
                             if let Some(data_pointer) = usb_request.data_pointer {
+                                debug!("writing data to {data_pointer}");
                                 self.dma_bus.write_bulk(data_pointer, &data);
                             }
 
@@ -447,6 +449,25 @@ pub struct OutEndpointHandle<ROEH: RealOutEndpointHandle> {
     submission_state: NormalSubmissionState,
 }
 
+impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
+    pub fn new(
+        slot_id: u8,
+        endpoint_id: u8,
+        real_ep: ROEH,
+        dma_bus: BusDeviceRef,
+        event_sender: EventSender,
+    ) -> Self {
+        Self {
+            slot_id,
+            endpoint_id,
+            real_ep,
+            dma_bus,
+            event_sender,
+            submission_state: NormalSubmissionState::NoTrbSubmitted,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 enum NormalSubmissionState {
     #[default]
@@ -566,6 +587,25 @@ pub struct InEndpointHandle<RIEH: RealInEndpointHandle> {
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
     submission_state: NormalSubmissionState,
+}
+
+impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
+    pub fn new(
+        slot_id: u8,
+        endpoint_id: u8,
+        real_ep: RIEH,
+        dma_bus: BusDeviceRef,
+        event_sender: EventSender,
+    ) -> Self {
+        Self {
+            slot_id,
+            endpoint_id,
+            real_ep,
+            dma_bus,
+            event_sender,
+            submission_state: NormalSubmissionState::NoTrbSubmitted,
+        }
+    }
 }
 
 impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {

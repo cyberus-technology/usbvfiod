@@ -8,8 +8,12 @@ use crate::device::{
     bus::BusDeviceRef,
     xhci::{
         endpoint::{EndpointMessage, EndpointWorker},
-        endpoint_handle::{ControlEndpointHandle, EndpointHandle, HotplugEndpointHandle},
+        endpoint_handle::{
+            ControlEndpointHandle, EndpointHandle, HotplugEndpointHandle, InEndpointHandle,
+            OutEndpointHandle,
+        },
         interrupter::EventSender,
+        nusb::NormalEndpointHandle,
         port::PortMessage,
         real_device::{Identifier, RealDevice},
         slot_manager::{EndpointContext, EndpointType},
@@ -87,8 +91,28 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             );
                             Box::new(endpoint_handle)
                         }
-                        EndpointType::BulkIn => todo!(),
-                        EndpointType::BulkOut => todo!(),
+                        EndpointType::BulkIn => {
+                            let real_endpoint = device.real_device.bulk_in_endpoint_handle(request.endpoint_id);
+                            let endpoint_handle = InEndpointHandle::new(
+                                request.slot_id,
+                                request.endpoint_id,
+                                real_endpoint,
+                                self.dma_bus.clone(),
+                                self.event_sender.clone()
+                            );
+                            Box::new(endpoint_handle)
+                        },
+                        EndpointType::BulkOut => {
+                            let real_endpoint = device.real_device.bulk_out_endpoint_handle(request.endpoint_id);
+                            let endpoint_handle = OutEndpointHandle::new(
+                                request.slot_id,
+                                request.endpoint_id,
+                                real_endpoint,
+                                self.dma_bus.clone(),
+                                self.event_sender.clone()
+                            );
+                            Box::new(endpoint_handle)
+                        },
                         EndpointType::InterruptIn => todo!(),
                         EndpointType::InterruptOut => todo!(),
                         EndpointType::Unsupported => unreachable!("the slot should early-reject configure endpoint commands with unsupported endpoint types"),
