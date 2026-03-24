@@ -106,7 +106,33 @@ impl SlotWorker {
                 .await
                 .expect("channel should never close");
             match msg {
-                SlotMessage::Doorbell(_, _) => todo!(),
+                SlotMessage::Doorbell(slot_id, endpoint_id) => {
+                    let slot = match self
+                        .slots
+                        .get(slot_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(slot) => slot,
+                        None => {
+                            warn!("Doorbell for disabled slot {slot_id}");
+                            continue;
+                        }
+                    };
+                    let ep_sender = match slot
+                        .endpoint_senders
+                        .get(endpoint_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(ep_sender) => ep_sender,
+                        None => {
+                            warn!(
+                                "Doorbell for disabled endpoint {endpoint_id} (of slot {slot_id})"
+                            );
+                            continue;
+                        }
+                    };
+                    ep_sender.send(EndpointMessage::Doorbell);
+                }
                 SlotMessage::EnableSlot(sender) => {
                     let result = self.allocate_slot();
                     sender.send(result);
