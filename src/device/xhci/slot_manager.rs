@@ -296,6 +296,7 @@ impl Slot {
                 self.dma_copy_slot_and_ep0_context(input_context_pointer);
 
                 // set slot state
+                self.state = SlotState::Default;
                 self.write_slot_state(slot_state::DEFAULT);
             }
             (SlotState::Enabled, false) => {
@@ -309,6 +310,7 @@ impl Slot {
 
                 self.dma_copy_slot_and_ep0_context(input_context_pointer);
 
+                self.state = SlotState::Addressed;
                 self.write_slot_state(slot_state::ADDRESSED);
             }
             (SlotState::Default, false) => {
@@ -323,6 +325,7 @@ impl Slot {
 
                 self.dma_copy_slot_and_ep0_context(input_context_pointer);
 
+                self.state = SlotState::Addressed;
                 self.write_slot_state(slot_state::ADDRESSED);
             }
             _ => return CompletionCode::ContextStateError,
