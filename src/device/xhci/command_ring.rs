@@ -42,8 +42,7 @@ struct CommandWorker {
 #[derive(Debug)]
 enum WorkerState {
     Stopped,
-    JustStarted,
-    WaitingForDoorbell,
+    Idle,
     LookingForNewCommand,
     ProcessingCommand(CommandTrb),
     Stopping,
@@ -52,7 +51,6 @@ enum WorkerState {
 #[derive(Debug)]
 enum WorkerMessage {
     SetDequeuePointerAndCS(u64, bool),
-    Start,
     Doorbell,
     Stop,
 }
@@ -123,10 +121,6 @@ impl CommandRing {
                 dequeue_pointer,
                 cycle_state,
             ));
-
-            if value & crcr::CRR != 0 {
-                self.send_to_worker(WorkerMessage::Start);
-            }
         }
     }
 
@@ -162,18 +156,14 @@ impl CommandWorker {
                         debug!("Updating command ring parameters: dp={dp:#x}, cs={cs}");
                         self.ring.set_dequeue_pointer(dp, cs);
                     }
-                    WorkerMessage::Start => todo!(),
-                    msg => warn!("Unexpected message: msg={msg:?}, state={:?}", self.state),
-                },
-                WorkerState::JustStarted => match self.recv().await {
                     WorkerMessage::Doorbell => {
+                        // TODO check R/S == 1
                         self.running.store(true, Ordering::Relaxed);
                         self.state = WorkerState::LookingForNewCommand;
                     }
-                    WorkerMessage::Stop => self.state = WorkerState::Stopped,
                     msg => warn!("Unexpected message: msg={msg:?}, state={:?}", self.state),
                 },
-                WorkerState::WaitingForDoorbell => match self.recv().await {
+                WorkerState::Idle => match self.recv().await {
                     WorkerMessage::Doorbell => {
                         self.state = WorkerState::LookingForNewCommand;
                     }
@@ -192,7 +182,9 @@ impl CommandWorker {
                         };
 
                         match msg {
-                            WorkerMessage::Doorbell => {}
+                            WorkerMessage::Doorbell => {
+                                // we are already active and running, silently consume
+                            }
                             WorkerMessage::Stop => {
                                 self.state = WorkerState::Stopping;
                                 break;
@@ -200,6 +192,7 @@ impl CommandWorker {
                             msg => warn!("Unexpected message: msg={msg:?}, state={:?}", self.state),
                         }
                     }
+                    // TODO check R/S and stop if equals 0
 
                     // check for TRB
                     self.state = match self.ring.next_trb() {
@@ -211,7 +204,7 @@ impl CommandWorker {
                             };
                             WorkerState::ProcessingCommand(command_trb)
                         }
-                        None => WorkerState::WaitingForDoorbell,
+                        None => WorkerState::Idle,
                     };
                 }
                 WorkerState::ProcessingCommand(_) => {
@@ -220,7 +213,7 @@ impl CommandWorker {
                     self.state = WorkerState::LookingForNewCommand;
                 }
                 WorkerState::Stopping => {
-                    self.running.store(true, Ordering::Relaxed);
+                    self.running.store(false, Ordering::Relaxed);
                     self.state = WorkerState::Stopped;
                 }
             }
