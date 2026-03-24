@@ -2,6 +2,7 @@ use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin, sync::Arc
 
 use tokio::{runtime, select, sync::Mutex};
 use tokio_util::sync::CancellationToken;
+use tracing::debug;
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -166,8 +167,9 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum ControlSubmissionState {
+    #[default]
     NoTrbSubmitted,
     ParserConsumedTrb,
     // store address of trb that failed to parse.
@@ -222,7 +224,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
         );
 
         Box::pin(async {
-            match self.submission_state {
+            match mem::take(&mut self.submission_state) {
                 ControlSubmissionState::ParserConsumedTrb => TrbProcessingResult::Ok,
                 ControlSubmissionState::ParserError(trb_address) => {
                     let event = EventTrb::new_transfer_event_trb(
