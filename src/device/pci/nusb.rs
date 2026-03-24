@@ -2,13 +2,12 @@
 
 use anyhow::{Error, Result};
 use nusb::transfer::{
-    Buffer, Bulk, BulkOrInterrupt, ControlIn, ControlOut, ControlType, In, Interrupt, Out,
-    Recipient, TransferError,
+    Buffer, Bulk, BulkOrInterrupt, ControlIn, ControlOut, ControlType, Direction,
+    EndpointDirection, In, Interrupt, Out, Recipient, TransferError,
 };
 use nusb::{Interface, MaybeFuture};
-use tokio::select;
 use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::async_runtime::runtime;
 use crate::device::bus::BusDeviceRef;
@@ -100,25 +99,25 @@ impl NusbDeviceWrapper {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Bulk, Out>(endpoint_number)
                     .unwrap();
-                runtime().spawn(transfer_out_worker(endpoint, worker_info, receiver));
+                runtime().spawn(transfer_worker(endpoint, worker_info, receiver));
             }
             EndpointType::BulkIn => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Bulk, In>(endpoint_number)
                     .unwrap();
-                runtime().spawn(transfer_in_worker(endpoint, worker_info, receiver));
+                runtime().spawn(transfer_worker(endpoint, worker_info, receiver));
             }
             EndpointType::InterruptIn => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Interrupt, In>(endpoint_number)
                     .unwrap();
-                runtime().spawn(transfer_in_worker(endpoint, worker_info, receiver));
+                runtime().spawn(transfer_worker(endpoint, worker_info, receiver));
             }
             EndpointType::InterruptOut => {
                 let endpoint = interface_of_endpoint
                     .endpoint::<Interrupt, Out>(endpoint_number)
                     .unwrap();
-                runtime().spawn(transfer_out_worker(endpoint, worker_info, receiver));
+                runtime().spawn(transfer_worker(endpoint, worker_info, receiver));
             }
             endpoint_type => {
                 todo!(
@@ -553,7 +552,8 @@ async fn control_worker(
             {
                 trace!("Control Chain Stage: StatusStage -> StatusStage");
             } else {
-                panic!("wrong order or unexpected {:?}", current_trb.variant);
+                error!("wrong order or unexpected {:?}", current_trb.variant);
+                continue;
             }
 
             // Handle the given TRB according to the current stage.
@@ -719,137 +719,123 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
     (recipient, control_type)
 }
 
-// cognitive complexity required because of the high cost of trace! messages
-#[allow(clippy::cognitive_complexity)]
-async fn transfer_in_worker<EpType: BulkOrInterrupt>(
-    mut endpoint: nusb::Endpoint<EpType, In>,
-    worker_info: EndpointWorkerInfo,
-    mut receiver: mpsc::Receiver<EndpointMessage>,
-) {
-    loop {
-        let trb = match worker_info.transfer_ring.next_transfer_trb() {
-            Some(trb) => trb,
-            None => {
-                trace!(
-                    "worker thread ep {}: No TRB on transfer ring, going to sleep",
-                    worker_info.endpoint_id
-                );
-                match receiver
-                    .recv()
-                    .await
-                    .expect("The worker channel should never close while the worker is alive.")
-                {
-                    EndpointMessage::Doorbell => {
-                        trace!(
-                            "worker thread ep {}: Received wake up",
-                            worker_info.endpoint_id
-                        );
-                        continue;
-                    }
-                    EndpointMessage::Terminate => {
-                        debug!(
-                            "worker thread ep {}: Stopped by terminate message",
-                            worker_info.endpoint_id
-                        );
-                        return;
-                    }
-                };
-            }
-        };
-        assert!(
-            matches!(trb.variant, TransferTrbVariant::Normal(_)),
-            "Expected Normal TRB but got {trb:?}"
-        );
+async fn handle_normal_trb<EpType: BulkOrInterrupt, EpDir: EndpointDirection>(
+    address: u64,
+    normal_trb_data: &NormalTrbData,
+    endpoint: &mut nusb::Endpoint<EpType, EpDir>,
+    worker_info: &EndpointWorkerInfo,
+    edtla: &mut u64,
+) -> Result<CompletionCode, TransferError> {
+    trace!("Normal TRB");
 
-        // The assertion above guarantees that the TRB is a normal TRB. A wrong
-        // TRB type is the only reason the unwrap can fail.
-        let normal_data = extract_normal_trb_data(&trb).unwrap();
-        let transfer_length = normal_data.transfer_length as usize;
+    //*edtla += normal_trb_data.transfer_length as u64;
 
-        let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
-        let buffer = Buffer::new(buffer_size);
-        endpoint.submit(buffer);
-        // doorbell might interrupt us, so we need the loop
-        let buffer = loop {
-            select! {
-                buf = endpoint.next_complete() => break buf,
-                msg = receiver.recv() => {
-                    match msg.expect("The worker channel should never close while the worker is alive.") {
-                        EndpointMessage::Doorbell => {},
-                        EndpointMessage::Terminate => return,
-                    }
+    let value: Result<CompletionCode, TransferError> = match EpDir::DIR {
+        Direction::In => {
+            trace!("Normal TRB Direction In");
+
+            let transfer_length = normal_trb_data.transfer_length as usize;
+
+            let buffer_size = determine_buffer_size(transfer_length, endpoint.max_packet_size());
+            let buffer = Buffer::new(buffer_size);
+            endpoint.submit(buffer);
+
+            let buffer = endpoint.next_complete().await;
+            let completion_code: CompletionCode;
+            let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
+                Greater => {
+                    completion_code = CompletionCode::Success;
+                    // Got more data than requested. We must not write more data than
+                    // the guest driver requested with the transfer length, otherwise
+                    // we might write out of the buffer.
+                    //
+                    // Why does this case happen? Sometimes the driver asks for, e.g.,
+                    // 36 bytes. We have to request max_packet_size (e.g., 1024 bytes).
+                    // The real device then provides 1024 bytes of data (looks like
+                    // zero padding).
+                    transfer_length
+                }
+                Less => {
+                    completion_code = CompletionCode::ShortPacket;
+                    // Got less data than requested. That case happens for example when
+                    // the driver sends a Mode Sense(6) SCSI command. The response size
+                    // is variable, so the driver asks for 192 bytes but is also fine
+                    // with less.
+                    //
+                    // We copy all the data over that we got.
+                    // TODO: currently, we just report success and 0 residual bytes,
+                    // even though we probably should report something like short
+                    // packet and the difference between requested and actual byte
+                    // count. We get away with the simplified handling for now.
+                    // The Mode Sense(6) response encodes the size of the response in
+                    // the first byte, so the driver is not unhappy that we reported
+                    // 192 bytes but only deliver, e.g., 36 bytes.
+                    buffer.actual_len
+                }
+                Equal => {
+                    completion_code = CompletionCode::Success;
+                    // We got exactly the right amount of bytes.
+                    transfer_length
                 }
             };
-        };
-        let byte_count_dma = match buffer.actual_len.cmp(&transfer_length) {
-            Greater => {
-                // Got more data than requested. We must not write more data than
-                // the guest driver requested with the transfer length, otherwise
-                // we might write out of the buffer.
-                //
-                // Why does this case happen? Sometimes the driver asks for, e.g.,
-                // 36 bytes. We have to request max_packet_size (e.g., 1024 bytes).
-                // The real device then provides 1024 bytes of data (looks like
-                // zero padding).
-                transfer_length
-            }
-            Less => {
-                // Got less data than requested. That case happens for example when
-                // the driver sends a Mode Sense(6) SCSI command. The response size
-                // is variable, so the driver asks for 192 bytes but is also fine
-                // with less.
-                //
-                // We copy all the data over that we got.
-                // TODO: currently, we just report success and 0 residual bytes,
-                // even though we probably should report something like short
-                // packet and the difference between requested and actual byte
-                // count. We get away with the simplified handling for now.
-                // The Mode Sense(6) response encodes the size of the response in
-                // the first byte, so the driver is not unhappy that we reported
-                // 192 bytes but only deliver, e.g., 36 bytes.
-                buffer.actual_len
-            }
-            Equal => {
-                // We got exactly the right amount of bytes.
-                transfer_length
-            }
-        };
-        worker_info
-            .dma_bus
-            .write_bulk(normal_data.data_pointer, &buffer.buffer[..byte_count_dma]);
 
-        if !normal_data.interrupt_on_completion {
-            trace!("Processed TRB without IOC flag; sending no transfer event");
-            continue;
+            let data = &buffer.buffer[..buffer.actual_len];
+            *edtla += byte_count_dma as u64;
+
+            worker_info
+                .dma_bus
+                .write_bulk(normal_trb_data.data_pointer, data);
+            Ok(completion_code)
         }
+        Direction::Out => {
+            trace!("Normal TRB Direction Out");
 
-        let (completion_code, residual_bytes) = (CompletionCode::Success, 0);
+            *edtla += normal_trb_data.transfer_length as u64;
 
-        let transfer_event = EventTrb::new_transfer_event_trb(
-            trb.address,
-            residual_bytes,
-            completion_code,
-            false,
-            worker_info.endpoint_id,
-            worker_info.slot_id,
-        );
-        worker_info
-            .event_ring
-            .lock()
-            .unwrap()
-            .enqueue(&transfer_event);
-        worker_info.interrupt_line.interrupt();
-        debug!("sent Transfer Event and signaled interrupt");
+            let mut data = vec![0; normal_trb_data.transfer_length as usize];
+            worker_info
+                .dma_bus
+                .read_bulk(normal_trb_data.data_pointer, &mut data);
+            if normal_trb_data.transfer_length == 31 {
+                debug!("OUT data: {:?}", data);
+            }
+            endpoint.submit(data.into());
+            let something = endpoint.next_complete().await;
+
+            match something.status {
+                Ok(_) => Ok(CompletionCode::Success),
+                Err(e) => {
+                    error!("{e}");
+                    Err(e)
+                }
+            }
+        }
+    };
+
+    if normal_trb_data.interrupt_on_completion {
+        interrupt_on_completion(address, CompletionCode::Success, worker_info, false);
     }
+
+    value
 }
 
-// cognitive complexity required because of the high cost of trace! messages
 #[allow(clippy::cognitive_complexity)]
-async fn transfer_out_worker<EpType: BulkOrInterrupt>(
-    mut endpoint: nusb::Endpoint<EpType, Out>,
+async fn transfer_worker<EpType: BulkOrInterrupt, EpDir: EndpointDirection>(
+    mut endpoint: nusb::Endpoint<EpType, EpDir>,
     worker_info: EndpointWorkerInfo,
     mut receiver: mpsc::Receiver<EndpointMessage>,
 ) {
+    // Event Data TRB use the completion code of the previously completed TRB
+    // (stateful)
+    let mut previous_completion_code = CompletionCode::UndefinedError;
+
+    // Event Data Transfer Length Accumulator. Refer to section 4.11.5.2 for more information.
+    // (stateful)
+    let mut edtla: u64 = 0;
+
+    // TODO consider chain bit for state transition or reset of edtla (aware if currently
+    // in a chain or if the current TRB is the first or last TRB).
+
     loop {
         let trb = match worker_info.transfer_ring.next_transfer_trb() {
             Some(trb) => trb,
@@ -880,54 +866,45 @@ async fn transfer_out_worker<EpType: BulkOrInterrupt>(
                 };
             }
         };
-        assert!(
-            matches!(trb.variant, TransferTrbVariant::Normal(_)),
-            "Expected Normal TRB but got {trb:?}"
-        );
 
-        // The assertion above guarantees that the TRB is a normal TRB. A wrong
-        // TRB type is the only reason the unwrap can fail.
-        let normal_data = extract_normal_trb_data(&trb).unwrap();
-
-        let mut data = vec![0; normal_data.transfer_length as usize];
-        worker_info
-            .dma_bus
-            .read_bulk(normal_data.data_pointer, &mut data);
-        if normal_data.transfer_length == 31 {
-            debug!("OUT data: {:?}", data);
+        match trb {
+            TransferTrb {
+                address,
+                variant: TransferTrbVariant::Normal(normal_trb_data),
+            } => {
+                previous_completion_code = match handle_normal_trb(
+                    address,
+                    &normal_trb_data,
+                    &mut endpoint,
+                    &worker_info,
+                    &mut edtla,
+                )
+                .await
+                {
+                    Ok(a) => a,
+                    Err(e) => {
+                        error!("{e}");
+                        CompletionCode::UndefinedError
+                    }
+                }
+            }
+            TransferTrb {
+                address,
+                variant: TransferTrbVariant::EventData(event_data_trb_data),
+            } => {
+                handle_event_data_trb(
+                    address,
+                    event_data_trb_data,
+                    &worker_info,
+                    &mut edtla,
+                    &previous_completion_code,
+                )
+                .await;
+            }
+            _ => {
+                panic!("only normal trb and event data trb are expected")
+            }
         }
-        endpoint.submit(data.into());
-        endpoint.next_complete().await;
-
-        if !normal_data.interrupt_on_completion {
-            trace!("Processed TRB without IOC flag; sending no transfer event");
-            continue;
-        }
-
-        let (completion_code, residual_bytes) = (CompletionCode::Success, 0);
-
-        let transfer_event = EventTrb::new_transfer_event_trb(
-            trb.address,
-            residual_bytes,
-            completion_code,
-            false,
-            worker_info.endpoint_id,
-            worker_info.slot_id,
-        );
-        worker_info
-            .event_ring
-            .lock()
-            .unwrap()
-            .enqueue(&transfer_event);
-        worker_info.interrupt_line.interrupt();
-        debug!("sent Transfer Event and signaled interrupt");
-    }
-}
-
-const fn extract_normal_trb_data(trb: &TransferTrb) -> Option<&NormalTrbData> {
-    match &trb.variant {
-        TransferTrbVariant::Normal(data) => Some(data),
-        _ => None,
     }
 }
 
