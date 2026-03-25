@@ -367,7 +367,7 @@ async fn handle_status_stage_trb(
 
 async fn handle_event_data_trb(
     address: u64,
-    event_data_trb_data: EventDataTrbData,
+    event_data_trb_data: &EventDataTrbData,
     worker_info: &EndpointWorkerInfo,
     edtla: &mut u64,
 ) {
@@ -586,7 +586,7 @@ async fn control_worker(
                     } => {
                         handle_event_data_trb(
                             address,
-                            event_data_trb_data,
+                            &event_data_trb_data,
                             &worker_info,
                             &mut edtla,
                         )
@@ -626,7 +626,7 @@ async fn control_worker(
                     } => {
                         handle_event_data_trb(
                             address,
-                            event_data_trb_data,
+                            &event_data_trb_data,
                             &worker_info,
                             &mut edtla,
                         )
