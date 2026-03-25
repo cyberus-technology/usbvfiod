@@ -174,7 +174,10 @@ impl XhciController {
             interrupt_management: 0,
             interrupt_moderation_interval: runtime::IMOD_DEFAULT,
             interrupt_line: Arc::new(DummyInterruptLine::default()),
-            portsc: [PortscRegister::new(portsc::PP); MAX_PORTS as usize].into(),
+            portsc: [PortscRegister::new(
+                portsc::mask(portsc::PP) | portsc::value::PLS_RXDETECT << portsc::PLS.0,
+            ); MAX_PORTS as usize]
+                .into(),
         }
     }
 
@@ -222,15 +225,27 @@ impl XhciController {
                 };
 
             self.devices[available_port_id] = Some(device);
-            self.portsc[available_port_id] = PortscRegister::new(
-                portsc::CCS
-                    | portsc::PED
-                    | portsc::PP
-                    | portsc::CSC
-                    | portsc::PEC
-                    | portsc::PRC
-                    | (speed as u64) << 10,
-            );
+
+            self.portsc[available_port_id] = match version {
+                UsbVersion::USB3 => PortscRegister::new(
+                    portsc::mask(portsc::CCS)
+                        | portsc::mask(portsc::PED)
+                        | portsc::mask(portsc::PP)
+                        | portsc::mask(portsc::CSC)
+                        | portsc::mask(portsc::PEC)
+                        | portsc::mask(portsc::PRC)
+                        | (speed as u64) << portsc::PORT_SPEED.0,
+                ),
+                // USB 2 device initialization is continued on the first portsc write
+                // received from system software that will set portsc::PR = true.
+                UsbVersion::USB2 => PortscRegister::new(
+                    portsc::mask(portsc::CCS)
+                        | portsc::value::PLS_POLLING << portsc::PLS.0
+                        | portsc::mask(portsc::PP)
+                        | (speed as u64) << portsc::PORT_SPEED.0
+                        | portsc::mask(portsc::CSC),
+                ),
+            };
 
             // Safety: the call for the same id succeeded before in the filter.
             let port_id = Self::version_relative_id(available_port_id).unwrap().1;
@@ -287,7 +302,8 @@ impl XhciController {
         };
 
         // update portsc register
-        self.portsc[port_id] = PortscRegister::new(portsc::PP | portsc::CSC);
+        self.portsc[port_id] =
+            PortscRegister::new(portsc::mask(portsc::PP) | portsc::mask(portsc::CSC));
         self.send_port_status_change_event(port_id as u8);
 
         // remove
@@ -346,7 +362,25 @@ impl XhciController {
     }
 
     fn write_portsc(&mut self, port_id: usize, value: u64) {
+        // Right now only RW1C bits are handled in the following method.
         self.portsc[port_id].write(value);
+
+        let (version, _id) = Self::version_relative_id(port_id).unwrap();
+
+        if value & portsc::mask(portsc::PR) != 0 {
+            match version {
+                UsbVersion::USB2 => {
+                    self.portsc[port_id].set_field(portsc::PLS, portsc::value::PLS_U0);
+                    self.portsc[port_id].set_field(portsc::PED, 1);
+                    self.portsc[port_id].set_field(portsc::PRC, 1);
+
+                    self.send_port_status_change_event(port_id as u8);
+                }
+                UsbVersion::USB3 => {
+                    self.portsc[port_id].set_field(portsc::PRC, 1);
+                }
+            }
+        }
     }
 
     /// Configure the interrupt line for the controller.
@@ -753,9 +787,21 @@ impl PciDevice for Mutex<XhciController> {
 
             // xHC Extended Capability ("Supported Protocols Capability")
             offset::SUPPORTED_PROTOCOLS => capability::supported_protocols::CAP_INFO,
+            val if val == offset::SUPPORTED_PROTOCOLS + 4 => {
+                0x20425355 // "USB "
+            }
             offset::SUPPORTED_PROTOCOLS_CONFIG => capability::supported_protocols::CONFIG,
+            val if val == offset::SUPPORTED_PROTOCOLS_CONFIG + 4 => {
+                0x00000000 // Reserved
+            }
             offset::SUPPORTED_PROTOCOLS_USB2 => capability::supported_protocols_usb2::CAP_INFO,
+            val if val == offset::SUPPORTED_PROTOCOLS_USB2 + 4 => {
+                0x20425355 // "USB "
+            }
             offset::SUPPORTED_PROTOCOLS_USB2_CONFIG => capability::supported_protocols_usb2::CONFIG,
+            val if val == offset::SUPPORTED_PROTOCOLS_USB2_CONFIG + 4 => {
+                0x00000000 // Reserved
+            }
 
             // xHC Operational Registers
             offset::USBCMD => 0,
@@ -790,6 +836,8 @@ impl PciDevice for Mutex<XhciController> {
             }
             // Port Link Info Register (PORTLI_USB3)
             addr if guard.get_portli_index(addr).is_some() => 0,
+
+            offset::MFINDEX => 0x0,
 
             // Everything else is Reserved Zero
             addr => {

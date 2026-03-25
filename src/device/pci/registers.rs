@@ -41,6 +41,18 @@ impl PortscRegister {
         let bits_to_clear = new_value & self.bitmask_rw1c;
         self.value &= !bits_to_clear;
     }
+
+    /// The `field` tuple is the offset and length of the targeted portsc
+    /// register field defined with constants.
+    pub const fn set_field(&mut self, field: (u64, u64), value: u64) {
+        self.zero_field(field);
+        self.value |= value << field.0;
+    }
+
+    const fn zero_field(&mut self, field: (u64, u64)) {
+        let mask = (!0u64 >> (64 - field.1)) << field.0;
+        self.value &= !(mask);
+    }
 }
 
 #[cfg(test)]
