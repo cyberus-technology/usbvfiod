@@ -8,19 +8,19 @@ use crate::device::{
     bus::BusDeviceRef,
     pci::constants::xhci::device_slots::endpoint_state,
     xhci::{
-        endpoint_handle::{HotplugEndpointHandle, TrbProcessingResult},
+        endpoint_handle::{EndpointHandle, HotplugEndpointHandle, TrbProcessingResult},
         linked_ring::LinkedRing,
         slot_manager::EndpointContext,
     },
 };
 
 #[derive(Debug)]
-pub struct EndpointWorker {
+pub struct EndpointWorker<EH: EndpointHandle> {
     state: WorkerState,
     context: EndpointContext,
     transfer_ring: LinkedRing,
     recv: mpsc::UnboundedReceiver<EndpointMessage>,
-    real_endpoint: HotplugEndpointHandle,
+    real_endpoint: HotplugEndpointHandle<EH>,
 }
 
 #[derive(Debug)]
@@ -47,11 +47,11 @@ pub enum EndpointMessage {
     Terminate(oneshot::Sender<()>),
 }
 
-impl EndpointWorker {
+impl<EH: EndpointHandle> EndpointWorker<EH> {
     pub fn launch(
         async_runtime: &runtime::Handle,
         dma_bus: BusDeviceRef,
-        trb_consumer: HotplugEndpointHandle,
+        trb_consumer: HotplugEndpointHandle<EH>,
         context: EndpointContext,
     ) -> mpsc::UnboundedSender<EndpointMessage> {
         let (sender, recv) = mpsc::unbounded_channel();
@@ -71,9 +71,7 @@ impl EndpointWorker {
 
         sender
     }
-}
 
-impl EndpointWorker {
     async fn run(mut self) {
         loop {
             match self.state {

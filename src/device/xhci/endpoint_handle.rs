@@ -27,6 +27,27 @@ pub trait EndpointHandle: Debug + Send + 'static {
     fn clear_halt(&mut self);
 }
 
+type DummyEndpointHandle = ();
+impl EndpointHandle for DummyEndpointHandle {
+    fn submit_trb(&mut self, _trb: RawTrb) {
+        panic!("should never call functions of dummy endpoint handle");
+    }
+
+    fn next_completion(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + '_>> {
+        panic!("should never call functions of dummy endpoint handle");
+    }
+
+    fn cancel(&mut self) {
+        panic!("should never call functions of dummy endpoint handle");
+    }
+
+    fn clear_halt(&mut self) {
+        panic!("should never call functions of dummy endpoint handle");
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum TrbProcessingResult {
     Ok,
@@ -37,14 +58,14 @@ pub enum TrbProcessingResult {
 }
 
 #[derive(Debug)]
-pub struct HotplugEndpointHandle {
-    endpoint_handle: Arc<Mutex<Option<Box<dyn EndpointHandle>>>>,
+pub struct HotplugEndpointHandle<EH: EndpointHandle> {
+    endpoint_handle: Arc<Mutex<Option<EH>>>,
     notify_detach: CancellationToken,
 }
 
-impl HotplugEndpointHandle {
+impl<EH: EndpointHandle> HotplugEndpointHandle<EH> {
     pub fn new(
-        endpoint_handle: Box<dyn EndpointHandle>,
+        endpoint_handle: EH,
         notify_detach: CancellationToken,
         async_runtime: &runtime::Handle,
     ) -> Self {
@@ -58,17 +79,6 @@ impl HotplugEndpointHandle {
         Self {
             endpoint_handle,
             notify_detach,
-        }
-    }
-
-    // Necessary because AddressDevice/ConfigureEndpoint might open an endpoint while the device just recently was removed.
-    // It makes no sense to fail the command then. So we create a dummy endpoint handle that behaves the same as the
-    // endpoint handle of a removed device.
-    pub fn dummy() -> Self {
-        Self {
-            endpoint_handle: Arc::new(Mutex::new(None)),
-            // just a dummy; nobody will notify, nobody listens
-            notify_detach: CancellationToken::new(),
         }
     }
 
@@ -123,12 +133,25 @@ impl HotplugEndpointHandle {
     // wait for signal of other endpoints or the central detach.
     // Drop device when receiving notification.
     async fn detach_handler(
-        endpoint_handle: Arc<Mutex<Option<Box<dyn EndpointHandle>>>>,
+        endpoint_handle: Arc<Mutex<Option<EH>>>,
         notify_detach: CancellationToken,
     ) {
         notify_detach.cancelled().await;
         let mut ep = endpoint_handle.lock().await;
         *ep = None;
+    }
+}
+
+impl HotplugEndpointHandle<DummyEndpointHandle> {
+    // Necessary because AddressDevice/ConfigureEndpoint might open an endpoint while the device just recently was removed.
+    // It makes no sense to fail the command then. So we create a dummy endpoint handle that behaves the same as the
+    // endpoint handle of a removed device.
+    pub fn dummy() -> Self {
+        Self {
+            endpoint_handle: Arc::new(Mutex::new(None)),
+            // just a dummy; nobody will notify, nobody listens
+            notify_detach: CancellationToken::new(),
+        }
     }
 }
 
