@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use tokio::sync::mpsc;
 use tokio::{runtime, select};
 use tracing_log::log::info;
@@ -73,7 +73,7 @@ pub struct EventSender {
 impl EventSender {
     pub fn send(&self, event: EventTrb) -> anyhow::Result<()> {
         let msg = InterrupterMessage::SendEvent(event);
-        self.sender.send(msg)?;
+        self.sender.send(msg).context("event channel closed")?;
 
         Ok(())
     }
