@@ -5,8 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{anyhow, Context, Result};
-use nusb::MaybeFuture;
+use anyhow::Result;
 use tracing::{debug, info, trace};
 
 use vfio_bindings::bindings::vfio::{
@@ -19,7 +18,7 @@ use vfio_bindings::bindings::vfio::{
 use vfio_user::{IrqInfo, ServerBackend};
 
 use crate::{
-    async_runtime::{self, runtime},
+    async_runtime::runtime,
     device::{
         bus::{Request, RequestSize},
         interrupt_line::{DummyInterruptLine, InterruptLine},
@@ -30,7 +29,6 @@ use crate::{
         },
     },
 };
-use usbvfiod::hotplug_protocol::device_paths::resolve_path;
 
 use crate::{dynamic_bus::DynamicBus, memory_segment::MemorySegment};
 
