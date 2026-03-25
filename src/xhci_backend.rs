@@ -16,7 +16,7 @@ use vfio_bindings::bindings::vfio::{
     VFIO_PCI_NUM_IRQS, VFIO_PCI_NUM_REGIONS, VFIO_REGION_INFO_FLAG_READ,
     VFIO_REGION_INFO_FLAG_WRITE,
 };
-use vfio_user::{IrqInfo, ServerBackend};
+use vfio_user::{IrqInfo, ServerBackend, ServerRegion};
 
 use crate::device::{
     bus::{Request, RequestSize},
@@ -129,25 +129,33 @@ impl XhciBackend {
 
 impl XhciBackend {
     /// Return a list of regions for [`vfio_user::Server::new`].
-    pub fn regions(&self) -> Vec<vfio_region_info> {
+    pub fn regions(&self) -> Vec<ServerRegion> {
         (0..VFIO_PCI_NUM_REGIONS)
             .map(|i| {
-                let empty_region = vfio_region_info {
-                    argsz: size_of::<vfio_region_info>() as u32,
-                    index: i,
-                    ..Default::default()
+                let empty_region = ServerRegion {
+                    region_info: vfio_region_info {
+                        argsz: size_of::<vfio_region_info>() as u32,
+                        index: i,
+                        ..Default::default()
+                    },
+                    sparse_areas: vec![],
+                    mmap_fd: None,
                 };
 
                 match i {
                     VFIO_PCI_CONFIG_REGION_INDEX => {
                         debug!("Client queried config space region");
 
-                        vfio_region_info {
-                            argsz: size_of::<vfio_region_info>() as u32,
-                            index: i,
-                            size: 256,
-                            flags: VFIO_REGION_INFO_FLAG_READ | VFIO_REGION_INFO_FLAG_WRITE,
-                            ..Default::default()
+                        ServerRegion {
+                            region_info: vfio_region_info {
+                                argsz: size_of::<vfio_region_info>() as u32,
+                                index: i,
+                                size: 256,
+                                flags: VFIO_REGION_INFO_FLAG_READ | VFIO_REGION_INFO_FLAG_WRITE,
+                                ..Default::default()
+                            },
+                            sparse_areas: vec![],
+                            mmap_fd: None,
                         }
                     }
 
@@ -169,13 +177,17 @@ impl XhciBackend {
                                 },
                                 |bar_info| {
                                     debug!("Client queried BAR{bar_no} region: {:?}", bar_info);
-                                    vfio_region_info {
-                                        argsz: size_of::<vfio_region_info>() as u32,
-                                        index: i,
-                                        size: bar_info.size.into(),
-                                        flags: VFIO_REGION_INFO_FLAG_READ
-                                            | VFIO_REGION_INFO_FLAG_WRITE,
-                                        ..Default::default()
+                                    ServerRegion {
+                                        region_info: vfio_region_info {
+                                            argsz: size_of::<vfio_region_info>() as u32,
+                                            index: i,
+                                            size: bar_info.size.into(),
+                                            flags: VFIO_REGION_INFO_FLAG_READ
+                                                | VFIO_REGION_INFO_FLAG_WRITE,
+                                            ..Default::default()
+                                        },
+                                        sparse_areas: vec![],
+                                        mmap_fd: None,
                                     }
                                 },
                             )
