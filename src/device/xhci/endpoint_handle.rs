@@ -91,9 +91,7 @@ impl<EH: EndpointHandle> HotplugEndpointHandle<EH> {
         }
     }
 
-    pub fn next_completion(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + '_>> {
+    pub fn next_completion(&self) -> impl Future<Output = TrbProcessingResult> + Send + '_ {
         let ep_clone = self.endpoint_handle.clone();
         let detach_notify_clone = self.notify_detach.clone();
 
