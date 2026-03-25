@@ -113,9 +113,28 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             );
                             Box::new(endpoint_handle)
                         },
-                        EndpointType::InterruptIn => todo!(),
-                        EndpointType::InterruptOut => todo!(),
-                        EndpointType::Unsupported => unreachable!("the slot should early-reject configure endpoint commands with unsupported endpoint types"),
+                        EndpointType::InterruptIn => {
+                            let real_endpoint = device.real_device.interrupt_in_endpoint_handle(request.endpoint_id);
+                            let endpoint_handle = InEndpointHandle::new(
+                                request.slot_id,
+                                request.endpoint_id,
+                                real_endpoint,
+                                self.dma_bus.clone(),
+                                self.event_sender.clone()
+                            );
+                            Box::new(endpoint_handle)
+                        },
+                        EndpointType::InterruptOut => {
+                            let real_endpoint = device.real_device.interrupt_out_endpoint_handle(request.endpoint_id);
+                            let endpoint_handle = OutEndpointHandle::new(
+                                request.slot_id,
+                                request.endpoint_id,
+                                real_endpoint,
+                                self.dma_bus.clone(),
+                                self.event_sender.clone()
+                            );
+                            Box::new(endpoint_handle)
+}                        EndpointType::Unsupported => unreachable!("the slot should early-reject configure endpoint commands with unsupported endpoint types"),
                     };
                     debug!("Created endpoint handle from real device");
                     HotplugEndpointHandle::new(
