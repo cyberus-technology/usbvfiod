@@ -1,5 +1,7 @@
+use anyhow::anyhow;
 use tokio::sync::mpsc;
 use tokio::{runtime, select};
+use tracing_log::log::info;
 
 use crate::device::bus::BusDeviceRef;
 use crate::device::interrupt_line::{DummyInterruptLine, InterruptLine};
@@ -69,9 +71,11 @@ pub struct EventSender {
 }
 
 impl EventSender {
-    pub fn send(&self, event: EventTrb) {
+    pub fn send(&self, event: EventTrb) -> anyhow::Result<()> {
         let msg = InterrupterMessage::SendEvent(event);
-        self.sender.send(msg);
+        self.sender.send(msg)?;
+
+        Ok(())
     }
 }
 
@@ -104,9 +108,11 @@ impl Interrupter {
         interrupter
     }
 
-    pub fn set_interrupt_line(&self, interrupt_line: Arc<dyn InterruptLine>) {
+    pub fn set_interrupt_line(&self, interrupt_line: Arc<dyn InterruptLine>) -> anyhow::Result<()> {
         let msg = InterrupterMessage::UpdateInterruptLine(interrupt_line);
-        self.msg_sender.send(msg);
+        self.msg_sender.send(msg)?;
+
+        Ok(())
     }
 
     pub fn create_event_sender(&self) -> EventSender {
@@ -117,14 +123,33 @@ impl Interrupter {
 }
 
 impl EventWorker {
-    async fn run(mut self) -> ! {
+    async fn next_msg(&mut self) -> anyhow::Result<InterrupterMessage> {
+        self.msg_recv
+            .recv()
+            .await
+            .ok_or_else(|| anyhow!("event channel closed"))
+    }
+
+    async fn run(mut self) {
+        match self.run_loop().await {
+            Ok(_) => unreachable!(),
+            Err(err) => {
+                info!("EventWorker stopped {err}");
+            }
+        }
+    }
+
+    // function only returns on error, but cannot use ! in Result
+    async fn run_loop(&mut self) -> anyhow::Result<()> {
         // first ERSTBA write starts the event ring.
         // drop all events that happen before.
         // interrupt line updates should be processed.
         loop {
             select! {
                 _ = self.registers.erst_base_address.write_notification() => break,
-                msg = self.msg_recv.recv() => match msg.expect("channel should never close") {
+                // we cannot use self.next_msg() here because it borrows self mutable, clashing
+                // with the borrow of self.registers above
+                msg = self.msg_recv.recv() => match msg.ok_or_else(|| anyhow!("event channel closed"))? {
                     InterrupterMessage::SendEvent(_) => {}
                     InterrupterMessage::UpdateInterruptLine(interrupt_line) => self.interrupt_line = interrupt_line,
                 },
@@ -137,12 +162,7 @@ impl EventWorker {
 
         loop {
             // process TRB
-            match self
-                .msg_recv
-                .recv()
-                .await
-                .expect("The channel should never close.")
-            {
+            match self.next_msg().await? {
                 InterrupterMessage::SendEvent(event_trb) => {
                     self.event_ring.enqueue(
                         &event_trb,

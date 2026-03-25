@@ -81,7 +81,9 @@ impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
     }
 
     pub fn connect_irq(&self, irq: Arc<dyn InterruptLine>) {
-        self.interrupter.set_interrupt_line(irq);
+        self.interrupter
+            .set_interrupt_line(irq)
+            .expect("Interrupter should be alive");
     }
 
     pub fn hotplug_control(&self) -> HotplugControl<RD, ID> {
