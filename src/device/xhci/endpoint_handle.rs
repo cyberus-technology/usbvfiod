@@ -91,26 +91,21 @@ impl<EH: EndpointHandle> HotplugEndpointHandle<EH> {
         }
     }
 
-    pub fn next_completion(&self) -> impl Future<Output = TrbProcessingResult> + Send + '_ {
-        let ep_clone = self.endpoint_handle.clone();
-        let detach_notify_clone = self.notify_detach.clone();
-
-        Box::pin(async move {
-            if let Some(ep) = ep_clone.lock().await.as_mut() {
-                select! {
-                    result = ep.next_completion() => match result {
-                        TrbProcessingResult::Disconnect => {
-                            detach_notify_clone.cancel();
-                            TrbProcessingResult::TransactionError
-                        },
-                        result => result,
+    pub async fn next_completion(&self) -> TrbProcessingResult {
+        if let Some(ep) = self.endpoint_handle.lock().await.as_mut() {
+            select! {
+                result = ep.next_completion() => match result {
+                    TrbProcessingResult::Disconnect => {
+                        self.notify_detach.cancel();
+                        TrbProcessingResult::TransactionError
                     },
-                    _ = detach_notify_clone.cancelled() => TrbProcessingResult::TransactionError,
-                }
-            } else {
-                TrbProcessingResult::TransactionError
+                    result => result,
+                },
+                _ = self.notify_detach.cancelled() => TrbProcessingResult::TransactionError,
             }
-        })
+        } else {
+            TrbProcessingResult::TransactionError
+        }
     }
 
     pub fn cancel(&self) {
