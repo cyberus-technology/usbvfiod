@@ -894,7 +894,7 @@ async fn transfer_worker<EpType: BulkOrInterrupt, EpDir: EndpointDirection>(
             } => {
                 handle_event_data_trb(
                     address,
-                    event_data_trb_data,
+                    &event_data_trb_data,
                     &worker_info,
                     &mut edtla,
                     &previous_completion_code,
