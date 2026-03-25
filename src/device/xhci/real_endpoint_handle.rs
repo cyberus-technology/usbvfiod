@@ -3,10 +3,10 @@ use std::{fmt::Debug, future::Future, pin::Pin};
 use crate::device::pci::usbrequest::UsbRequest;
 
 pub trait RealControlEndpointHandle: Debug + Send + Sync + 'static {
+    type CompletionFuture<'a>: Future<Output = ControlRequestProcessingResult> + Send + 'a;
+
     fn submit_control_request(&mut self, request: UsbRequest);
-    fn next_completion(
-        &mut self,
-    ) -> Pin<Box<dyn Future<Output = ControlRequestProcessingResult> + Send + '_>>;
+    fn next_completion(&mut self) -> Self::CompletionFuture<'_>;
     fn cancel(&mut self);
     fn clear_halt(&mut self);
 }
@@ -21,10 +21,10 @@ pub enum ControlRequestProcessingResult {
 }
 
 pub trait RealOutEndpointHandle: Debug + Send + Sync + 'static {
+    type CompletionFuture<'a>: Future<Output = OutTrbProcessingResult> + Send + 'a;
+
     fn submit(&mut self, data: Vec<u8>);
-    fn next_completion(
-        &mut self,
-    ) -> Pin<Box<dyn Future<Output = OutTrbProcessingResult> + Send + '_>>;
+    fn next_completion(&mut self) -> Self::CompletionFuture<'_>;
     fn cancel(&mut self);
     fn clear_halt(&mut self);
 }
@@ -38,10 +38,10 @@ pub enum OutTrbProcessingResult {
 }
 
 pub trait RealInEndpointHandle: Debug + Send + Sync + 'static {
+    type CompletionFuture<'a>: Future<Output = InTrbProcessingResult> + Send + 'a;
+
     fn submit(&mut self, data: usize);
-    fn next_completion(
-        &mut self,
-    ) -> Pin<Box<dyn Future<Output = InTrbProcessingResult> + Send + '_>>;
+    fn next_completion(&mut self) -> Self::CompletionFuture<'_>;
     fn cancel(&mut self);
     fn clear_halt(&mut self);
 }

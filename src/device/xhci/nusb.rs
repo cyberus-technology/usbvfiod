@@ -156,13 +156,14 @@ impl Drop for ControlEndpointHandle {
 }
 
 impl RealControlEndpointHandle for ControlEndpointHandle {
+    type CompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = ControlRequestProcessingResult> + Send + 'a>>;
+
     fn submit_control_request(&mut self, request: UsbRequest) {
         self.request_submitter.send(request);
     }
 
-    fn next_completion(
-        &mut self,
-    ) -> Pin<Box<dyn Future<Output = ControlRequestProcessingResult> + Send + '_>> {
+    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
             match self.response_receiver.recv().await {
                 Some(res) => res,
@@ -331,14 +332,14 @@ impl<EpType: EndpointType, Dir: EndpointDirection> NormalEndpointHandle<EpType, 
 }
 
 impl<EpType: BulkOrInterrupt> RealOutEndpointHandle for NormalEndpointHandle<EpType, Out> {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = OutTrbProcessingResult> + Send + 'a>>;
+
     fn submit(&mut self, data: Vec<u8>) {
         let buf = Buffer::from(data);
         self.endpoint().submit(buf);
     }
 
-    fn next_completion(
-        &mut self,
-    ) -> Pin<Box<dyn Future<Output = OutTrbProcessingResult> + Send + '_>> {
+    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
             let completion = self.endpoint().next_complete().await;
             match completion.status {
@@ -365,6 +366,8 @@ impl<EpType: BulkOrInterrupt> RealOutEndpointHandle for NormalEndpointHandle<EpT
 }
 
 impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpType, In> {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = InTrbProcessingResult> + Send + 'a>>;
+
     fn submit(&mut self, len: usize) {
         let endpoint = self.endpoint();
         let request_len = determine_buffer_size(len, endpoint.max_packet_size());
@@ -372,9 +375,7 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
         endpoint.submit(buf);
     }
 
-    fn next_completion(
-        &mut self,
-    ) -> Pin<Box<dyn Future<Output = InTrbProcessingResult> + Send + '_>> {
+    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
             let completion = self.endpoint().next_complete().await.into_result();
             match completion {
