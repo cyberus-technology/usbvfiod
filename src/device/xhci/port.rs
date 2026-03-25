@@ -3,6 +3,7 @@ use std::{
     sync::{atomic::AtomicU64, Arc},
 };
 
+use anyhow::anyhow;
 use tokio::{
     runtime,
     sync::{mpsc, oneshot},
@@ -91,43 +92,61 @@ pub enum PortMessage<RD: RealDevice, ID: Identifier> {
 }
 
 impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
-    async fn run(mut self) -> ! {
+    async fn run(mut self) {
+        match self.run_loop().await {
+            Ok(_) => unreachable!(),
+            Err(err) => info!("PortWorker stopped {err}"),
+        }
+    }
+
+    // this function should only return with an error, but we cannot use ! in Result
+    async fn run_loop(&mut self) -> anyhow::Result<()> {
         loop {
-            match self
-                .msg_recv
-                .recv()
-                .await
-                .expect("port message channel should never close")
-            {
+            match self.next_msg().await? {
                 PortMessage::Attach(device, responder) => {
-                    responder.send(self.attach(device));
+                    responder
+                        .send(self.attach(device)?)
+                        .map_err(|_| anyhow!("oneshot channel closed"))?;
                 }
                 PortMessage::Detach(identifier, responder) => {
-                    responder.send(self.detach(identifier));
+                    responder
+                        .send(self.detach(identifier)?)
+                        .map_err(|_| anyhow!("oneshot channel closed"))?;
                 }
                 PortMessage::ListAttached(responder) => {
-                    responder.send(self.attached_devices());
+                    responder
+                        .send(self.attached_devices())
+                        .map_err(|_| anyhow!("oneshot channel closed"))?;
                 }
                 PortMessage::GetDevice(port_id, responder) => {
                     let device = self
                         .devices
                         .get(port_id)
                         .and_then(|opt| opt.as_ref().map(|dev| dev.clone()));
-                    responder.send(device);
+                    responder
+                        .send(device)
+                        .map_err(|_| anyhow!("oneshot channel closed"))?;
                 }
             };
         }
     }
 
-    fn attach(&mut self, device: CompleteRealDevice<RD, ID>) -> Response {
+    async fn next_msg(&mut self) -> anyhow::Result<PortMessage<RD, ID>> {
+        self.msg_recv
+            .recv()
+            .await
+            .ok_or_else(|| anyhow!("port channel closed"))
+    }
+
+    fn attach(&mut self, device: CompleteRealDevice<RD, ID>) -> anyhow::Result<Response> {
         if self.attached_devices().contains(&device.identifier) {
             warn!("Failed to attach device: A device with the same identifier is already attached");
-            return Response::AlreadyAttached;
+            return Ok(Response::AlreadyAttached);
         }
 
         let speed = match device.real_device.speed() {
             Some(speed) => speed,
-            None => return Response::CouldNotDetermineSpeed,
+            None => return Ok(Response::CouldNotDetermineSpeed),
         };
         let version = UsbVersion::from_speed(speed);
 
@@ -138,7 +157,7 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
                 }) // filter USB2/3
                 {
                     Some(port) => port,
-                    None => return Response::NoFreePort,
+                    None => return Ok(Response::NoFreePort),
                 };
 
         self.async_runtime.spawn(detach_listener(
@@ -161,9 +180,9 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
         info!("Attached {speed} device to port {available_port_id} ({version:?} port)");
 
         let event = EventTrb::new_port_status_change_event_trb(available_port_id as u8);
-        self.event_sender.send(event);
+        self.event_sender.send(event)?;
 
-        Response::SuccessfulOperation
+        Ok(Response::SuccessfulOperation)
     }
 
     fn port_version(port_id: u64) -> UsbVersion {
@@ -182,7 +201,7 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
             .collect()
     }
 
-    fn detach(&mut self, id: ID) -> Response {
+    fn detach(&mut self, id: ID) -> anyhow::Result<Response> {
         // find out on which port the device is connected
         let port_id = match self
             .devices
@@ -198,7 +217,7 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
             }
             None => {
                 warn!("Could not find the device to detach");
-                return Response::NoSuchDevice;
+                return Ok(Response::NoSuchDevice);
             }
         };
 
@@ -210,9 +229,9 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
 
         // send port status change event
         let event = EventTrb::new_port_status_change_event_trb(port_id as u8);
-        self.event_sender.send(event);
+        self.event_sender.send(event)?;
 
-        Response::SuccessfulOperation
+        Ok(Response::SuccessfulOperation)
     }
 }
 
@@ -223,8 +242,8 @@ async fn detach_listener<RD: RealDevice, ID: Identifier>(
 ) {
     let (send, recv) = oneshot::channel();
     cancel.cancelled().await;
-    msg_sender.send(PortMessage::Detach(identifier, send));
-    recv.await;
+    let _ = msg_sender.send(PortMessage::Detach(identifier, send));
+    let _ = recv.await;
 }
 
 /// A simple PORTSC register implementation supporting RW1C bits.
@@ -249,13 +268,6 @@ impl Default for PortscRegister {
 }
 
 impl PortscRegister {
-    // for testing
-    fn new(value: u64) -> Self {
-        Self {
-            value: AtomicU64::new(value),
-        }
-    }
-
     fn set(&self, value: u64) {
         self.value
             .store(value, std::sync::atomic::Ordering::Relaxed);
@@ -274,7 +286,7 @@ impl PortscRegister {
     /// RW1C bits are updates according to RW1C semantics, all
     /// other bits are treated as read-only.
     fn write(&self, new_value: u64) {
-        self.value.fetch_update(
+        let _ = self.value.fetch_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |reg| {
@@ -369,7 +381,8 @@ mod tests {
 
     #[test]
     fn portsc_read_write() {
-        let reg = PortscRegister::new(0x00260203);
+        let reg = PortscRegister::default();
+        reg.set(0x00260203);
         assert_eq!(reg.read(), 0x00260203);
 
         reg.write(0x0);
