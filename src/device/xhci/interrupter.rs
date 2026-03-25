@@ -146,7 +146,7 @@ impl EventWorker {
                 InterrupterMessage::SendEvent(event_trb) => {
                     self.event_ring.enqueue(
                         &event_trb,
-                        self.registers.erst_base_address.read(),
+                        self.registers.erst_base_address.erstba(),
                         self.registers.erst_size.read() as u32,
                         self.registers.eventring_dequeue_pointer.read(),
                     );
