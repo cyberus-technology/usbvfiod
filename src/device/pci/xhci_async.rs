@@ -112,7 +112,10 @@ impl<RD: RealDevice, ID: Identifier> PciDevice for XhciController<RD, ID> {
             // xHC Operational Registers
             offset::USBCMD => self.usbcmd.write(value),
             offset::DNCTL => assert_eq!(value, 2, "debug notifications not supported"),
-            offset::CRCR => self.command_ring.control(value),
+            offset::CRCR => self
+                .command_ring
+                .control(value)
+                .expect("command worker should be alive"),
             offset::CRCR_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
             offset::DCBAAP => self.slot_manager.dcbaap.write(value),
             offset::DCBAAP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
@@ -137,7 +140,10 @@ impl<RD: RealDevice, ID: Identifier> PciDevice for XhciController<RD, ID> {
                 .eventring_dequeue_pointer
                 .write(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
-            offset::DOORBELL_CONTROLLER => self.command_ring.doorbell(),
+            offset::DOORBELL_CONTROLLER => self
+                .command_ring
+                .doorbell()
+                .expect("command worker should be alive"),
             offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE_END => {
                 let slot_id = ((req.addr - offset::DOORBELL_CONTROLLER) / 4) as u8;
                 self.slot_manager.doorbell(slot_id, value as u8);

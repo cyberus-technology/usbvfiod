@@ -5,6 +5,7 @@ use std::sync::{
     Arc,
 };
 
+use anyhow::anyhow;
 use tokio::{
     runtime,
     sync::{
@@ -12,7 +13,7 @@ use tokio::{
         oneshot,
     },
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -91,9 +92,12 @@ impl CommandRing {
         }
     }
 
-    pub fn doorbell(&self) {
+    #[must_use]
+    pub fn doorbell(&self) -> anyhow::Result<()> {
         debug!("Doorbell for the controller");
-        self.send_to_worker(WorkerMessage::Doorbell);
+        self.send_to_worker(WorkerMessage::Doorbell)?;
+
+        Ok(())
     }
 
     /// Control the Command Ring.
@@ -103,11 +107,11 @@ impl CommandRing {
     /// # Parameters
     ///
     /// - `value`: the value the driver wrote to the CRCR register
-    pub fn control(&self, value: u64) {
+    pub fn control(&self, value: u64) -> anyhow::Result<()> {
         if self.running.load(Ordering::Relaxed) {
             match value {
-                abort if abort & crcr::CA != 0 => self.send_to_worker(WorkerMessage::Stop),
-                stop if stop & crcr::CS != 0 => self.send_to_worker(WorkerMessage::Stop),
+                abort if abort & crcr::CA != 0 => self.send_to_worker(WorkerMessage::Stop)?,
+                stop if stop & crcr::CS != 0 => self.send_to_worker(WorkerMessage::Stop)?,
                 ignored => {
                     warn!(
                         "received useless write to CRCR while running {:#x}",
@@ -121,8 +125,10 @@ impl CommandRing {
             self.send_to_worker(WorkerMessage::SetDequeuePointerAndCS(
                 dequeue_pointer,
                 cycle_state,
-            ));
+            ))?;
         }
+
+        Ok(())
     }
 
     /// Returns the current value of the `CRCR` register.
@@ -137,22 +143,28 @@ impl CommandRing {
         }
     }
 
-    fn send_to_worker(&self, msg: WorkerMessage) {
-        match self.sender_to_worker.send(msg) {
-            Ok(_) => {}
-            Err(err) => {
-                // The error contains the message
-                warn!("Failed to send message to command worker (err: {err})");
-            }
-        }
+    fn send_to_worker(&self, msg: WorkerMessage) -> anyhow::Result<()> {
+        self.sender_to_worker.send(msg)?;
+
+        Ok(())
     }
 }
 
 impl CommandWorker {
-    async fn run(mut self) -> ! {
+    async fn run(mut self) {
+        match self.run_loop().await {
+            Ok(_) => unreachable!(),
+            Err(err) => {
+                info!("CommandWorker stopped {err}");
+            }
+        }
+    }
+
+    // function only returns on error, but cannot use ! in Result
+    async fn run_loop(&mut self) -> anyhow::Result<()> {
         loop {
             match &mut self.state {
-                WorkerState::Stopped => match self.recv().await {
+                WorkerState::Stopped => match self.next_msg().await? {
                     WorkerMessage::SetDequeuePointerAndCS(dp, cs) => {
                         debug!("Updating command ring parameters: dp={dp:#x}, cs={cs}");
                         self.ring.set_dequeue_pointer(dp, cs);
@@ -164,7 +176,7 @@ impl CommandWorker {
                     }
                     msg => warn!("Unexpected message: msg={msg:?}, state={:?}", self.state),
                 },
-                WorkerState::Idle => match self.recv().await {
+                WorkerState::Idle => match self.next_msg().await? {
                     WorkerMessage::Doorbell => {
                         self.state = WorkerState::LookingForNewCommand;
                     }
@@ -174,12 +186,9 @@ impl CommandWorker {
                 WorkerState::LookingForNewCommand => {
                     // consume potential messages
                     loop {
-                        let msg = match self.receiver.try_recv() {
-                            Ok(msg) => msg,
-                            Err(TryRecvError::Disconnected) => {
-                                panic!("The command worker channel should never close.")
-                            }
-                            Err(TryRecvError::Empty) => break,
+                        let msg = match self.try_next_msg()? {
+                            Some(msg) => msg,
+                            None => break,
                         };
 
                         match msg {
@@ -209,7 +218,7 @@ impl CommandWorker {
                     };
                 }
                 WorkerState::ProcessingCommand(_) => {
-                    self.process_command().await;
+                    self.process_command().await?;
                     self.ring.advance();
                     self.state = WorkerState::LookingForNewCommand;
                 }
@@ -221,14 +230,22 @@ impl CommandWorker {
         }
     }
 
-    async fn recv(&mut self) -> WorkerMessage {
+    async fn next_msg(&mut self) -> anyhow::Result<WorkerMessage> {
         self.receiver
             .recv()
             .await
-            .expect("The command worker channel should never close.")
+            .ok_or_else(|| anyhow!("command channel closed"))
     }
 
-    async fn process_command(&self) {
+    fn try_next_msg(&mut self) -> anyhow::Result<Option<WorkerMessage>> {
+        match self.receiver.try_recv() {
+            Ok(msg) => Ok(Some(msg)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => Err(anyhow!("command channel closed")),
+        }
+    }
+
+    async fn process_command(&self) -> anyhow::Result<()> {
         assert!(
             matches!(self.state, WorkerState::ProcessingCommand(_)),
             "process_command called in state {:?}",
@@ -241,8 +258,8 @@ impl CommandWorker {
                 CommandTrbVariant::EnableSlot => {
                     let (send, recv) = oneshot::channel();
                     let msg = SlotMessage::EnableSlot(send);
-                    self.slot_msg_sender.send(msg);
-                    let response = recv.await.expect("channel should never close");
+                    self.slot_msg_sender.send(msg)?;
+                    let response = recv.await?;
                     let (slot_id, completion_code) = match response {
                         Ok(slot_id) => (slot_id, CompletionCode::Success),
                         Err(completion_error_code) => (0, completion_error_code),
@@ -257,8 +274,8 @@ impl CommandWorker {
                 CommandTrbVariant::DisableSlot(data) => {
                     let (send, recv) = oneshot::channel();
                     let msg = SlotMessage::DisableSlot(data.slot_id, send);
-                    self.slot_msg_sender.send(msg);
-                    let completion_code = recv.await.expect("channel should never close");
+                    self.slot_msg_sender.send(msg)?;
+                    let completion_code = recv.await?;
                     EventTrb::new_command_completion_event_trb(
                         trb.address,
                         0,
@@ -269,8 +286,8 @@ impl CommandWorker {
                 CommandTrbVariant::AddressDevice(data) => {
                     let (send, recv) = oneshot::channel();
                     let msg = SlotMessage::AddressDevice(*data, send);
-                    self.slot_msg_sender.send(msg);
-                    let completion_code = recv.await.expect("channel should never close");
+                    self.slot_msg_sender.send(msg)?;
+                    let completion_code = recv.await?;
                     EventTrb::new_command_completion_event_trb(
                         trb.address,
                         0,
@@ -281,8 +298,8 @@ impl CommandWorker {
                 CommandTrbVariant::ConfigureEndpoint(data) => {
                     let (send, recv) = oneshot::channel();
                     let msg = SlotMessage::ConfigureEndpoint(*data, send);
-                    self.slot_msg_sender.send(msg);
-                    let completion_code = recv.await.expect("channel should never close");
+                    self.slot_msg_sender.send(msg)?;
+                    let completion_code = recv.await?;
                     EventTrb::new_command_completion_event_trb(
                         trb.address,
                         0,
@@ -334,8 +351,10 @@ impl CommandWorker {
                 }
             };
             debug!("command {} finished: {completion_event:?}", trb.address);
-            self.event_sender.send(completion_event);
+            self.event_sender.send(completion_event)?;
         }
+
+        Ok(())
     }
 }
 
