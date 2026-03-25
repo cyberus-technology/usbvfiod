@@ -949,18 +949,18 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vfio-bindings"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4bc5b4aade27640cea4ee1ce50ef3614598050dc97e44714b9daea779d1b59a"
+checksum = "188dac3057a0cbc94470085204c84b82ff7ec5dac629a514323cd133d1f9abe0"
 dependencies = [
  "vmm-sys-util",
 ]
 
 [[package]]
 name = "vfio_user"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b78c5d3073760741646ba13388155bc55e6aaeafc1a295800b661114f11127a7"
+checksum = "731c2582dd43f4f174ab47b4c933a1a9bb872d9d1b7f54c5867e12dbc1491b75"
 dependencies = [
  "bitflags 2.11.0",
  "libc",
