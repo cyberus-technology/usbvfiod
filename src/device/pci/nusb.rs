@@ -886,6 +886,9 @@ async fn transfer_worker<EpType: BulkOrInterrupt, EpDir: EndpointDirection>(
                         error!("{e}");
                         CompletionCode::UndefinedError
                     }
+                };
+                if !normal_trb_data.chain {
+                    edtla = 0;
                 }
             }
             TransferTrb {
@@ -900,6 +903,9 @@ async fn transfer_worker<EpType: BulkOrInterrupt, EpDir: EndpointDirection>(
                     &previous_completion_code,
                 )
                 .await;
+                if !event_data_trb_data.chain {
+                    edtla = 0;
+                }
             }
             _ => {
                 panic!("only normal trb and event data trb are expected")
