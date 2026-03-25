@@ -1,8 +1,9 @@
+use anyhow::anyhow;
 use tokio::{
     runtime, select,
     sync::{mpsc, oneshot},
 };
-use tracing::{debug, trace, warn};
+use tracing::{trace, warn};
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -72,10 +73,19 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
         sender
     }
 
-    async fn run(mut self) {
+    async fn run(self) {
+        match self.run_loop().await {
+            Ok(_) => {
+                // endpoint terminated properly
+            }
+            Err(err) => warn!("endpoint stopped unexpectedly {err}"),
+        }
+    }
+
+    async fn run_loop(mut self) -> anyhow::Result<()> {
         loop {
             match self.state {
-                WorkerState::WaitForDoorbell => match self.next_msg().await {
+                WorkerState::WaitForDoorbell => match self.next_msg().await? {
                     EndpointMessage::Doorbell => self.state = WorkerState::LookForTrb,
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender)
@@ -118,15 +128,16 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                             unreachable!();
                         },
                     },
-                    msg = self.recv.recv() => match msg.expect("Endpoint communication channel must never close during operation") {
+                    // cannot use self.next_msg() because the &mut it takes clashes with the self.real_endpoint above
+                    msg = self.recv.recv() => match msg.ok_or_else(|| anyhow!(""))? {
                         EndpointMessage::Stop(completion) => {
                             self.state = WorkerState::StoppedWithContinuableTrb;
-                            completion.send(());
+                            completion.send(()).map_err(|_| anyhow!("oneshot channel closed"))?;
                             },
                         msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                     }
                 },
-                WorkerState::Halted => match self.next_msg().await {
+                WorkerState::Halted => match self.next_msg().await? {
                     EndpointMessage::Reset => {
                         self.real_endpoint.clear_halt();
                         self.context.set_state(endpoint_state::STOPPED);
@@ -134,13 +145,13 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                     }
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },
-                WorkerState::Error => match self.next_msg().await {
+                WorkerState::Error => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
                     }
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },
-                WorkerState::StoppedWithContinuableTrb => match self.next_msg().await {
+                WorkerState::StoppedWithContinuableTrb => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
                         self.real_endpoint.cancel();
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion)
@@ -151,7 +162,7 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                     }
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },
-                WorkerState::Stopped => match self.next_msg().await {
+                WorkerState::Stopped => match self.next_msg().await? {
                     EndpointMessage::Doorbell => self.state = WorkerState::LookForTrb,
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion)
@@ -168,25 +179,32 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                     self.context.set_state(endpoint_state::STOPPED);
                     self.transfer_ring.set_dequeue_pointer(ptr, cs);
                     self.state = WorkerState::Stopped;
-                    completion.send(());
+                    completion
+                        .send(())
+                        .map_err(|_| anyhow!("oneshot channel closed"))?;
                 }
                 WorkerState::Terminating(sender) => {
                     self.context.set_state(endpoint_state::DISABLED);
-                    sender.send(());
+                    sender
+                        .send(())
+                        .map_err(|_| anyhow!("oneshot channel closed"))?;
                     break;
                 }
             }
         }
+
+        Ok(())
     }
 
-    async fn next_msg(&mut self) -> EndpointMessage {
+    async fn next_msg(&mut self) -> anyhow::Result<EndpointMessage> {
         let msg = self
             .recv
             .recv()
             .await
-            .expect("Endpoint communication channel must never close during operation");
+            .ok_or_else(|| anyhow!("endpoint channel closed"))?;
+
         trace!("endpoint received: {msg:?}");
 
-        msg
+        Ok(msg)
     }
 }
