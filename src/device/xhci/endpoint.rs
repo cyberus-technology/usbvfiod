@@ -168,6 +168,9 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                         self.context.set_state(endpoint_state::RUNNING);
                         self.state = WorkerState::WaitForTrbCompletion;
                     }
+                    EndpointMessage::Terminate(sender) => {
+                        self.state = WorkerState::Terminating(sender);
+                    }
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },
                 WorkerState::Stopped => match self.next_msg().await? {
