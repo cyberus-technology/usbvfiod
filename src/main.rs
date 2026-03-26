@@ -17,7 +17,7 @@ use async_runtime::init_runtime;
 use clap::Parser;
 use cli::Cli;
 use hotplug_server::run_hotplug_server;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 use vfio_user::Server;
 
@@ -43,10 +43,18 @@ fn main() -> Result<()> {
     tracing_log::LogTracer::init()?;
 
     init_runtime().context("Failed to initialize async runtime")?;
+    let runtime = runtime();
 
     let mut backend: XhciBackend<NusbRealDevice, (u8, u8)> =
-        xhci_backend::XhciBackend::new(&args.devices)
+        xhci_backend::XhciBackend::new(runtime.clone())
             .context("Failed to create virtual XHCI controller")?;
+    for device in &args.devices {
+        let path = device.as_path();
+        // if device attachment fails, just warn
+        if let Err(err) = runtime.block_on(backend.add_device_from_path(path, runtime.clone())) {
+            warn!("Device attachment failed for {path:?}: {err}");
+        }
+    }
 
     let server = if let cli::ServerSocket::Path(socket_path) = args.server_socket() {
         Server::new(socket_path, true, backend.irqs(), backend.regions())
@@ -61,7 +69,7 @@ fn main() -> Result<()> {
         let socket = UnixListener::bind(hotplug_socket_path.as_path()).unwrap();
         thread::Builder::new()
             .name("hot-attach-socket listener".to_string())
-            .spawn(move || run_hotplug_server(socket, hotplug_control, runtime().clone()))
+            .spawn(move || run_hotplug_server(socket, hotplug_control, runtime.clone()))
             .unwrap();
     }
 

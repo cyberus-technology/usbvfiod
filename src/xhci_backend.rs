@@ -5,9 +5,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::Result;
-use tracing::{debug, info, trace};
+use anyhow::{anyhow, Context, Result};
+use nusb::MaybeFuture;
+use tokio::runtime;
+use tracing::{debug, info, trace, warn};
 
+use usbvfiod::hotplug_protocol::{device_paths::resolve_path, response::Response};
 use vfio_bindings::bindings::vfio::{
     vfio_region_info, VFIO_PCI_BAR0_REGION_INDEX, VFIO_PCI_BAR1_REGION_INDEX,
     VFIO_PCI_BAR2_REGION_INDEX, VFIO_PCI_BAR3_REGION_INDEX, VFIO_PCI_BAR4_REGION_INDEX,
@@ -18,14 +21,15 @@ use vfio_bindings::bindings::vfio::{
 use vfio_user::{IrqInfo, ServerBackend};
 
 use crate::{
-    async_runtime::runtime,
+    async_runtime::{self, runtime},
     device::{
         bus::{Request, RequestSize},
         interrupt_line::{DummyInterruptLine, InterruptLine},
         pci::{traits::PciDevice, xhci_async::XhciController},
         xhci::{
+            nusb::NusbRealDevice,
             port::HotplugControl,
-            real_device::{Identifier, RealDevice},
+            real_device::{CompleteRealDevice, Identifier, RealDevice},
         },
     },
 };
@@ -66,64 +70,56 @@ impl InterruptLine for InterruptEventFd {
 impl<RD: RealDevice, ID: Identifier> XhciBackend<RD, ID> {
     /// Create a new virtual XHCI controller with the given USB
     /// devices attached at creation time.
-    pub fn new<I>(devices: I) -> Result<Self>
-    where
-        I: IntoIterator,
-        I::Item: AsRef<Path>,
-    {
+    pub fn new(async_runtime: runtime::Handle) -> Result<Self> {
         let dma_bus = Arc::new(DynamicBus::new());
-        let runtime = runtime().clone();
+        let controller = XhciController::new(dma_bus.clone(), async_runtime);
 
         let backend = Self {
-            controller: XhciController::new(dma_bus.clone(), runtime),
+            controller,
             dma_bus,
         };
-
-        // for device in devices {
-        //     let path = device.as_ref();
-        //     // if device attachment fails, just warn
-        //     if let Err(err) = backend.add_device_from_path(path) {
-        //         panic!("Device attachment failed for {path:?}: {err}");
-        //     }
-        // }
 
         Ok(backend)
     }
 
-    // /// Add a USB device via its path in `/dev/bus/usb`.
-    // pub fn add_device_from_path(&self, path: impl AsRef<Path>) -> Result<()> {
-    //     let (bus, dev, path) = resolve_path(path)?;
-    //     let open_file = |err_msg| {
-    //         std::fs::OpenOptions::new()
-    //             .read(true)
-    //             .write(true)
-    //             .open(&path)
-    //             .with_context(|| format!("{}: {}", err_msg, path.display()))
-    //     };
-
-    //     let file = open_file("Failed to open USB device file")?;
-    //     let device = nusb::Device::from_fd(file.into()).wait()?;
-    //     device.reset().wait()?;
-
-    //     // After the reset, the device instance is no longer usable and we need
-    //     // to reopen.
-    //     let file = open_file("Failed to open USB device file after device reset")?;
-    //     let device = nusb::Device::from_fd(file.into()).wait()?;
-    //     let wrapped_device = Box::new(NusbDeviceWrapper::try_from(device)?);
-    //     self.controller
-    //         .lock()
-    //         .unwrap()
-    //         .attach_device(IdentifiableRealDevice {
-    //             bus_number: bus,
-    //             device_number: dev,
-    //             real_device: wrapped_device,
-    //         })
-    //         .map_err(|response| anyhow!("Error during device attach: {response:?}"))?;
-    //     Ok(())
-    // }
-
     pub fn hotplug_control(&self) -> HotplugControl<RD, ID> {
         self.controller.hotplug_control()
+    }
+}
+
+impl XhciBackend<NusbRealDevice, (u8, u8)> {
+    pub async fn add_device_from_path(
+        &self,
+        path: impl AsRef<Path>,
+        async_runtime: runtime::Handle,
+    ) -> Result<()> {
+        let (bus, dev, path) = resolve_path(path)?;
+        let open_file = |err_msg| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .with_context(|| format!("{}: {}", err_msg, path.display()))
+        };
+
+        let file = open_file("Failed to open USB device file")?;
+        let device = nusb::Device::from_fd(file.into()).wait()?;
+        device.reset().wait()?;
+
+        // After the reset, the device instance is no longer usable and we need
+        // to reopen.
+        let file = open_file("Failed to open USB device file after device reset")?;
+        let device = nusb::Device::from_fd(file.into()).wait()?;
+        let real_device = NusbRealDevice::try_new(device, async_runtime.clone())?;
+        let complete_device = CompleteRealDevice::new((bus, dev), real_device);
+        let response = self.hotplug_control().attach(complete_device).await;
+        if response != Response::SuccessfulOperation {
+            return Err(anyhow!(
+                "initial attach of device {bus:03}{dev:03} failed: {response:?}"
+            ));
+        }
+
+        Ok(())
     }
 }
 
