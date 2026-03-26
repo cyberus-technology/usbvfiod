@@ -16,7 +16,7 @@ use crate::{
             registers::{ConfigureRegister, DcbaapRegister},
             trb::{
                 AddressDeviceCommandTrbData, CompletionCode, ConfigureEndpointCommandTrbData,
-                SetTrDequeuePointerCommandTrbData,
+                EvaluateContextCommandTrbData, SetTrDequeuePointerCommandTrbData,
             },
         },
         xhci::{endpoint::EndpointSender, endpoint_launcher::LaunchRequest},
@@ -93,6 +93,10 @@ pub enum SlotMessage {
     AddressDevice(AddressDeviceCommandTrbData, oneshot::Sender<CompletionCode>),
     ConfigureEndpoint(
         ConfigureEndpointCommandTrbData,
+        oneshot::Sender<CompletionCode>,
+    ),
+    EvaluateContext(
+        EvaluateContextCommandTrbData,
         oneshot::Sender<CompletionCode>,
     ),
     // slot_id, endpoint_id
@@ -294,6 +298,22 @@ impl SlotWorker {
                         trb_data.dequeue_cycle_state,
                         sender,
                     )?;
+                }
+                SlotMessage::EvaluateContext(trb_data, sender) => {
+                    let slot = match self
+                        .slots
+                        .get(trb_data.slot_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    slot.handle_evaluate_context(trb_data.input_context_pointer)
+                        .await?;
                 }
             }
         }
@@ -633,8 +653,12 @@ impl Slot {
         Ok(())
     }
 
-    fn handle_evaluate_context(&self, _input_context_pointer: u64) -> CompletionCode {
-        todo!();
+    async fn handle_evaluate_context(
+        &self,
+        _input_context_pointer: u64,
+    ) -> anyhow::Result<CompletionCode> {
+        warn!("handle_evaluate_context is not implemented yet. Just reporting success");
+        Ok(CompletionCode::Success)
     }
 
     // call before dropping (disabling this slot)
