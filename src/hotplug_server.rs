@@ -76,7 +76,9 @@ fn handle_attach(
         .wait()
         .context("Failed to open nusb device from the supplied file descriptor")?;
     let real_device = NusbRealDevice::try_new(device, async_runtime.clone())?;
-    let complete_device = CompleteRealDevice::new((bus, dev), real_device);
+    let mut complete_device = CompleteRealDevice::new((bus, dev), real_device);
+    complete_device.bus_number = Some(bus);
+    complete_device.device_address = Some(dev);
     let response = async_runtime.block_on(hotplug_control.attach(complete_device));
     response
         .send_over_socket(socket)

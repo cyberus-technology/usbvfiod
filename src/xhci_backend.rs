@@ -111,7 +111,9 @@ impl XhciBackend<NusbRealDevice, (u8, u8)> {
         let file = open_file("Failed to open USB device file after device reset")?;
         let device = nusb::Device::from_fd(file.into()).wait()?;
         let real_device = NusbRealDevice::try_new(device, async_runtime.clone())?;
-        let complete_device = CompleteRealDevice::new((bus, dev), real_device);
+        let mut complete_device = CompleteRealDevice::new((bus, dev), real_device);
+        complete_device.bus_number = Some(bus);
+        complete_device.device_address = Some(dev);
         let response = self.hotplug_control().attach(complete_device).await;
         if response != Response::SuccessfulOperation {
             return Err(anyhow!(

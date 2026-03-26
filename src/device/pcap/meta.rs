@@ -2,7 +2,7 @@ use super::writer::{UsbDirection, UsbTransferType};
 
 /// Context passed from endpoint handlers to PCAP logging, describing
 /// which USB endpoint a record belongs to.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct EndpointPcapMeta {
     pub bus_number: u16,
     pub device_address: u8,

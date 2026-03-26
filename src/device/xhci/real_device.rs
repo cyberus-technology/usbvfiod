@@ -67,6 +67,8 @@ pub struct CompleteRealDevice<RD: RealDevice, ID: Identifier> {
     pub identifier: ID,
     pub real_device: RD,
     pub cancel: CancellationToken,
+    pub bus_number: Option<u8>,
+    pub device_address: Option<u8>,
 }
 
 impl<RD: RealDevice, ID: Identifier> CompleteRealDevice<RD, ID> {
@@ -75,6 +77,8 @@ impl<RD: RealDevice, ID: Identifier> CompleteRealDevice<RD, ID> {
             identifier,
             real_device,
             cancel: CancellationToken::new(),
+            bus_number: None,
+            device_address: None,
         }
     }
 }
