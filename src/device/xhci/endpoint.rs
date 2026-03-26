@@ -87,6 +87,12 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
             match self.state {
                 WorkerState::WaitForDoorbell => match self.next_msg().await? {
                     EndpointMessage::Doorbell => self.state = WorkerState::LookForTrb,
+                    EndpointMessage::Stop(sender) => {
+                        self.state = WorkerState::Stopped;
+                        sender
+                            .send(CompletionCode::Success)
+                            .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    }
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender)
                     }
