@@ -165,7 +165,7 @@ impl SlotWorker {
                     sender.send_anyhow(result)?;
                 }
                 SlotMessage::DisableSlot(slot_id, sender) => {
-                    let result = self.free_slot(slot_id);
+                    let result = self.disable_slot(slot_id).await?;
                     sender.send_anyhow(result)?;
                 }
                 SlotMessage::AddressDevice(trb_data, sender) => {
@@ -323,15 +323,23 @@ impl SlotWorker {
         available_slot_id.ok_or(CompletionCode::NoSlotsAvailableError)
     }
 
-    pub fn free_slot(&mut self, slot_id: u8) -> CompletionCode {
+    pub async fn disable_slot(&mut self, slot_id: u8) -> anyhow::Result<CompletionCode> {
         assert!(slot_id >= 1 && slot_id <= self.config_reg.num_slots_enabled());
 
-        let slot = &mut self.slots[slot_id as usize];
-        if matches!(slot, None) {
-            return CompletionCode::SlotNotEnabledError;
-        }
-        *slot = None;
-        CompletionCode::Success
+        let slot = match self
+            .slots
+            .get_mut(slot_id as usize)
+            .and_then(|opt| opt.as_mut())
+        {
+            Some(slot) => slot,
+            None => return Ok(CompletionCode::SlotNotEnabledError),
+        };
+        // let slot clean up itself
+        slot.pre_drop().await?;
+        // Safety: above match statements proved the slot_id is valid
+        self.slots[slot_id as usize] = None;
+
+        Ok(CompletionCode::Success)
     }
 
     // pub fn slot_ref(&self, slot_id: u8) -> Option<impl Deref<Target = Slot> + '_> {
@@ -627,6 +635,16 @@ impl Slot {
 
     fn handle_evaluate_context(&self, _input_context_pointer: u64) -> CompletionCode {
         todo!();
+    }
+
+    // call before dropping (disabling this slot)
+    async fn pre_drop(&mut self) -> anyhow::Result<()> {
+        // disable EP0 if active
+        if self.state != SlotState::Enabled {
+            self.deconfigure_endpoint(1).await?;
+        }
+
+        Ok(())
     }
 
     // fn send_to_endpoint(&self, endpoint_id: u8, msg: EndpointMessage) -> anyhow::Result<()> {
