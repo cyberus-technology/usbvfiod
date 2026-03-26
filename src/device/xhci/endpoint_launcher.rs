@@ -89,7 +89,10 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.event_sender.clone(),
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
+                            request.slot_id,
+                            request.endpoint_id,
                             endpoint_handle,
+                            self.event_sender.clone(),
                             device.cancel.clone(),
                             &self.async_runtime,
                         );
@@ -113,7 +116,10 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.event_sender.clone(),
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
+                            request.slot_id,
+                            request.endpoint_id,
                             endpoint_handle,
+                            self.event_sender.clone(),
                             device.cancel.clone(),
                             &self.async_runtime,
                         );
@@ -137,7 +143,10 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.event_sender.clone(),
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
+                            request.slot_id,
+                            request.endpoint_id,
                             endpoint_handle,
+                            self.event_sender.clone(),
                             device.cancel.clone(),
                             &self.async_runtime,
                         );
@@ -161,7 +170,10 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.event_sender.clone(),
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
+                            request.endpoint_id,
+                            request.slot_id,
                             endpoint_handle,
+                            self.event_sender.clone(),
                             device.cancel.clone(),
                             &self.async_runtime,
                         );
@@ -185,7 +197,10 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.event_sender.clone(),
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
+                            request.slot_id,
+                            request.endpoint_id,
                             endpoint_handle,
+                            self.event_sender.clone(),
                             device.cancel.clone(),
                             &self.async_runtime,
                         );
@@ -206,7 +221,9 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                 // creating an invalid state)
                 None => {
                     debug!("Could not get real device, using dummy endpoint handle");
-                    let hotplug_endpoint_handle = HotplugEndpointHandle::dummy();
+                    let hotplug_endpoint_handle = HotplugEndpointHandle::dummy(
+                        request.slot_id, request.endpoint_id, self.event_sender.clone()
+                    );
 
                     EndpointWorker::launch(
                         &self.async_runtime,
