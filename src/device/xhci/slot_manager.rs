@@ -19,6 +19,7 @@ use crate::{
         xhci::{endpoint::EndpointSender, endpoint_launcher::LaunchRequest},
     },
     one_indexed_array::OneIndexed,
+    oneshot_anyhow::SendWithAnyhowError,
 };
 
 #[derive(Debug)]
@@ -153,15 +154,11 @@ impl SlotWorker {
                 }
                 SlotMessage::EnableSlot(sender) => {
                     let result = self.allocate_slot();
-                    sender
-                        .send(result)
-                        .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    sender.send_anyhow(result)?;
                 }
                 SlotMessage::DisableSlot(slot_id, sender) => {
                     let result = self.free_slot(slot_id);
-                    sender
-                        .send(result)
-                        .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    sender.send_anyhow(result)?;
                 }
                 SlotMessage::AddressDevice(trb_data, sender) => {
                     let slot = match self
@@ -171,9 +168,7 @@ impl SlotWorker {
                     {
                         Some(slot) => slot,
                         None => {
-                            sender
-                                .send(CompletionCode::SlotNotEnabledError)
-                                .map_err(|_| anyhow!("oneshot channel closed"))?;
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
                             continue;
                         }
                     };
@@ -184,9 +179,7 @@ impl SlotWorker {
                             trb_data.block_set_address_request,
                         )
                         .await?;
-                    sender
-                        .send(result)
-                        .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    sender.send_anyhow(result)?;
                 }
                 SlotMessage::ConfigureEndpoint(trb_data, sender) => {
                     let slot = match self
@@ -196,9 +189,7 @@ impl SlotWorker {
                     {
                         Some(slot) => slot,
                         None => {
-                            sender
-                                .send(CompletionCode::SlotNotEnabledError)
-                                .map_err(|_| anyhow!("oneshot channel closed"))?;
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
                             continue;
                         }
                     };
@@ -209,9 +200,7 @@ impl SlotWorker {
                             trb_data.deconfigure,
                         )
                         .await?;
-                    sender
-                        .send(result)
-                        .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    sender.send_anyhow(result)?;
                 }
                 SlotMessage::StopEndpoint(slot_id, endpoint_id, sender) => {
                     let slot = match self
@@ -221,9 +210,7 @@ impl SlotWorker {
                     {
                         Some(slot) => slot,
                         None => {
-                            sender
-                                .send(CompletionCode::SlotNotEnabledError)
-                                .map_err(|_| anyhow!("oneshot channel closed"))?;
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
                             continue;
                         }
                     };
@@ -235,9 +222,7 @@ impl SlotWorker {
                     {
                         Some(ep_sender) => ep_sender,
                         None => {
-                            sender
-                                .send(CompletionCode::EndpointNotEnabledError)
-                                .map_err(|_| anyhow!("oneshot channel closed"))?;
+                            sender.send_anyhow(CompletionCode::EndpointNotEnabledError)?;
                             continue;
                         }
                     };

@@ -7,6 +7,7 @@ mod dynamic_bus;
 mod hotplug_server;
 mod memory_segment;
 mod one_indexed_array;
+mod oneshot_anyhow;
 mod xhci_backend;
 
 use std::{os::unix::net::UnixListener, thread};

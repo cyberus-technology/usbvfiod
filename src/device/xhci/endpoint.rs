@@ -5,14 +5,17 @@ use tokio::{
 };
 use tracing::{trace, warn};
 
-use crate::device::{
-    bus::BusDeviceRef,
-    pci::{constants::xhci::device_slots::endpoint_state, trb::CompletionCode},
-    xhci::{
-        endpoint_handle::{EndpointHandle, HotplugEndpointHandle, TrbProcessingResult},
-        linked_ring::LinkedRing,
-        slot_manager::EndpointContext,
+use crate::{
+    device::{
+        bus::BusDeviceRef,
+        pci::{constants::xhci::device_slots::endpoint_state, trb::CompletionCode},
+        xhci::{
+            endpoint_handle::{EndpointHandle, HotplugEndpointHandle, TrbProcessingResult},
+            linked_ring::LinkedRing,
+            slot_manager::EndpointContext,
+        },
     },
+    oneshot_anyhow::SendWithAnyhowError,
 };
 
 #[derive(Debug)]
@@ -89,9 +92,7 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                     EndpointMessage::Doorbell => self.state = WorkerState::LookForTrb,
                     EndpointMessage::Stop(sender) => {
                         self.state = WorkerState::Stopped;
-                        sender
-                            .send(CompletionCode::Success)
-                            .map_err(|_| anyhow!("oneshot channel closed"))?;
+                        sender.send_anyhow(CompletionCode::Success)?;
                     }
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender)
@@ -138,7 +139,7 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                     msg = self.recv.recv() => match msg.ok_or_else(|| anyhow!(""))? {
                         EndpointMessage::Stop(completion) => {
                             self.state = WorkerState::StoppedWithContinuableTrb;
-                            completion.send(CompletionCode::Success).map_err(|_| anyhow!("oneshot channel closed"))?;
+                            completion.send_anyhow(CompletionCode::Success)?;
                             },
                         msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                     }
@@ -185,15 +186,11 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                     self.context.set_state(endpoint_state::STOPPED);
                     self.transfer_ring.set_dequeue_pointer(ptr, cs);
                     self.state = WorkerState::Stopped;
-                    completion
-                        .send(())
-                        .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    completion.send_anyhow(())?;
                 }
                 WorkerState::Terminating(sender) => {
                     self.context.set_state(endpoint_state::DISABLED);
-                    sender
-                        .send(())
-                        .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    sender.send_anyhow(())?;
                     break;
                 }
             }

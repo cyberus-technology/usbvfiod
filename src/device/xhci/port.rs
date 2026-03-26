@@ -24,6 +24,7 @@ use crate::{
         },
     },
     one_indexed_array::OneIndexed,
+    oneshot_anyhow::SendWithAnyhowError,
 };
 
 #[derive(Debug)]
@@ -104,28 +105,20 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
         loop {
             match self.next_msg().await? {
                 PortMessage::Attach(device, responder) => {
-                    responder
-                        .send(self.attach(device)?)
-                        .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    responder.send_anyhow(self.attach(device)?)?;
                 }
                 PortMessage::Detach(identifier, responder) => {
-                    responder
-                        .send(self.detach(identifier)?)
-                        .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    responder.send_anyhow(self.detach(identifier)?)?;
                 }
                 PortMessage::ListAttached(responder) => {
-                    responder
-                        .send(self.attached_devices())
-                        .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    responder.send_anyhow(self.attached_devices())?;
                 }
                 PortMessage::GetDevice(port_id, responder) => {
                     let device = self
                         .devices
                         .get(port_id)
                         .and_then(|opt| opt.as_ref().map(|dev| dev.clone()));
-                    responder
-                        .send(device)
-                        .map_err(|_| anyhow!("oneshot channel closed"))?;
+                    responder.send_anyhow(device)?;
                 }
             };
         }
