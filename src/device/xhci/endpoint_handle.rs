@@ -274,6 +274,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         pcap::control_submission_with_req(meta, &request, event_timestamp);
                     }
 
+                    self.last_request = Some(request_copy.clone());
                     self.real_ep.submit_control_request(request);
 
                     self.submission_state = match is_out_request {
@@ -396,6 +397,28 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         error: ControlRequestProcessingResult,
         request_address: u64,
     ) -> TrbProcessingResult {
+        if let (Some(meta), Some(request)) = (self.pcap_meta, self.last_request.as_ref()) {
+            let direction = if request.request_type & 0x80 == 0 {
+                UsbDirection::HostToDevice
+            } else {
+                UsbDirection::DeviceToHost
+            };
+            let meta = EndpointPcapMeta { direction, ..meta };
+            let mapped = match error {
+                ControlRequestProcessingResult::Disconnect => TrbProcessingResult::Disconnect,
+                ControlRequestProcessingResult::Stall => TrbProcessingResult::Stall,
+                ControlRequestProcessingResult::TransactionError => {
+                    TrbProcessingResult::TransactionError
+                }
+                ControlRequestProcessingResult::SuccessfulControlIn(_)
+                | ControlRequestProcessingResult::SuccessfulControlOut => TrbProcessingResult::Ok,
+            };
+            if !matches!(mapped, TrbProcessingResult::Ok) {
+                let event_timestamp = Timestamp::from(SystemTime::now());
+                pcap::error_with_meta(meta, request_address, mapped, event_timestamp);
+            }
+        }
+
         match error {
             ControlRequestProcessingResult::Disconnect => {
                 // send transaction error event to driver
@@ -796,6 +819,18 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                             }
                         };
 
+                    if let Some(meta) = self.pcap_meta {
+                        if !matches!(processing_result, TrbProcessingResult::Ok) {
+                            // USB linktype timestamp for URB error completion.
+                            let event_timestamp = Timestamp::from(SystemTime::now());
+                            pcap::error_with_meta(
+                                meta,
+                                transfer_trb.address,
+                                processing_result,
+                                event_timestamp,
+                            );
+                        }
+                    }
                     if let Some(completion_code) = completion_code {
                         let transfer_event = EventTrb::new_transfer_event_trb(
                             transfer_trb.address,

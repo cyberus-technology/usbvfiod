@@ -4,7 +4,7 @@ pub mod writer;
 pub use meta::EndpointPcapMeta;
 pub use writer::{Timestamp, UsbDirection, UsbEventType, UsbPcapManager, UsbTransferType};
 
-use crate::device::pci::usbrequest::UsbRequest;
+use crate::device::{pci::usbrequest::UsbRequest, xhci::endpoint_handle::TrbProcessingResult};
 
 fn control_submission(meta: EndpointPcapMeta, req: &UsbRequest, event_timestamp: Timestamp) {
     let payload = req.data.as_deref().unwrap_or(&[]);
@@ -139,4 +139,27 @@ pub fn error(meta: EndpointPcapMeta, urb_id: u64, status: i32, event_timestamp: 
         None,
         &[],
     );
+}
+
+fn map_trb_error_status(result: TrbProcessingResult) -> i32 {
+    match result {
+        TrbProcessingResult::Stall => -32,            // EPIPE
+        TrbProcessingResult::TransactionError => -71, // EPROTO
+        TrbProcessingResult::Disconnect => -19,       // ENODEV
+        TrbProcessingResult::TrbError => -5,          // EIO
+        TrbProcessingResult::Ok => 0,
+    }
+}
+
+pub fn error_with_meta(
+    base: EndpointPcapMeta,
+    urb_id: u64,
+    result: TrbProcessingResult,
+    event_timestamp: Timestamp,
+) {
+    let status = map_trb_error_status(result);
+    if status == 0 {
+        return;
+    }
+    error(base, urb_id, status, event_timestamp);
 }
