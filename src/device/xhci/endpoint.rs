@@ -153,8 +153,11 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                         completion.send_anyhow(CompletionCode::Success)?;
                     }
                     EndpointMessage::Stop(completion) => {
-                        // acknowledge, but don't do anything
-                        completion.send_anyhow(CompletionCode::Success)?;
+                        // XHCI spec 4.8.3:
+                        // A Stop Endpoint Command received while an endpoint is in the Halted
+                        // state shall have no effect and shall generate a Command Completion Event with
+                        // the Completion Code set to Context State Error.
+                        completion.send_anyhow(CompletionCode::ContextStateError)?;
                     }
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },
