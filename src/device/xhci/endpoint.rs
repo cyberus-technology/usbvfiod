@@ -91,6 +91,7 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                 WorkerState::WaitForDoorbell => match self.next_msg().await? {
                     EndpointMessage::Doorbell => self.state = WorkerState::LookForTrb,
                     EndpointMessage::Stop(sender) => {
+                        self.context.set_state(endpoint_state::STOPPED);
                         self.state = WorkerState::Stopped;
                         sender.send_anyhow(CompletionCode::Success)?;
                     }
