@@ -1,8 +1,9 @@
+use anyhow::anyhow;
 use tokio::{
     runtime,
     sync::{mpsc, oneshot},
 };
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     device::{
@@ -54,10 +55,12 @@ impl SlotManager {
         }
     }
 
-    pub fn doorbell(&self, slot_id: u8, endpoint_id: u8) {
+    pub fn doorbell(&self, slot_id: u8, endpoint_id: u8) -> anyhow::Result<()> {
         trace!("Doorbell for slot {slot_id} endpoint {endpoint_id}");
         self.msg_send
-            .send(SlotMessage::Doorbell(slot_id, endpoint_id));
+            .send(SlotMessage::Doorbell(slot_id, endpoint_id))?;
+
+        Ok(())
     }
 }
 
@@ -102,14 +105,17 @@ impl SlotWorker {
         }
     }
 
-    async fn run(mut self) -> ! {
+    async fn next_msg(&mut self) -> anyhow::Result<SlotMessage> {
+        self.msg_recv
+            .recv()
+            .await
+            .ok_or_else(|| anyhow!("slot channel closed"))
+    }
+
+    // the function only returns with an error, but ! cannot be put in Result
+    async fn run_loop(&mut self) -> anyhow::Result<()> {
         loop {
-            let msg = self
-                .msg_recv
-                .recv()
-                .await
-                .expect("channel should never close");
-            match msg {
+            match self.next_msg().await? {
                 SlotMessage::Doorbell(slot_id, endpoint_id) => {
                     let slot = match self
                         .slots
@@ -135,15 +141,19 @@ impl SlotWorker {
                             continue;
                         }
                     };
-                    ep_sender.send(EndpointMessage::Doorbell);
+                    ep_sender.send(EndpointMessage::Doorbell)?;
                 }
                 SlotMessage::EnableSlot(sender) => {
                     let result = self.allocate_slot();
-                    sender.send(result);
+                    sender
+                        .send(result)
+                        .map_err(|_| anyhow!("oneshot channel closed"))?;
                 }
                 SlotMessage::DisableSlot(slot_id, sender) => {
                     let result = self.free_slot(slot_id);
-                    sender.send(result);
+                    sender
+                        .send(result)
+                        .map_err(|_| anyhow!("oneshot channel closed"))?;
                 }
                 SlotMessage::AddressDevice(trb_data, sender) => {
                     let slot = match self
@@ -153,7 +163,9 @@ impl SlotWorker {
                     {
                         Some(slot) => slot,
                         None => {
-                            sender.send(CompletionCode::SlotNotEnabledError);
+                            sender
+                                .send(CompletionCode::SlotNotEnabledError)
+                                .map_err(|_| anyhow!("oneshot channel closed"))?;
                             continue;
                         }
                     };
@@ -163,8 +175,10 @@ impl SlotWorker {
                             trb_data.input_context_pointer,
                             trb_data.block_set_address_request,
                         )
-                        .await;
-                    sender.send(result);
+                        .await?;
+                    sender
+                        .send(result)
+                        .map_err(|_| anyhow!("oneshot channel closed"))?;
                 }
                 SlotMessage::ConfigureEndpoint(trb_data, sender) => {
                     let slot = match self
@@ -174,7 +188,9 @@ impl SlotWorker {
                     {
                         Some(slot) => slot,
                         None => {
-                            sender.send(CompletionCode::SlotNotEnabledError);
+                            sender
+                                .send(CompletionCode::SlotNotEnabledError)
+                                .map_err(|_| anyhow!("oneshot channel closed"))?;
                             continue;
                         }
                     };
@@ -184,10 +200,19 @@ impl SlotWorker {
                             trb_data.input_context_pointer,
                             trb_data.deconfigure,
                         )
-                        .await;
-                    sender.send(result);
+                        .await?;
+                    sender
+                        .send(result)
+                        .map_err(|_| anyhow!("oneshot channel closed"))?;
                 }
             }
+        }
+    }
+
+    async fn run(mut self) {
+        match self.run_loop().await {
+            Ok(_) => unreachable!(),
+            Err(err) => info!("SlotWorker stopped {err}"),
         }
     }
 
@@ -257,8 +282,6 @@ enum SlotState {
     Configured,
 }
 
-type EndpointNotConfiguredError = ();
-
 impl Slot {
     fn new(
         id: u8,
@@ -290,11 +313,11 @@ impl Slot {
     }
 
     // 4.6.5 for reference
-    pub async fn handle_address_device(
+    async fn handle_address_device(
         &mut self,
         input_context_pointer: u64,
         bsr: bool,
-    ) -> CompletionCode {
+    ) -> anyhow::Result<CompletionCode> {
         // address device with BSR=1 transitions from Enabled to Default
         // address device with BSR=0 transitions from Enabled/Default to Addressed
         //
@@ -304,7 +327,7 @@ impl Slot {
 
         // we should not touch anything if the input is bad
         if self.check_slot_and_ep0_input_context(input_context_pointer) == false {
-            return CompletionCode::ParameterError;
+            return Ok(CompletionCode::ParameterError);
         }
 
         match (&self.state, bsr) {
@@ -344,14 +367,14 @@ impl Slot {
                 // no need to read dcbaae again
 
                 // ep0 worker is already running. Terminate before copying ep0 context.
-                self.deconfigure_endpoint(1).await;
+                self.deconfigure_endpoint(1).await?;
 
                 self.dma_copy_slot_and_ep0_context(input_context_pointer);
 
                 self.state = SlotState::Addressed;
                 self.write_slot_state(slot_state::ADDRESSED);
             }
-            _ => return CompletionCode::ContextStateError,
+            _ => return Ok(CompletionCode::ContextStateError),
         }
 
         // Safety: either base_address was already initialized or we just initialized
@@ -362,9 +385,9 @@ impl Slot {
         // set endpoint state here and not in the worker, so we do not need to wait for worker startup
         context.set_state(endpoint_state::RUNNING);
 
-        self.configure_endpoint(1).await;
+        self.configure_endpoint(1).await?;
 
-        CompletionCode::Success
+        Ok(CompletionCode::Success)
     }
 
     fn check_slot_and_ep0_input_context(&self, _input_context_pointer: u64) -> bool {
@@ -418,18 +441,18 @@ impl Slot {
             .read(Request::new(base_addr.wrapping_add(6), RequestSize::Size1)) as u8
     }
 
-    pub async fn handle_configure_endpoint(
+    async fn handle_configure_endpoint(
         &mut self,
         input_context_pointer: u64,
         deconfigure: bool,
-    ) -> CompletionCode {
+    ) -> anyhow::Result<CompletionCode> {
         // configure endpoint with DC=0 transitions from Addressed/Configured to Configured
         // configure endpoint with DC=1 transitions from Configured to Addressed
         if (!deconfigure
             && !(self.state == SlotState::Addressed || self.state == SlotState::Configured))
             || (deconfigure && self.state != SlotState::Configured)
         {
-            return CompletionCode::ContextStateError;
+            return Ok(CompletionCode::ContextStateError);
         }
 
         // TODO input checks
@@ -457,28 +480,30 @@ impl Slot {
         }
 
         for ep in to_deconfigure {
-            self.deconfigure_endpoint(ep).await;
+            self.deconfigure_endpoint(ep).await?;
         }
 
         for ep in to_configure {
             self.dma_copy_ep_context(ep, input_context_pointer);
-            self.configure_endpoint(ep).await;
+            self.configure_endpoint(ep).await?;
         }
 
         self.state = SlotState::Configured;
         self.write_slot_state(slot_state::CONFIGURED);
 
-        CompletionCode::Success
+        Ok(CompletionCode::Success)
     }
 
-    async fn deconfigure_endpoint(&mut self, endpoint_id: u8) {
+    async fn deconfigure_endpoint(&mut self, endpoint_id: u8) -> anyhow::Result<()> {
         let (send, recv) = oneshot::channel();
-        self.send_to_endpoint(endpoint_id, EndpointMessage::Terminate(send));
-        recv.await;
+        self.send_to_endpoint(endpoint_id, EndpointMessage::Terminate(send))?;
+        recv.await?;
         self.endpoint_senders[endpoint_id as usize] = None;
+
+        Ok(())
     }
 
-    async fn configure_endpoint(&mut self, endpoint_id: u8) {
+    async fn configure_endpoint(&mut self, endpoint_id: u8) -> anyhow::Result<()> {
         // Safety: either base_address was already initialized or we just initialized
         let context = EndpointContext::new(
             self.base_address
@@ -497,29 +522,24 @@ impl Slot {
             endpoint_context: context,
             responder: send,
         };
-        self.ep_launch_sender.send(launch_request);
-        let ep_sender = recv.await.expect("endpoint launcher should always answer");
+        self.ep_launch_sender.send(launch_request)?;
+        let ep_sender = recv.await?;
         self.endpoint_senders[endpoint_id as usize] = Some(ep_sender);
+
+        Ok(())
     }
 
-    pub fn handle_evaluate_context(&self, _input_context_pointer: u64) -> CompletionCode {
+    fn handle_evaluate_context(&self, _input_context_pointer: u64) -> CompletionCode {
         todo!();
     }
 
-    pub fn send_to_endpoint(
-        &self,
-        endpoint_id: u8,
-        msg: EndpointMessage,
-    ) -> Result<(), EndpointNotConfiguredError> {
-        assert!(endpoint_id >= 1 && endpoint_id <= 31);
+    fn send_to_endpoint(&self, endpoint_id: u8, msg: EndpointMessage) -> anyhow::Result<()> {
+        self.endpoint_senders[endpoint_id as usize]
+            .as_ref()
+            .expect("send_to_endpoint called on disabled endpoint")
+            .send(msg)?;
 
-        match &self.endpoint_senders[endpoint_id as usize] {
-            Some(sender) => {
-                sender.send(msg);
-                Ok(())
-            }
-            None => Err(()),
-        }
+        Ok(())
     }
 }
 

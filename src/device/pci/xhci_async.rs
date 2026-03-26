@@ -146,7 +146,9 @@ impl<RD: RealDevice, ID: Identifier> PciDevice for XhciController<RD, ID> {
                 .expect("command worker should be alive"),
             offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE_END => {
                 let slot_id = ((req.addr - offset::DOORBELL_CONTROLLER) / 4) as u8;
-                self.slot_manager.doorbell(slot_id, value as u8);
+                self.slot_manager
+                    .doorbell(slot_id, value as u8)
+                    .expect("slot worker should be alive");
             }
             addr if get_portsc_index(addr).is_some() => {
                 // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
