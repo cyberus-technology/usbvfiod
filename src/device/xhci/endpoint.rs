@@ -7,7 +7,7 @@ use tracing::{trace, warn};
 
 use crate::device::{
     bus::BusDeviceRef,
-    pci::constants::xhci::device_slots::endpoint_state,
+    pci::{constants::xhci::device_slots::endpoint_state, trb::CompletionCode},
     xhci::{
         endpoint_handle::{EndpointHandle, HotplugEndpointHandle, TrbProcessingResult},
         linked_ring::LinkedRing,
@@ -41,7 +41,7 @@ enum WorkerState {
 #[derive(Debug)]
 pub enum EndpointMessage {
     Doorbell,
-    Stop(oneshot::Sender<()>),
+    Stop(oneshot::Sender<CompletionCode>),
     Reset,
     // contains the new pointer
     SetTrDequeuePointer(u64, bool, oneshot::Sender<()>),
@@ -132,7 +132,7 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                     msg = self.recv.recv() => match msg.ok_or_else(|| anyhow!(""))? {
                         EndpointMessage::Stop(completion) => {
                             self.state = WorkerState::StoppedWithContinuableTrb;
-                            completion.send(()).map_err(|_| anyhow!("oneshot channel closed"))?;
+                            completion.send(CompletionCode::Success).map_err(|_| anyhow!("oneshot channel closed"))?;
                             },
                         msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                     }
@@ -227,7 +227,7 @@ impl EndpointSender {
         Ok(())
     }
 
-    pub fn stop(&self, completion: oneshot::Sender<()>) -> anyhow::Result<()> {
+    pub fn stop(&self, completion: oneshot::Sender<CompletionCode>) -> anyhow::Result<()> {
         self.msg_sender.send(EndpointMessage::Stop(completion))?;
 
         Ok(())

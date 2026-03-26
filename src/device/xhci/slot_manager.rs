@@ -91,6 +91,8 @@ pub enum SlotMessage {
         ConfigureEndpointCommandTrbData,
         oneshot::Sender<CompletionCode>,
     ),
+    // slot_id, endpoint_id
+    StopEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
 }
 
 impl SlotWorker {
@@ -210,6 +212,37 @@ impl SlotWorker {
                     sender
                         .send(result)
                         .map_err(|_| anyhow!("oneshot channel closed"))?;
+                }
+                SlotMessage::StopEndpoint(slot_id, endpoint_id, sender) => {
+                    let slot = match self
+                        .slots
+                        .get(slot_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(slot) => slot,
+                        None => {
+                            sender
+                                .send(CompletionCode::SlotNotEnabledError)
+                                .map_err(|_| anyhow!("oneshot channel closed"))?;
+                            continue;
+                        }
+                    };
+
+                    let ep_sender = match slot
+                        .endpoint_senders
+                        .get(endpoint_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(ep_sender) => ep_sender,
+                        None => {
+                            sender
+                                .send(CompletionCode::EndpointNotEnabledError)
+                                .map_err(|_| anyhow!("oneshot channel closed"))?;
+                            continue;
+                        }
+                    };
+
+                    ep_sender.stop(sender)?;
                 }
             }
         }
@@ -680,6 +713,18 @@ impl SlotWorkerHandle {
     ) -> anyhow::Result<CompletionCode> {
         let (send, recv) = oneshot::channel();
         let msg = SlotMessage::ConfigureEndpoint(trb_data, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn stop_endpoint(
+        &self,
+        slot_id: u8,
+        endpoint_id: u8,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::StopEndpoint(slot_id, endpoint_id, send);
         self.msg_send.send(msg)?;
         let completion_code = recv.await?;
         Ok(completion_code)
