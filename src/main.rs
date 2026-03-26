@@ -12,6 +12,7 @@ mod xhci_backend;
 
 use std::{os::unix::net::UnixListener, thread};
 
+use crate::device::pcap::UsbPcapManager;
 use anyhow::{Context, Result};
 use async_runtime::init_runtime;
 use clap::Parser;
@@ -41,6 +42,8 @@ fn main() -> Result<()> {
 
     // Log messages from the log crate as well.
     tracing_log::LogTracer::init()?;
+
+    UsbPcapManager::init(args.pcap_path.clone());
 
     init_runtime().context("Failed to initialize async runtime")?;
     let runtime = runtime();
