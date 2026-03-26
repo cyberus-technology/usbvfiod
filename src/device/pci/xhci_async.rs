@@ -53,7 +53,7 @@ impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
             dma_bus.clone(),
             &async_runtime,
             interrupter.create_event_sender(),
-            slot_manager.msg_send.clone(),
+            slot_manager.create_slot_worker_handle(),
         );
         let (usbcmd, usbsts) = new_usbcmd_and_usbsts();
 

@@ -25,7 +25,7 @@ use crate::{
 pub struct SlotManager {
     pub config_reg: ConfigureRegister,
     pub dcbaap: DcbaapRegister,
-    pub msg_send: mpsc::UnboundedSender<SlotMessage>,
+    msg_send: mpsc::UnboundedSender<SlotMessage>,
 }
 
 impl SlotManager {
@@ -61,6 +61,12 @@ impl SlotManager {
             .send(SlotMessage::Doorbell(slot_id, endpoint_id))?;
 
         Ok(())
+    }
+
+    pub fn create_slot_worker_handle(&self) -> SlotWorkerHandle {
+        SlotWorkerHandle {
+            msg_send: self.msg_send.clone(),
+        }
     }
 }
 
@@ -627,4 +633,49 @@ pub enum EndpointType {
     InterruptIn,
     InterruptOut,
     Unsupported,
+}
+
+#[derive(Debug, Clone)]
+pub struct SlotWorkerHandle {
+    msg_send: mpsc::UnboundedSender<SlotMessage>,
+}
+
+impl SlotWorkerHandle {
+    pub async fn enable_slot(&self) -> anyhow::Result<Result<u8, CompletionCode>> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::EnableSlot(send);
+        self.msg_send.send(msg)?;
+        let response = recv.await?;
+        Ok(response)
+    }
+
+    pub async fn disable_slot(&self, slot_id: u8) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::DisableSlot(slot_id, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn address_device(
+        &self,
+        trb_data: AddressDeviceCommandTrbData,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::AddressDevice(trb_data, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn configure_endpoint(
+        &self,
+        trb_data: ConfigureEndpointCommandTrbData,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::ConfigureEndpoint(trb_data, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
 }

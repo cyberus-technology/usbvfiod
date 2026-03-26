@@ -21,7 +21,11 @@ use crate::device::{
         constants::xhci::operational::crcr,
         trb::{CommandTrb, CommandTrbVariant, CompletionCode, EventTrb},
     },
-    xhci::{interrupter::EventSender, linked_ring::LinkedRing, slot_manager::SlotMessage},
+    xhci::{
+        interrupter::EventSender,
+        linked_ring::LinkedRing,
+        slot_manager::{SlotMessage, SlotWorkerHandle},
+    },
 };
 
 #[derive(Debug)]
@@ -37,7 +41,7 @@ struct CommandWorker {
     running: Arc<AtomicBool>,
     event_sender: EventSender,
     ring: LinkedRing,
-    slot_msg_sender: mpsc::UnboundedSender<SlotMessage>,
+    slot_handle: SlotWorkerHandle,
 }
 
 #[derive(Debug)]
@@ -70,7 +74,7 @@ impl CommandRing {
         dma_bus: BusDeviceRef,
         async_runtime: &runtime::Handle,
         event_sender: EventSender,
-        slot_msg_sender: mpsc::UnboundedSender<SlotMessage>,
+        slot_handle: SlotWorkerHandle,
     ) -> Self {
         let (sender_to_worker, receiver) = mpsc::unbounded_channel();
         let running = Arc::new(AtomicBool::new(false));
@@ -82,7 +86,7 @@ impl CommandRing {
             running: running.clone(),
             event_sender,
             ring,
-            slot_msg_sender,
+            slot_handle,
         };
         async_runtime.spawn(worker.run());
 
@@ -256,11 +260,7 @@ impl CommandWorker {
             debug!("Processing command {:?}", trb);
             let completion_event = match &trb.variant {
                 CommandTrbVariant::EnableSlot => {
-                    let (send, recv) = oneshot::channel();
-                    let msg = SlotMessage::EnableSlot(send);
-                    self.slot_msg_sender.send(msg)?;
-                    let response = recv.await?;
-                    let (slot_id, completion_code) = match response {
+                    let (slot_id, completion_code) = match self.slot_handle.enable_slot().await? {
                         Ok(slot_id) => (slot_id, CompletionCode::Success),
                         Err(completion_error_code) => (0, completion_error_code),
                     };
@@ -272,10 +272,7 @@ impl CommandWorker {
                     )
                 }
                 CommandTrbVariant::DisableSlot(data) => {
-                    let (send, recv) = oneshot::channel();
-                    let msg = SlotMessage::DisableSlot(data.slot_id, send);
-                    self.slot_msg_sender.send(msg)?;
-                    let completion_code = recv.await?;
+                    let completion_code = self.slot_handle.disable_slot(data.slot_id).await?;
                     EventTrb::new_command_completion_event_trb(
                         trb.address,
                         0,
@@ -284,10 +281,7 @@ impl CommandWorker {
                     )
                 }
                 CommandTrbVariant::AddressDevice(data) => {
-                    let (send, recv) = oneshot::channel();
-                    let msg = SlotMessage::AddressDevice(*data, send);
-                    self.slot_msg_sender.send(msg)?;
-                    let completion_code = recv.await?;
+                    let completion_code = self.slot_handle.address_device(*data).await?;
                     EventTrb::new_command_completion_event_trb(
                         trb.address,
                         0,
@@ -296,10 +290,7 @@ impl CommandWorker {
                     )
                 }
                 CommandTrbVariant::ConfigureEndpoint(data) => {
-                    let (send, recv) = oneshot::channel();
-                    let msg = SlotMessage::ConfigureEndpoint(*data, send);
-                    self.slot_msg_sender.send(msg)?;
-                    let completion_code = recv.await?;
+                    let completion_code = self.slot_handle.configure_endpoint(*data).await?;
                     EventTrb::new_command_completion_event_trb(
                         trb.address,
                         0,
