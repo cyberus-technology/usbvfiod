@@ -36,7 +36,7 @@ enum WorkerState {
     Error,
     StoppedWithContinuableTrb,
     // contains the new pointer + cycle state
-    SettingTrDequeuePointer(u64, bool, oneshot::Sender<()>),
+    SettingTrDequeuePointer(u64, bool, oneshot::Sender<CompletionCode>),
     Stopped,
     Terminating(oneshot::Sender<()>),
 }
@@ -47,7 +47,7 @@ pub enum EndpointMessage {
     Stop(oneshot::Sender<CompletionCode>),
     Reset(oneshot::Sender<CompletionCode>),
     // contains the new pointer
-    SetTrDequeuePointer(u64, bool, oneshot::Sender<()>),
+    SetTrDequeuePointer(u64, bool, oneshot::Sender<CompletionCode>),
     Terminate(oneshot::Sender<()>),
 }
 
@@ -187,7 +187,7 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                     self.context.set_state(endpoint_state::STOPPED);
                     self.transfer_ring.set_dequeue_pointer(ptr, cs);
                     self.state = WorkerState::Stopped;
-                    completion.send_anyhow(())?;
+                    completion.send_anyhow(CompletionCode::Success)?;
                 }
                 WorkerState::Terminating(sender) => {
                     self.context.set_state(endpoint_state::DISABLED);
@@ -247,7 +247,7 @@ impl EndpointSender {
         &self,
         dequeue_pointer: u64,
         cycle_state: bool,
-        completion: oneshot::Sender<()>,
+        completion: oneshot::Sender<CompletionCode>,
     ) -> anyhow::Result<()> {
         self.msg_sender.send(EndpointMessage::SetTrDequeuePointer(
             dequeue_pointer,

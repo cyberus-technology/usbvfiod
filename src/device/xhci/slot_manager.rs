@@ -14,7 +14,10 @@ use crate::{
                 MAX_SLOTS,
             },
             registers::{ConfigureRegister, DcbaapRegister},
-            trb::{AddressDeviceCommandTrbData, CompletionCode, ConfigureEndpointCommandTrbData},
+            trb::{
+                AddressDeviceCommandTrbData, CompletionCode, ConfigureEndpointCommandTrbData,
+                SetTrDequeuePointerCommandTrbData,
+            },
         },
         xhci::{endpoint::EndpointSender, endpoint_launcher::LaunchRequest},
     },
@@ -95,6 +98,10 @@ pub enum SlotMessage {
     // slot_id, endpoint_id
     StopEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
     ResetEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
+    SetTrDequeuePointer(
+        SetTrDequeuePointerCommandTrbData,
+        oneshot::Sender<CompletionCode>,
+    ),
 }
 
 impl SlotWorker {
@@ -256,6 +263,37 @@ impl SlotWorker {
                     };
 
                     ep_sender.reset(sender)?;
+                }
+                SlotMessage::SetTrDequeuePointer(trb_data, sender) => {
+                    let slot = match self
+                        .slots
+                        .get(trb_data.slot_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let ep_sender = match slot
+                        .endpoint_senders
+                        .get(trb_data.endpoint_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(ep_sender) => ep_sender,
+                        None => {
+                            sender.send_anyhow(CompletionCode::EndpointNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    ep_sender.set_tr_dequeue_pointer(
+                        trb_data.dequeue_pointer,
+                        trb_data.dequeue_cycle_state,
+                        sender,
+                    )?;
                 }
             }
         }
@@ -742,6 +780,7 @@ impl SlotWorkerHandle {
         let completion_code = recv.await?;
         Ok(completion_code)
     }
+
     pub async fn reset_endpoint(
         &self,
         slot_id: u8,
@@ -749,6 +788,17 @@ impl SlotWorkerHandle {
     ) -> anyhow::Result<CompletionCode> {
         let (send, recv) = oneshot::channel();
         let msg = SlotMessage::ResetEndpoint(slot_id, endpoint_id, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn set_tr_dequeue_pointer(
+        &self,
+        trb_data: SetTrDequeuePointerCommandTrbData,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::SetTrDequeuePointer(trb_data, send);
         self.msg_send.send(msg)?;
         let completion_code = recv.await?;
         Ok(completion_code)

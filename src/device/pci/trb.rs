@@ -720,7 +720,7 @@ impl TrbData for StopEndpointCommandTrbData {
 /// Set TR Dequeue Pointer Command TRB data structure.
 ///
 /// See XHCI specification Section 6.4.3.9 for detailed field descriptions.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct SetTrDequeuePointerCommandTrbData {
     /// The value of the xHC Consumer Cycle State referenced by the TR Dequeue pointer.
     pub dequeue_cycle_state: bool,

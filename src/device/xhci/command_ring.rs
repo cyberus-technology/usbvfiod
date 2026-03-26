@@ -331,10 +331,11 @@ impl CommandWorker {
                     )
                 }
                 CommandTrbVariant::SetTrDequeuePointer(data) => {
+                    let completion_code = self.slot_handle.set_tr_dequeue_pointer(*data).await?;
                     EventTrb::new_command_completion_event_trb(
                         trb.address,
                         0,
-                        CompletionCode::Success,
+                        completion_code,
                         data.slot_id,
                     )
                 }
