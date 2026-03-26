@@ -7,7 +7,7 @@ use tracing::debug;
 use crate::device::{
     bus::BusDeviceRef,
     xhci::{
-        endpoint::{EndpointMessage, EndpointWorker},
+        endpoint::{EndpointMessage, EndpointSender, EndpointWorker},
         endpoint_handle::{
             ControlEndpointHandle, EndpointHandle, HotplugEndpointHandle, InEndpointHandle,
             OutEndpointHandle,
@@ -35,7 +35,7 @@ pub struct LaunchRequest {
     pub endpoint_id: u8,
     pub root_hub_port: u8,
     pub endpoint_context: EndpointContext,
-    pub responder: oneshot::Sender<mpsc::UnboundedSender<EndpointMessage>>,
+    pub responder: oneshot::Sender<EndpointSender>,
 }
 
 impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {

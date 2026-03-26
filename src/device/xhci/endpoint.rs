@@ -54,7 +54,7 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
         dma_bus: BusDeviceRef,
         trb_consumer: HotplugEndpointHandle<EH>,
         context: EndpointContext,
-    ) -> mpsc::UnboundedSender<EndpointMessage> {
+    ) -> EndpointSender {
         let (sender, recv) = mpsc::unbounded_channel();
 
         context.set_state(endpoint_state::RUNNING);
@@ -70,7 +70,7 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
         };
         async_runtime.spawn(worker.run());
 
-        sender
+        EndpointSender { msg_sender: sender }
     }
 
     async fn run(self) {
@@ -206,5 +206,59 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
         trace!("endpoint received: {msg:?}");
 
         Ok(msg)
+    }
+}
+// Doorbell,
+// Stop(oneshot::Sender<()>),
+// Reset,
+// // contains the new pointer
+// SetTrDequeuePointer(u64, bool, oneshot::Sender<()>),
+// Terminate(oneshot::Sender<()>),
+
+#[derive(Debug, Clone)]
+pub struct EndpointSender {
+    msg_sender: mpsc::UnboundedSender<EndpointMessage>,
+}
+
+impl EndpointSender {
+    pub fn doorbell(&self) -> anyhow::Result<()> {
+        self.msg_sender.send(EndpointMessage::Doorbell)?;
+
+        Ok(())
+    }
+
+    pub fn stop(&self, completion: oneshot::Sender<()>) -> anyhow::Result<()> {
+        self.msg_sender.send(EndpointMessage::Stop(completion))?;
+
+        Ok(())
+    }
+
+    pub fn reset(&self) -> anyhow::Result<()> {
+        self.msg_sender.send(EndpointMessage::Reset)?;
+
+        Ok(())
+    }
+
+    pub fn set_tr_dequeue_pointer(
+        &self,
+        dequeue_pointer: u64,
+        cycle_state: bool,
+        completion: oneshot::Sender<()>,
+    ) -> anyhow::Result<()> {
+        self.msg_sender.send(EndpointMessage::SetTrDequeuePointer(
+            dequeue_pointer,
+            cycle_state,
+            completion,
+        ))?;
+
+        Ok(())
+    }
+
+    pub async fn terminate(&self) -> anyhow::Result<()> {
+        let (send, recv) = oneshot::channel();
+        self.msg_sender.send(EndpointMessage::Terminate(send))?;
+        recv.await?;
+
+        Ok(())
     }
 }

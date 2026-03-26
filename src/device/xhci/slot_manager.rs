@@ -16,7 +16,7 @@ use crate::{
             registers::{ConfigureRegister, DcbaapRegister},
             trb::{AddressDeviceCommandTrbData, CompletionCode, ConfigureEndpointCommandTrbData},
         },
-        xhci::{endpoint::EndpointMessage, endpoint_launcher::LaunchRequest},
+        xhci::{endpoint::EndpointSender, endpoint_launcher::LaunchRequest},
     },
     one_indexed_array::OneIndexed,
 };
@@ -147,7 +147,7 @@ impl SlotWorker {
                             continue;
                         }
                     };
-                    ep_sender.send(EndpointMessage::Doorbell)?;
+                    ep_sender.doorbell()?;
                 }
                 SlotMessage::EnableSlot(sender) => {
                     let result = self.allocate_slot();
@@ -276,7 +276,7 @@ struct Slot {
     // read from dcbaae once valid (through AddressDevice)
     base_address: Option<u64>,
     dma_bus: BusDeviceRef,
-    endpoint_senders: OneIndexed<Option<mpsc::UnboundedSender<EndpointMessage>>, 31>,
+    endpoint_senders: OneIndexed<Option<EndpointSender>, 31>,
     ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
 }
 
@@ -500,15 +500,21 @@ impl Slot {
         Ok(CompletionCode::Success)
     }
 
+    // helper method for address_advice and configure_endpoint.
+    // do only call for already disabled endpoints.
     async fn deconfigure_endpoint(&mut self, endpoint_id: u8) -> anyhow::Result<()> {
-        let (send, recv) = oneshot::channel();
-        self.send_to_endpoint(endpoint_id, EndpointMessage::Terminate(send))?;
-        recv.await?;
+        self.endpoint_senders[endpoint_id as usize]
+            .as_ref()
+            .expect("deconfigure_endpoint called on disabled endpoint")
+            .terminate()
+            .await?;
         self.endpoint_senders[endpoint_id as usize] = None;
 
         Ok(())
     }
 
+    // helper method for address_advice and configure_endpoint.
+    // do only call for already enabled endpoints.
     async fn configure_endpoint(&mut self, endpoint_id: u8) -> anyhow::Result<()> {
         // Safety: either base_address was already initialized or we just initialized
         let context = EndpointContext::new(
@@ -539,14 +545,14 @@ impl Slot {
         todo!();
     }
 
-    fn send_to_endpoint(&self, endpoint_id: u8, msg: EndpointMessage) -> anyhow::Result<()> {
-        self.endpoint_senders[endpoint_id as usize]
-            .as_ref()
-            .expect("send_to_endpoint called on disabled endpoint")
-            .send(msg)?;
+    // fn send_to_endpoint(&self, endpoint_id: u8, msg: EndpointMessage) -> anyhow::Result<()> {
+    //     self.endpoint_senders[endpoint_id as usize]
+    //         .as_ref()
+    //         .expect("send_to_endpoint called on disabled endpoint")
+    //         .send(msg)?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }
 
 /// A wrapper around DMA accesses to endpoint context structures.
