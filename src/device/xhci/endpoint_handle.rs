@@ -231,10 +231,12 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         real_ep: RCEH,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
+        pcap_meta: Option<EndpointPcapMeta>,
     ) -> Self {
         Self {
             slot_id,
             endpoint_id,
+            pcap_meta,
             real_ep,
             trb_parser: ControlRequestParser::new(dma_bus.clone()),
             dma_bus,
@@ -706,10 +708,12 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
         real_ep: RIEH,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
+        pcap_meta: Option<EndpointPcapMeta>,
     ) -> Self {
         Self {
             slot_id,
             endpoint_id,
+            pcap_meta,
             real_ep,
             dma_bus,
             event_sender,

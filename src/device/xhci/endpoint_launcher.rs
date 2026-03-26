@@ -6,6 +6,7 @@ use tracing::debug;
 
 use crate::device::{
     bus::BusDeviceRef,
+    pcap::{EndpointPcapMeta, UsbDirection, UsbTransferType},
     xhci::{
         endpoint::{EndpointMessage, EndpointSender, EndpointWorker},
         endpoint_handle::{
@@ -80,6 +81,14 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
             let endpoint_sender = match device {
                 Some(device) => match endpoint_type {
                     EndpointType::Control => {
+                        let (bus_number, device_address) = device.identifier;
+                        let pcap_meta = Some(EndpointPcapMeta {
+                            bus_number: u16::from(bus_number),
+                            device_address,
+                            endpoint_id: request.endpoint_id,
+                            transfer_type: UsbTransferType::Control,
+                            direction: UsbDirection::HostToDevice,
+                        });
                         let real_endpoint = device.real_device.control_endpoint_handle();
                         let endpoint_handle = ControlEndpointHandle::new(
                             request.slot_id,
@@ -87,6 +96,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             real_endpoint,
                             self.dma_bus.clone(),
                             self.event_sender.clone(),
+                            pcap_meta,
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
                             request.slot_id,
@@ -105,6 +115,14 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                         )
                     }
                     EndpointType::BulkIn => {
+                        let (bus_number, device_address) = device.identifier;
+                        let pcap_meta = Some(EndpointPcapMeta {
+                            bus_number: u16::from(bus_number),
+                            device_address,
+                            endpoint_id: request.endpoint_id,
+                            transfer_type: UsbTransferType::Bulk,
+                            direction: UsbDirection::DeviceToHost,
+                        });
                         let real_endpoint = device
                             .real_device
                             .bulk_in_endpoint_handle(request.endpoint_id);
@@ -114,6 +132,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             real_endpoint,
                             self.dma_bus.clone(),
                             self.event_sender.clone(),
+                            pcap_meta,
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
                             request.slot_id,
@@ -159,6 +178,14 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                         )
                     }
                     EndpointType::InterruptIn => {
+                        let (bus_number, device_address) = device.identifier;
+                        let pcap_meta = Some(EndpointPcapMeta {
+                            bus_number: u16::from(bus_number),
+                            device_address,
+                            endpoint_id: request.endpoint_id,
+                            transfer_type: UsbTransferType::Interrupt,
+                            direction: UsbDirection::DeviceToHost,
+                        });
                         let real_endpoint = device
                             .real_device
                             .interrupt_in_endpoint_handle(request.endpoint_id);
@@ -168,6 +195,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             real_endpoint,
                             self.dma_bus.clone(),
                             self.event_sender.clone(),
+                            pcap_meta,
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
                             request.slot_id,
