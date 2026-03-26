@@ -8,10 +8,7 @@ use std::sync::{
 use anyhow::anyhow;
 use tokio::{
     runtime,
-    sync::{
-        mpsc::{self, error::TryRecvError},
-        oneshot,
-    },
+    sync::mpsc::{self, error::TryRecvError},
 };
 use tracing::{debug, info, warn};
 
@@ -21,11 +18,7 @@ use crate::device::{
         constants::xhci::operational::crcr,
         trb::{CommandTrb, CommandTrbVariant, CompletionCode, EventTrb},
     },
-    xhci::{
-        interrupter::EventSender,
-        linked_ring::LinkedRing,
-        slot_manager::{SlotMessage, SlotWorkerHandle},
-    },
+    xhci::{interrupter::EventSender, linked_ring::LinkedRing, slot_manager::SlotWorkerHandle},
 };
 
 #[derive(Debug)]
