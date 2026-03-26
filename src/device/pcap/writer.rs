@@ -32,7 +32,7 @@ impl UsbEventType {
 }
 
 /// USB transfer category recorded in the linktype header.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum UsbTransferType {
     // TODO: implement isochronous transfer logging
     // Isochronous,
@@ -54,7 +54,7 @@ impl UsbTransferType {
 }
 
 /// USB direction used to set the endpoint address IN/OUT bit in the record.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum UsbDirection {
     HostToDevice,
     DeviceToHost,

@@ -10,8 +10,7 @@ use crate::device::{
     xhci::{
         endpoint::{EndpointMessage, EndpointSender, EndpointWorker},
         endpoint_handle::{
-            ControlEndpointHandle, EndpointHandle, HotplugEndpointHandle, InEndpointHandle,
-            OutEndpointHandle,
+            ControlEndpointHandle, HotplugEndpointHandle, InEndpointHandle, OutEndpointHandle,
         },
         interrupter::EventSender,
         nusb::NormalEndpointHandle,
@@ -82,8 +81,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                 Some(device) => match endpoint_type {
                     EndpointType::Control => {
 
-                        let bus_number = device.bus_number.unwrap_or(0);
-                        let device_address = device.device_address.unwrap_or(0);
+                        let (bus_number, device_address) = device.identifier.bus_device_numbers();
                         let pcap_meta = EndpointPcapMeta {
                             bus_number: u16::from(bus_number),
                             device_address,
@@ -117,9 +115,9 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                         )
                     }
                     EndpointType::BulkIn => {
-                        let bus_number = device.bus_number.unwrap_or(0);
-                        let device_address = device.device_address.unwrap_or(0);
+                        let (bus_number, device_address) = device.identifier.bus_device_numbers();
                         let pcap_meta = EndpointPcapMeta {
+                            bus_number: u16::from(bus_number),
                             device_address,
                             endpoint_id: request.endpoint_id,
                             transfer_type: UsbTransferType::Bulk,
@@ -153,8 +151,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                         )
                     }
                     EndpointType::BulkOut => {
-                        let bus_number = device.bus_number.unwrap_or(0);
-                        let device_address = device.device_address.unwrap_or(0);
+                        let (bus_number, device_address) = device.identifier.bus_device_numbers();
                         let pcap_meta = EndpointPcapMeta {
                             bus_number: u16::from(bus_number),
                             device_address,
@@ -190,8 +187,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                         )
                     }
                     EndpointType::InterruptIn => {
-                        let bus_number = device.bus_number.unwrap_or(0);
-                        let device_address = device.device_address.unwrap_or(0);
+                        let (bus_number, device_address) = device.identifier.bus_device_numbers();
                         let pcap_meta = EndpointPcapMeta {
                             bus_number: u16::from(bus_number),
                             device_address,
@@ -227,8 +223,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                         )
                     }
                     EndpointType::InterruptOut => {
-                        let bus_number = device.bus_number.unwrap_or(0);
-                        let device_address = device.device_address.unwrap_or(0);
+                        let (bus_number, device_address) = device.identifier.bus_device_numbers();
                         let pcap_meta = EndpointPcapMeta {
                             bus_number: u16::from(bus_number),
                             device_address,
