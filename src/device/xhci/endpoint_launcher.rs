@@ -170,8 +170,8 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.event_sender.clone(),
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
-                            request.endpoint_id,
                             request.slot_id,
+                            request.endpoint_id,
                             endpoint_handle,
                             self.event_sender.clone(),
                             device.cancel.clone(),
