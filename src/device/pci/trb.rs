@@ -358,7 +358,7 @@ pub enum CommandTrbVariant {
     AddressDevice(AddressDeviceCommandTrbData),
     ConfigureEndpoint(ConfigureEndpointCommandTrbData),
     EvaluateContext(EvaluateContextCommandTrbData),
-    ResetEndpoint,
+    ResetEndpoint(ResetEndpointCommandTrbData),
     StopEndpoint(StopEndpointCommandTrbData),
     SetTrDequeuePointer(SetTrDequeuePointerCommandTrbData),
     ResetDevice(ResetDeviceCommandTrbData),
@@ -392,7 +392,7 @@ impl CommandTrbVariant {
             trb_types::ADDRESS_DEVICE_COMMAND => parse(Self::AddressDevice, bytes),
             trb_types::CONFIGURE_ENDPOINT_COMMAND => parse(Self::ConfigureEndpoint, bytes),
             trb_types::EVALUATE_CONTEXT_COMMAND => parse(Self::EvaluateContext, bytes),
-            trb_types::RESET_ENDPOINT_COMMAND => Self::ResetEndpoint,
+            trb_types::RESET_ENDPOINT_COMMAND => parse(Self::ResetEndpoint, bytes),
             trb_types::STOP_ENDPOINT_COMMAND => parse(Self::StopEndpoint, bytes),
             trb_types::SET_TR_DEQUEUE_POINTER_COMMAND => parse(Self::SetTrDequeuePointer, bytes),
             trb_types::RESET_DEVICE_COMMAND => parse(Self::ResetDevice, bytes),
@@ -639,6 +639,42 @@ impl TrbData for EvaluateContextCommandTrbData {
         Ok(Self {
             input_context_pointer,
             slot_id,
+        })
+    }
+}
+
+/// Reset Endpoint Command TRB data structure.
+///
+/// See XHCI specification Section 6.4.3.7 for detailed field descriptions.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ResetEndpointCommandTrbData {
+    pub slot_id: u8,
+    pub endpoint_id: u8,
+}
+
+impl TrbData for ResetEndpointCommandTrbData {
+    /// Parse data of a Reset Endpoint Command TRB.
+    ///
+    /// Only `CommandTrb::try_from` should call this function.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects all RsvdZ
+    /// fields.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::RESET_ENDPOINT_COMMAND,
+            trb_type,
+            "ResetEndpointCommandTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
+        );
+
+        let endpoint_id = trb_bytes[14] & 0x1f;
+        let slot_id = trb_bytes[15];
+
+        Ok(Self {
+            slot_id,
+            endpoint_id,
         })
     }
 }
@@ -1018,6 +1054,19 @@ mod tests {
             0x02, 0x10,
         ];
         let expected = CommandTrbVariant::StopEndpoint(StopEndpointCommandTrbData {
+            endpoint_id: 0x02,
+            slot_id: 0x10,
+        });
+        assert_eq!(CommandTrbVariant::parse(trb_bytes), expected);
+    }
+
+    #[test]
+    fn parse_reset_endpoint_command_trb() {
+        let trb_bytes = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38,
+            0x02, 0x10,
+        ];
+        let expected = CommandTrbVariant::ResetEndpoint(ResetEndpointCommandTrbData {
             endpoint_id: 0x02,
             slot_id: 0x10,
         });

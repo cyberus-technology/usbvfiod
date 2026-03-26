@@ -94,6 +94,7 @@ pub enum SlotMessage {
     ),
     // slot_id, endpoint_id
     StopEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
+    ResetEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
 }
 
 impl SlotWorker {
@@ -228,6 +229,33 @@ impl SlotWorker {
                     };
 
                     ep_sender.stop(sender)?;
+                }
+                SlotMessage::ResetEndpoint(slot_id, endpoint_id, sender) => {
+                    let slot = match self
+                        .slots
+                        .get(slot_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let ep_sender = match slot
+                        .endpoint_senders
+                        .get(endpoint_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(ep_sender) => ep_sender,
+                        None => {
+                            sender.send_anyhow(CompletionCode::EndpointNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    ep_sender.reset(sender)?;
                 }
             }
         }
@@ -710,6 +738,17 @@ impl SlotWorkerHandle {
     ) -> anyhow::Result<CompletionCode> {
         let (send, recv) = oneshot::channel();
         let msg = SlotMessage::StopEndpoint(slot_id, endpoint_id, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+    pub async fn reset_endpoint(
+        &self,
+        slot_id: u8,
+        endpoint_id: u8,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::ResetEndpoint(slot_id, endpoint_id, send);
         self.msg_send.send(msg)?;
         let completion_code = recv.await?;
         Ok(completion_code)

@@ -45,7 +45,7 @@ enum WorkerState {
 pub enum EndpointMessage {
     Doorbell,
     Stop(oneshot::Sender<CompletionCode>),
-    Reset,
+    Reset(oneshot::Sender<CompletionCode>),
     // contains the new pointer
     SetTrDequeuePointer(u64, bool, oneshot::Sender<()>),
     Terminate(oneshot::Sender<()>),
@@ -145,10 +145,11 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                     }
                 },
                 WorkerState::Halted => match self.next_msg().await? {
-                    EndpointMessage::Reset => {
+                    EndpointMessage::Reset(completion) => {
                         self.real_endpoint.clear_halt();
                         self.context.set_state(endpoint_state::STOPPED);
                         self.state = WorkerState::Stopped;
+                        completion.send_anyhow(CompletionCode::Success)?;
                     }
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },
@@ -236,8 +237,8 @@ impl EndpointSender {
         Ok(())
     }
 
-    pub fn reset(&self) -> anyhow::Result<()> {
-        self.msg_sender.send(EndpointMessage::Reset)?;
+    pub fn reset(&self, completion: oneshot::Sender<CompletionCode>) -> anyhow::Result<()> {
+        self.msg_sender.send(EndpointMessage::Reset(completion))?;
 
         Ok(())
     }

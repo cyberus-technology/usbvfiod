@@ -306,7 +306,18 @@ impl CommandWorker {
                         data.slot_id,
                     )
                 }
-                CommandTrbVariant::ResetEndpoint => todo!(),
+                CommandTrbVariant::ResetEndpoint(data) => {
+                    let completion_code = self
+                        .slot_handle
+                        .reset_endpoint(data.slot_id, data.endpoint_id)
+                        .await?;
+                    EventTrb::new_command_completion_event_trb(
+                        trb.address,
+                        0,
+                        completion_code,
+                        data.slot_id,
+                    )
+                }
                 CommandTrbVariant::StopEndpoint(data) => {
                     let completion_code = self
                         .slot_handle
