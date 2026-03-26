@@ -595,11 +595,6 @@ impl EndpointContext {
         );
     }
 
-    fn get_state(&self) -> u8 {
-        self.dma_bus
-            .read(Request::new(self.address, RequestSize::Size1)) as u8
-    }
-
     pub fn set_state(&self, state: u8) {
         self.dma_bus
             .write(Request::new(self.address, RequestSize::Size1), state as u64);
@@ -621,13 +616,6 @@ impl EndpointContext {
                 EndpointType::Unsupported
             }
         }
-    }
-
-    pub fn get_root_hub_port(&self) -> u8 {
-        self.dma_bus.read(Request::new(
-            self.address.wrapping_add(6),
-            RequestSize::Size1,
-        )) as u8
     }
 }
 
