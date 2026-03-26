@@ -152,6 +152,10 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                         self.state = WorkerState::Stopped;
                         completion.send_anyhow(CompletionCode::Success)?;
                     }
+                    EndpointMessage::Stop(completion) => {
+                        // acknowledge, but don't do anything
+                        completion.send_anyhow(CompletionCode::Success)?;
+                    }
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },
                 WorkerState::Error => match self.next_msg().await? {
