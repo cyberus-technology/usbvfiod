@@ -23,7 +23,7 @@ use vfio_user::{IrqInfo, ServerBackend};
 use crate::device::{
     bus::{Request, RequestSize},
     interrupt_line::{DummyInterruptLine, InterruptLine},
-    pci::{traits::PciDevice, xhci_async::XhciController},
+    pci::{traits::PciDevice, xhci::XhciController},
     xhci::{
         nusb::NusbRealDevice,
         port::HotplugControl,
