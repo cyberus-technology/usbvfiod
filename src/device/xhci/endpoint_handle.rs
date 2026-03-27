@@ -20,12 +20,13 @@ use crate::device::{
 };
 
 pub trait EndpointHandle: Debug + Send + 'static {
-    type CompletionFuture<'a>: Future<Output = TrbProcessingResult> + Send + 'a;
+    type TrbCompletionFuture<'a>: Future<Output = TrbProcessingResult> + Send + 'a;
+    type CompletionFuture<'a>: Future<Output = ()> + Send + 'a;
 
     fn submit_trb(&mut self, trb: RawTrb);
-    fn next_completion(&mut self) -> Self::CompletionFuture<'_>;
-    fn cancel(&mut self);
-    fn clear_halt(&mut self);
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
+    fn cancel(&mut self) -> Self::CompletionFuture<'_>;
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,21 +40,22 @@ pub enum TrbProcessingResult {
 
 pub type DummyEndpointHandle = ();
 impl EndpointHandle for DummyEndpointHandle {
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
+    type TrbCompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     fn submit_trb(&mut self, _trb: RawTrb) {
         panic!("should never call functions of dummy endpoint handle");
     }
 
-    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         panic!("should never call functions of dummy endpoint handle");
     }
 
-    fn cancel(&mut self) {
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         panic!("should never call functions of dummy endpoint handle");
     }
 
-    fn clear_halt(&mut self) {
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
         panic!("should never call functions of dummy endpoint handle");
     }
 }
@@ -106,7 +108,8 @@ enum ControlSubmissionState {
 }
 
 impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<RCEH> {
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
+    type TrbCompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) {
         let trb_address = trb.address;
@@ -132,7 +135,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
         }
     }
 
-    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
             let result = match self.submission_state {
                 ControlSubmissionState::ParserConsumedTrb => TrbProcessingResult::Ok,
@@ -208,12 +211,12 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
         })
     }
 
-    fn cancel(&mut self) {
-        self.real_ep.cancel();
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.real_ep.cancel().await })
     }
 
-    fn clear_halt(&mut self) {
-        self.real_ep.clear_halt();
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.real_ep.clear_halt().await })
     }
 }
 
@@ -390,7 +393,8 @@ enum NormalSubmissionState {
 }
 
 impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
+    type TrbCompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) {
         assert!(
@@ -413,7 +417,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
         }
     }
 
-    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         assert!(
             !matches!(self.submission_state, NormalSubmissionState::NoTrbSubmitted),
             "next_completion called without prior submit_trb"
@@ -486,12 +490,12 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
         })
     }
 
-    fn cancel(&mut self) {
-        self.real_ep.cancel();
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.real_ep.cancel().await })
     }
 
-    fn clear_halt(&mut self) {
-        self.real_ep.clear_halt();
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.real_ep.clear_halt().await })
     }
 }
 
@@ -525,7 +529,8 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
 }
 
 impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
+    type TrbCompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) {
         assert!(
@@ -546,7 +551,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         }
     }
 
-    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         assert!(
             !matches!(self.submission_state, NormalSubmissionState::NoTrbSubmitted),
             "next_completion called without prior submit_trb"
@@ -628,11 +633,11 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         })
     }
 
-    fn cancel(&mut self) {
-        self.real_ep.cancel();
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.real_ep.cancel().await })
     }
 
-    fn clear_halt(&mut self) {
-        self.real_ep.clear_halt();
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.real_ep.clear_halt().await })
     }
 }

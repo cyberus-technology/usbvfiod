@@ -38,12 +38,13 @@ impl HotplugTrbProcessingResult {
 
 // trait exists to hide the EndpointHandle generic parameter from the endpoint state machine
 pub trait HotplugEndpointHandle: Debug + Send + 'static {
-    type CompletionFuture<'a>: Future<Output = HotplugTrbProcessingResult> + Send + 'a;
+    type TrbCompletionFuture<'a>: Future<Output = HotplugTrbProcessingResult> + Send + 'a;
+    type CompletionFuture<'a>: Future<Output = ()> + Send + 'a;
 
     fn submit_trb(&mut self, trb: RawTrb);
-    fn next_completion(&mut self) -> Self::CompletionFuture<'_>;
-    fn cancel(&mut self);
-    fn clear_halt(&mut self);
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
+    fn cancel(&mut self) -> Self::CompletionFuture<'_>;
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
 }
 
 #[derive(Debug)]
@@ -103,8 +104,9 @@ impl<EH: EndpointHandle> HotplugEndpointHandleImpl<EH> {
 }
 
 impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH> {
-    type CompletionFuture<'a> =
+    type TrbCompletionFuture<'a> =
         Pin<Box<dyn Future<Output = HotplugTrbProcessingResult> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) {
         if let Ok(mut guard) = self.endpoint_handle.try_lock() {
@@ -123,7 +125,7 @@ impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH>
         }
     }
 
-    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
             let trb_addr = match self.submission_state {
                 HotplugSubmissionState::TrbSubmitted(addr) => addr,
@@ -168,20 +170,20 @@ impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH>
         })
     }
 
-    fn cancel(&mut self) {
-        if let Ok(mut guard) = self.endpoint_handle.try_lock() {
-            if let Some(device) = guard.as_mut() {
-                device.cancel();
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async {
+            if let Some(device) = self.endpoint_handle.lock().await.as_mut() {
+                device.cancel().await;
             }
-        }
+        })
     }
 
-    fn clear_halt(&mut self) {
-        if let Ok(mut guard) = self.endpoint_handle.try_lock() {
-            if let Some(device) = guard.as_mut() {
-                device.clear_halt();
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async {
+            if let Some(device) = self.endpoint_handle.lock().await.as_mut() {
+                device.clear_halt().await;
             }
-        }
+        })
     }
 }
 

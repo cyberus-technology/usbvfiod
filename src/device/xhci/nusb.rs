@@ -156,14 +156,15 @@ impl Drop for ControlEndpointHandle {
 }
 
 impl RealControlEndpointHandle for ControlEndpointHandle {
-    type CompletionFuture<'a> =
+    type TrbCompletionFuture<'a> =
         Pin<Box<dyn Future<Output = ControlRequestProcessingResult> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     fn submit_control_request(&mut self, request: UsbRequest) {
         self.request_submitter.send(request);
     }
 
-    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
             match self.response_receiver.recv().await {
                 Some(res) => res,
@@ -172,12 +173,14 @@ impl RealControlEndpointHandle for ControlEndpointHandle {
         })
     }
 
-    fn cancel(&mut self) {
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         // nothing we can do
+        Box::pin(async { () })
     }
 
-    fn clear_halt(&mut self) {
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
         // nusb handles clearing halts on control endpoints by itself
+        Box::pin(async { () })
     }
 }
 
@@ -332,14 +335,16 @@ impl<EpType: EndpointType, Dir: EndpointDirection> NormalEndpointHandle<EpType, 
 }
 
 impl<EpType: BulkOrInterrupt> RealOutEndpointHandle for NormalEndpointHandle<EpType, Out> {
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = OutTrbProcessingResult> + Send + 'a>>;
+    type TrbCompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = OutTrbProcessingResult> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     fn submit(&mut self, data: Vec<u8>) {
         let buf = Buffer::from(data);
         self.endpoint().submit(buf);
     }
 
-    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
             let completion = self.endpoint().next_complete().await;
             match completion.status {
@@ -356,17 +361,20 @@ impl<EpType: BulkOrInterrupt> RealOutEndpointHandle for NormalEndpointHandle<EpT
         })
     }
 
-    fn cancel(&mut self) {
-        self.endpoint().cancel_all();
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.endpoint().cancel_all() })
     }
 
-    fn clear_halt(&mut self) {
-        self.endpoint().clear_halt();
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async {
+            self.endpoint().clear_halt().await;
+        })
     }
 }
 
 impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpType, In> {
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = InTrbProcessingResult> + Send + 'a>>;
+    type TrbCompletionFuture<'a> = Pin<Box<dyn Future<Output = InTrbProcessingResult> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     fn submit(&mut self, len: usize) {
         let endpoint = self.endpoint();
@@ -375,7 +383,7 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
         endpoint.submit(buf);
     }
 
-    fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
             let completion = self.endpoint().next_complete().await.into_result();
             match completion {
@@ -392,12 +400,14 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
         })
     }
 
-    fn cancel(&mut self) {
-        self.endpoint().cancel_all();
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.endpoint().cancel_all() })
     }
 
-    fn clear_halt(&mut self) {
-        self.endpoint().clear_halt();
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async {
+            self.endpoint().clear_halt().await;
+        })
     }
 }
 
