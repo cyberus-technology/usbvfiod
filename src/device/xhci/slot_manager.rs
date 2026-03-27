@@ -500,8 +500,6 @@ impl Slot {
             self.base_address.unwrap().wrapping_add(32),
             self.dma_bus.clone(),
         );
-        // set endpoint state here and not in the worker, so we do not need to wait for worker startup
-        context.set_state(endpoint_state::RUNNING);
 
         self.configure_endpoint(1).await?;
 
@@ -635,8 +633,6 @@ impl Slot {
                 .wrapping_add(endpoint_id as u64 * 32),
             self.dma_bus.clone(),
         );
-        // set endpoint state here and not in the worker, so we do not need to wait for worker startup
-        context.set_state(endpoint_state::RUNNING);
 
         let (send, recv) = oneshot::channel();
         let launch_request = LaunchRequest {
