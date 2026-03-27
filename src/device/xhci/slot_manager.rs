@@ -309,8 +309,10 @@ impl SlotWorker {
                         }
                     };
 
-                    slot.handle_evaluate_context(trb_data.input_context_pointer)
+                    let result = slot
+                        .handle_evaluate_context(trb_data.input_context_pointer)
                         .await?;
+                    sender.send_anyhow(result)?;
                 }
             }
         }
