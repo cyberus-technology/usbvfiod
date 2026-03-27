@@ -136,6 +136,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     // cannot use self.next_msg() because the &mut it takes clashes with the self.real_endpoint above
                     msg = self.recv.recv() => match msg.ok_or_else(|| anyhow!(""))? {
                         EndpointMessage::Stop(completion) => {
+                            self.context.set_state(endpoint_state::STOPPED);
                             self.state = WorkerState::StoppedWithContinuableTrb;
                             completion.send_anyhow(CompletionCode::Success)?;
                             },
@@ -179,7 +180,10 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },
                 WorkerState::Stopped => match self.next_msg().await? {
-                    EndpointMessage::Doorbell => self.state = WorkerState::LookForTrb,
+                    EndpointMessage::Doorbell => {
+                        self.context.set_state(endpoint_state::RUNNING);
+                        self.state = WorkerState::LookForTrb;
+                    }
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion)
                     }
