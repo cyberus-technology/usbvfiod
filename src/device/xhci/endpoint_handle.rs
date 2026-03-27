@@ -554,6 +554,7 @@ impl ControlRequestParser {
 pub struct OutEndpointHandle<ROEH: RealOutEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
+    pcap_meta: Option<EndpointPcapMeta>,
     real_ep: ROEH,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
@@ -567,10 +568,12 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         real_ep: ROEH,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
+        pcap_meta: Option<EndpointPcapMeta>,
     ) -> Self {
         Self {
             slot_id,
             endpoint_id,
+            pcap_meta,
             real_ep,
             dma_bus,
             event_sender,
@@ -601,6 +604,16 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
             TransferTrbVariant::Normal(normal_data) => {
                 let mut data = vec![0; normal_data.transfer_length as usize];
                 self.dma_bus.read_bulk(normal_data.data_pointer, &mut data);
+                if let Some(meta) = self.pcap_meta {
+                    let event_timestamp = Timestamp::from(SystemTime::now());
+                    pcap::out_submission(
+                        meta,
+                        trb.address,
+                        &data,
+                        normal_data.transfer_length,
+                        event_timestamp,
+                    );
+                }
                 self.real_ep.submit(data);
                 self.submission_state = NormalSubmissionState::AwaitingRealTransfer(TransferTrb {
                     address: trb.address,
@@ -647,9 +660,24 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                                 TrbProcessingResult::TransactionError,
                             ),
                             OutTrbProcessingResult::Success => {
+                                if let Some(meta) = self.pcap_meta {
+                                    let event_timestamp = Timestamp::from(SystemTime::now());
+                                    let len = match &transfer_trb.variant {
+                                        TransferTrbVariant::Normal(normal_data) => {
+                                            normal_data.transfer_length
+                                        }
+                                        _ => 0,
+                                    };
+                                    pcap::out_completion(
+                                        meta,
+                                        transfer_trb.address,
+                                        len,
+                                        event_timestamp,
+                                    );
+                                }
                                 let completion_code =
                                     if let TransferTrbVariant::Normal(normal_data) =
-                                        transfer_trb.variant
+                                        &transfer_trb.variant
                                     {
                                         match normal_data.interrupt_on_completion {
                                             true => Some(CompletionCode::Success),
@@ -662,6 +690,17 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                             }
                         };
 
+                    if let Some(meta) = self.pcap_meta {
+                        if !matches!(processing_result, TrbProcessingResult::Ok) {
+                            let event_timestamp = Timestamp::from(SystemTime::now());
+                            pcap::error_with_meta(
+                                meta,
+                                transfer_trb.address,
+                                processing_result,
+                                event_timestamp,
+                            );
+                        }
+                    }
                     if let Some(completion_code) = completion_code {
                         let transfer_event = EventTrb::new_transfer_event_trb(
                             transfer_trb.address,
