@@ -283,7 +283,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
 
     fn next_completion(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
-            match mem::take(&mut self.submission_state) {
+            let result = match self.submission_state {
                 ControlSubmissionState::ParserConsumedTrb => TrbProcessingResult::Ok,
                 ControlSubmissionState::ParserError(trb_address) => {
                     let event = EventTrb::new_transfer_event_trb(
@@ -350,7 +350,10 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     }
                 }
                 ControlSubmissionState::NoTrbSubmitted => unreachable!(),
-            }
+            };
+            self.submission_state = ControlSubmissionState::NoTrbSubmitted;
+
+            result
         })
     }
 
