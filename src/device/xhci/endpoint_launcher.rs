@@ -39,22 +39,52 @@ pub struct LaunchRequest {
     pub responder: oneshot::Sender<EndpointSender>,
 }
 
+#[derive(Debug, Clone)]
+pub struct LaunchRequester {
+    msg_send: mpsc::UnboundedSender<LaunchRequest>,
+}
+
+impl LaunchRequester {
+    pub async fn request_launch(
+        &self,
+        slot_id: u8,
+        endpoint_id: u8,
+        root_hub_port: u8,
+        endpoint_context: EndpointContext,
+    ) -> anyhow::Result<EndpointSender> {
+        let (send, recv) = oneshot::channel();
+        let launch_request = LaunchRequest {
+            slot_id,
+            endpoint_id,
+            root_hub_port,
+            endpoint_context,
+            responder: send,
+        };
+        self.msg_send.send(launch_request)?;
+        let ep_sender = recv.await?;
+
+        Ok(ep_sender)
+    }
+}
+
 impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
     pub fn start(
-        request_recv: mpsc::UnboundedReceiver<LaunchRequest>,
         device_retriever: DeviceRetriever<RD, ID>,
         async_runtime: runtime::Handle,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
-    ) {
+    ) -> LaunchRequester {
+        let (send, recv) = mpsc::unbounded_channel();
         let launcher = Self {
-            request_recv,
+            request_recv: recv,
             device_retriever,
             async_runtime: async_runtime.clone(),
             dma_bus,
             event_sender,
         };
         async_runtime.spawn(launcher.run());
+
+        LaunchRequester { msg_send: send }
     }
 
     async fn run(mut self) {

@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use tokio::{runtime, sync::mpsc};
+use tokio::runtime;
 
 use crate::device::{
     bus::{BusDeviceRef, SingleThreadedBusDevice},
@@ -40,15 +40,13 @@ impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
     pub fn new(dma_bus: BusDeviceRef, async_runtime: runtime::Handle) -> Self {
         let interrupter = Interrupter::new(dma_bus.clone(), &async_runtime);
         let port_array = PortArray::new(interrupter.create_event_sender(), async_runtime.clone());
-        let (ep_launch_sender, ep_launch_recv) = mpsc::unbounded_channel();
-        EndpointLauncher::start(
-            ep_launch_recv,
+        let ep_launch_requester = EndpointLauncher::start(
             port_array.create_device_retriever(),
             async_runtime.clone(),
             dma_bus.clone(),
             interrupter.create_event_sender(),
         );
-        let slot_manager = SlotManager::new(dma_bus.clone(), &async_runtime, ep_launch_sender);
+        let slot_manager = SlotManager::new(dma_bus.clone(), &async_runtime, ep_launch_requester);
         let command_ring = CommandRing::new(
             dma_bus.clone(),
             &async_runtime,

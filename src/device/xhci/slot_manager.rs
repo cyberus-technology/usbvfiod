@@ -16,7 +16,7 @@ use crate::{
                 EvaluateContextCommandTrbData, SetTrDequeuePointerCommandTrbData,
             },
         },
-        xhci::{endpoint::EndpointSender, endpoint_launcher::LaunchRequest},
+        xhci::{endpoint::EndpointSender, endpoint_launcher::LaunchRequester},
     },
     one_indexed_array::OneIndexed,
     oneshot_anyhow::SendWithAnyhowError,
@@ -33,7 +33,7 @@ impl SlotManager {
     pub fn new(
         dma_bus: BusDeviceRef,
         async_runtime: &runtime::Handle,
-        ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
+        ep_launch_sender: LaunchRequester,
     ) -> Self {
         let config_reg = ConfigureRegister::default();
         let dcbaap = DcbaapRegister::default();
@@ -77,7 +77,7 @@ pub struct SlotWorker {
     config_reg: ConfigureRegister,
     dcbaap: DcbaapRegister,
     dma_bus: BusDeviceRef,
-    ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
+    ep_launch_sender: LaunchRequester,
     msg_recv: mpsc::UnboundedReceiver<SlotMessage>,
 }
 
@@ -110,7 +110,7 @@ impl SlotWorker {
         dma_bus: BusDeviceRef,
         config_reg: ConfigureRegister,
         dcbaap: DcbaapRegister,
-        ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
+        ep_launch_sender: LaunchRequester,
         msg_recv: mpsc::UnboundedReceiver<SlotMessage>,
     ) -> Self {
         Self {
@@ -386,7 +386,7 @@ struct Slot {
     base_address: Option<u64>,
     dma_bus: BusDeviceRef,
     endpoint_senders: OneIndexed<Option<EndpointSender>, 31>,
-    ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
+    ep_launch_requester: LaunchRequester,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -398,12 +398,7 @@ enum SlotState {
 }
 
 impl Slot {
-    fn new(
-        id: u8,
-        dcbaae: u64,
-        dma_bus: BusDeviceRef,
-        ep_launch_sender: mpsc::UnboundedSender<LaunchRequest>,
-    ) -> Self {
+    fn new(id: u8, dcbaae: u64, dma_bus: BusDeviceRef, ep_launch_sender: LaunchRequester) -> Self {
         Self {
             id,
             state: SlotState::Enabled,
@@ -411,7 +406,7 @@ impl Slot {
             base_address: None,
             dma_bus,
             endpoint_senders: [const { None }; 31].into(),
-            ep_launch_sender,
+            ep_launch_requester: ep_launch_sender,
         }
     }
 
@@ -625,16 +620,10 @@ impl Slot {
             self.dma_bus.clone(),
         );
 
-        let (send, recv) = oneshot::channel();
-        let launch_request = LaunchRequest {
-            slot_id: self.id,
-            endpoint_id,
-            root_hub_port: self.root_hub_port(),
-            endpoint_context: context,
-            responder: send,
-        };
-        self.ep_launch_sender.send(launch_request)?;
-        let ep_sender = recv.await?;
+        let ep_sender = self
+            .ep_launch_requester
+            .request_launch(self.id, endpoint_id, self.root_hub_port(), context)
+            .await?;
         self.endpoint_senders[endpoint_id as usize] = Some(ep_sender);
 
         Ok(())
