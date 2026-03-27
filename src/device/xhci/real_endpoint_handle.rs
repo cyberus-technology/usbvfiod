@@ -1,4 +1,4 @@
-use std::{fmt::Debug, future::Future, pin::Pin};
+use std::{fmt::Debug, future::Future};
 
 use crate::device::pci::usbrequest::UsbRequest;
 

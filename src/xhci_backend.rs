@@ -8,7 +8,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use nusb::MaybeFuture;
 use tokio::runtime;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 use usbvfiod::hotplug_protocol::{device_paths::resolve_path, response::Response};
 use vfio_bindings::bindings::vfio::{
@@ -20,17 +20,14 @@ use vfio_bindings::bindings::vfio::{
 };
 use vfio_user::{IrqInfo, ServerBackend};
 
-use crate::{
-    async_runtime::{self, runtime},
-    device::{
-        bus::{Request, RequestSize},
-        interrupt_line::{DummyInterruptLine, InterruptLine},
-        pci::{traits::PciDevice, xhci_async::XhciController},
-        xhci::{
-            nusb::NusbRealDevice,
-            port::HotplugControl,
-            real_device::{CompleteRealDevice, Identifier, RealDevice},
-        },
+use crate::device::{
+    bus::{Request, RequestSize},
+    interrupt_line::{DummyInterruptLine, InterruptLine},
+    pci::{traits::PciDevice, xhci_async::XhciController},
+    xhci::{
+        nusb::NusbRealDevice,
+        port::HotplugControl,
+        real_device::{CompleteRealDevice, Identifier, RealDevice},
     },
 };
 

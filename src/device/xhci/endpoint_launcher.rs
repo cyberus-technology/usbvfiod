@@ -13,7 +13,7 @@ use crate::{
             endpoint_handle::{ControlEndpointHandle, InEndpointHandle, OutEndpointHandle},
             hotplug_endpoint_handle::HotplugEndpointHandleImpl,
             interrupter::EventSender,
-            port::{DeviceRetriever, PortMessage},
+            port::DeviceRetriever,
             real_device::{Identifier, RealDevice},
             slot_manager::{EndpointContext, EndpointType},
         },

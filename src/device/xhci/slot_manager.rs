@@ -9,10 +9,7 @@ use crate::{
     device::{
         bus::{BusDeviceRef, Request, RequestSize},
         pci::{
-            constants::xhci::{
-                device_slots::{endpoint_state, slot_state},
-                MAX_SLOTS,
-            },
+            constants::xhci::{device_slots::slot_state, MAX_SLOTS},
             registers::{ConfigureRegister, DcbaapRegister},
             trb::{
                 AddressDeviceCommandTrbData, CompletionCode, ConfigureEndpointCommandTrbData,

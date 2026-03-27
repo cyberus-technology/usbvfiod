@@ -4,7 +4,6 @@ use std::sync::{
 };
 
 use tokio::sync::Notify;
-use tracing::trace;
 
 use crate::device::pci::constants::xhci::{
     operational::{portsc, usbsts},

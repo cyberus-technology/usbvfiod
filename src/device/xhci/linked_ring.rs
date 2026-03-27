@@ -1,4 +1,4 @@
-use tracing::{debug, trace};
+use tracing::trace;
 
 use crate::device::{
     bus::BusDeviceRef,

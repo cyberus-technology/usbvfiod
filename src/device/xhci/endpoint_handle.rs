@@ -1,7 +1,5 @@
-use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin, sync::Arc};
+use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin};
 
-use tokio::{runtime, select, sync::Mutex};
-use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::device::{
