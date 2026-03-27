@@ -67,6 +67,12 @@ impl<RD: RealDevice, ID: Identifier> PortArray<RD, ID> {
             msg_send: self.msg_sender.clone(),
         }
     }
+
+    pub fn create_device_retriever(&self) -> DeviceRetriever<RD, ID> {
+        DeviceRetriever {
+            msg_send: self.msg_sender.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -365,6 +371,25 @@ impl<RD: RealDevice, ID: Identifier> HotplugControl<RD, ID> {
         response_recv
             .await
             .expect("oneshot channel should always provide a message")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceRetriever<RD: RealDevice, ID: Identifier> {
+    msg_send: mpsc::UnboundedSender<PortMessage<RD, ID>>,
+}
+
+impl<RD: RealDevice, ID: Identifier> DeviceRetriever<RD, ID> {
+    pub async fn get_device(
+        &self,
+        port_id: u8,
+    ) -> anyhow::Result<Option<Arc<CompleteRealDevice<RD, ID>>>> {
+        let (send, recv) = oneshot::channel();
+        self.msg_send
+            .send(PortMessage::GetDevice(port_id as usize, send))?;
+        let device = recv.await?;
+
+        Ok(device)
     }
 }
 

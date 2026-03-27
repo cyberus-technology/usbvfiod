@@ -43,7 +43,7 @@ impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
         let (ep_launch_sender, ep_launch_recv) = mpsc::unbounded_channel();
         EndpointLauncher::start(
             ep_launch_recv,
-            port_array.msg_sender.clone(),
+            port_array.create_device_retriever(),
             async_runtime.clone(),
             dma_bus.clone(),
             interrupter.create_event_sender(),

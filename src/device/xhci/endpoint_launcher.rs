@@ -13,7 +13,7 @@ use crate::{
             endpoint_handle::{ControlEndpointHandle, InEndpointHandle, OutEndpointHandle},
             hotplug_endpoint_handle::HotplugEndpointHandleImpl,
             interrupter::EventSender,
-            port::PortMessage,
+            port::{DeviceRetriever, PortMessage},
             real_device::{Identifier, RealDevice},
             slot_manager::{EndpointContext, EndpointType},
         },
@@ -24,7 +24,7 @@ use crate::{
 #[derive(Debug)]
 pub struct EndpointLauncher<RD: RealDevice, ID: Identifier> {
     request_recv: mpsc::UnboundedReceiver<LaunchRequest>,
-    port_msg_sender: mpsc::UnboundedSender<PortMessage<RD, ID>>,
+    device_retriever: DeviceRetriever<RD, ID>,
     async_runtime: runtime::Handle,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
@@ -42,14 +42,14 @@ pub struct LaunchRequest {
 impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
     pub fn start(
         request_recv: mpsc::UnboundedReceiver<LaunchRequest>,
-        port_msg_sender: mpsc::UnboundedSender<PortMessage<RD, ID>>,
+        device_retriever: DeviceRetriever<RD, ID>,
         async_runtime: runtime::Handle,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
     ) {
         let launcher = Self {
             request_recv,
-            port_msg_sender,
+            device_retriever,
             async_runtime: async_runtime.clone(),
             dma_bus,
             event_sender,
@@ -75,10 +75,10 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                 request.slot_id, request.endpoint_id, request.root_hub_port
             );
 
-            let (send, recv) = oneshot::channel();
-            self.port_msg_sender
-                .send(PortMessage::GetDevice(request.root_hub_port as usize, send))?;
-            let device = recv.await?;
+            let device = self
+                .device_retriever
+                .get_device(request.root_hub_port)
+                .await?;
             let endpoint_type = request.endpoint_context.get_endpoint_type();
             debug!("endpoint context specifies endpoint type {endpoint_type:?}");
 
