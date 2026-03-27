@@ -67,8 +67,6 @@ pub struct ControlEndpointHandle<RCEH: RealControlEndpointHandle> {
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
     submission_state: ControlSubmissionState,
-    last_request: Option<UsbRequest>,
-    last_trb_address: Option<u64>,
 }
 
 impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
@@ -87,8 +85,6 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             dma_bus,
             event_sender,
             submission_state: ControlSubmissionState::NoTrbSubmitted,
-            last_request: None,
-            last_trb_address: None,
         }
     }
 }

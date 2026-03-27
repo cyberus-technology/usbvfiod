@@ -492,12 +492,6 @@ impl Slot {
             _ => return Ok(CompletionCode::ContextStateError),
         }
 
-        // Safety: either base_address was already initialized or we just initialized
-        let context = EndpointContext::new(
-            self.base_address.unwrap().wrapping_add(32),
-            self.dma_bus.clone(),
-        );
-
         self.configure_endpoint(1).await?;
 
         Ok(CompletionCode::Success)
