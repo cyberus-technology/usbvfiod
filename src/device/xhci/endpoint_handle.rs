@@ -569,8 +569,8 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
         );
 
         Box::pin(async {
-            match mem::take(&mut self.submission_state) {
-                NormalSubmissionState::UnsupportedTrbType(trb) => {
+            let result = match self.submission_state {
+                NormalSubmissionState::UnsupportedTrbType(ref trb) => {
                     let transfer_event = EventTrb::new_transfer_event_trb(
                         trb.address,
                         0,
@@ -583,7 +583,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
 
                     TrbProcessingResult::TrbError
                 }
-                NormalSubmissionState::AwaitingRealTransfer(transfer_trb) => {
+                NormalSubmissionState::AwaitingRealTransfer(ref transfer_trb) => {
                     let (completion_code, processing_result) =
                         match self.real_ep.next_completion().await {
                             OutTrbProcessingResult::Disconnect => (
@@ -599,7 +599,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                             ),
                             OutTrbProcessingResult::Success => {
                                 let completion_code =
-                                    if let TransferTrbVariant::Normal(normal_data) =
+                                    if let TransferTrbVariant::Normal(ref normal_data) =
                                         transfer_trb.variant
                                     {
                                         match normal_data.interrupt_on_completion {
@@ -628,7 +628,10 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                     processing_result
                 }
                 NormalSubmissionState::NoTrbSubmitted => unreachable!(),
-            }
+            };
+            self.submission_state = NormalSubmissionState::NoTrbSubmitted;
+
+            result
         })
     }
 
@@ -699,8 +702,8 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         );
 
         Box::pin(async {
-            match mem::take(&mut self.submission_state) {
-                NormalSubmissionState::UnsupportedTrbType(trb) => {
+            let result = match self.submission_state {
+                NormalSubmissionState::UnsupportedTrbType(ref trb) => {
                     let transfer_event = EventTrb::new_transfer_event_trb(
                         trb.address,
                         0,
@@ -713,7 +716,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
 
                     TrbProcessingResult::TrbError
                 }
-                NormalSubmissionState::AwaitingRealTransfer(transfer_trb) => {
+                NormalSubmissionState::AwaitingRealTransfer(ref transfer_trb) => {
                     let (completion_code, processing_result) =
                         match self.real_ep.next_completion().await {
                             InTrbProcessingResult::Disconnect => (
@@ -729,7 +732,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                             ),
                             InTrbProcessingResult::Success(data) => {
                                 let completion_code =
-                                    if let TransferTrbVariant::Normal(normal_data) =
+                                    if let TransferTrbVariant::Normal(ref normal_data) =
                                         transfer_trb.variant
                                     {
                                         // needs more checks.
@@ -767,7 +770,10 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                     processing_result
                 }
                 NormalSubmissionState::NoTrbSubmitted => unreachable!(),
-            }
+            };
+            self.submission_state = NormalSubmissionState::NoTrbSubmitted;
+
+            result
         })
     }
 
