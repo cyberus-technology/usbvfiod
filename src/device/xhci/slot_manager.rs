@@ -124,11 +124,11 @@ impl SlotWorker {
         }
     }
 
-    async fn next_msg(&mut self) -> anyhow::Result<SlotMessage> {
-        self.msg_recv
-            .recv()
-            .await
-            .ok_or_else(|| anyhow!("slot channel closed"))
+    async fn run(mut self) {
+        match self.run_loop().await {
+            Ok(_) => unreachable!(),
+            Err(err) => info!("SlotWorker stopped {err}"),
+        }
     }
 
     // the function only returns with an error, but ! cannot be put in Result
@@ -319,11 +319,11 @@ impl SlotWorker {
         }
     }
 
-    async fn run(mut self) {
-        match self.run_loop().await {
-            Ok(_) => unreachable!(),
-            Err(err) => info!("SlotWorker stopped {err}"),
-        }
+    async fn next_msg(&mut self) -> anyhow::Result<SlotMessage> {
+        self.msg_recv
+            .recv()
+            .await
+            .ok_or_else(|| anyhow!("slot channel closed"))
     }
 
     pub fn allocate_slot(&mut self) -> Result<u8, CompletionCode> {
