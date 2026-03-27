@@ -54,6 +54,15 @@ pub trait Identifier: Debug + Copy + Eq + Send + Sync + 'static {}
 
 impl Identifier for (u8, u8) {}
 
+pub trait CompleteRealDevice: Debug + Send + Sync + 'static {
+    type RD: RealDevice;
+    type ID: Identifier;
+
+    fn identifier(&self) -> Self::ID;
+    fn realdevice_ref(&self) -> &Self::RD;
+    fn detach_token(&self) -> CancellationToken;
+}
+
 // A RealDevice trait coupled with bus and device number for identification.
 //
 // A real device alone might not be able to identify itself: An nusb device can
@@ -63,18 +72,35 @@ impl Identifier for (u8, u8) {}
 // uniquely identify the devices. IdentifiableRealDevice allows distinction of
 // devices by storing the unique bus-/device-number combination.
 #[derive(Debug)]
-pub struct CompleteRealDevice<RD: RealDevice, ID: Identifier> {
+pub struct CompleteRealDeviceImpl<RD: RealDevice, ID: Identifier> {
     pub identifier: ID,
     pub real_device: RD,
     pub cancel: CancellationToken,
 }
 
-impl<RD: RealDevice, ID: Identifier> CompleteRealDevice<RD, ID> {
+impl<RD: RealDevice, ID: Identifier> CompleteRealDeviceImpl<RD, ID> {
     pub fn new(identifier: ID, real_device: RD) -> Self {
         Self {
             identifier,
             real_device,
             cancel: CancellationToken::new(),
         }
+    }
+}
+
+impl<RD: RealDevice, ID: Identifier> CompleteRealDevice for CompleteRealDeviceImpl<RD, ID> {
+    type RD = RD;
+    type ID = ID;
+
+    fn identifier(&self) -> Self::ID {
+        self.identifier
+    }
+
+    fn realdevice_ref(&self) -> &Self::RD {
+        &self.real_device
+    }
+
+    fn detach_token(&self) -> CancellationToken {
+        self.cancel.clone()
     }
 }

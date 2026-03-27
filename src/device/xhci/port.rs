@@ -14,7 +14,7 @@ use crate::{
         pci::constants::xhci::{offset, operational::portsc, MAX_PORTS, NUM_USB3_PORTS},
         xhci::{
             interrupter::EventSender,
-            real_device::{CompleteRealDevice, Identifier, RealDevice, Speed},
+            real_device::{CompleteRealDevice, RealDevice, Speed},
             registers::PortscRegister,
             trb::EventTrb,
         },
@@ -24,19 +24,19 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct PortArray<RD: RealDevice, ID: Identifier> {
+pub struct PortArray<CRD: CompleteRealDevice> {
     portsc: Arc<OneIndexed<PortscRegister, { MAX_PORTS as usize }>>,
-    pub msg_sender: mpsc::UnboundedSender<PortMessage<RD, ID>>,
+    pub msg_sender: mpsc::UnboundedSender<PortMessage<CRD>>,
 }
 
-impl<RD: RealDevice, ID: Identifier> PortArray<RD, ID> {
+impl<CRD: CompleteRealDevice> PortArray<CRD> {
     pub fn new(event_sender: EventSender, async_runtime: runtime::Handle) -> Self {
         let portsc: Arc<OneIndexed<PortscRegister, { MAX_PORTS as usize }>> =
             Arc::new(array::from_fn(|_| PortscRegister::default()).into());
 
         let (msg_sender, msg_recv) = mpsc::unbounded_channel();
 
-        let worker: PortWorker<RD, ID> = PortWorker {
+        let worker = PortWorker {
             devices: [const { None }; MAX_PORTS as usize].into(),
             portsc: portsc.clone(),
             event_sender,
@@ -58,13 +58,13 @@ impl<RD: RealDevice, ID: Identifier> PortArray<RD, ID> {
         self.portsc[port_id].read()
     }
 
-    pub fn create_hotplug_control(&self) -> HotplugControl<RD, ID> {
+    pub fn create_hotplug_control(&self) -> HotplugControl<CRD> {
         HotplugControl {
             msg_send: self.msg_sender.clone(),
         }
     }
 
-    pub fn create_device_retriever(&self) -> DeviceRetriever<RD, ID> {
+    pub fn create_device_retriever(&self) -> DeviceRetriever<CRD> {
         DeviceRetriever {
             msg_send: self.msg_sender.clone(),
         }
@@ -72,29 +72,26 @@ impl<RD: RealDevice, ID: Identifier> PortArray<RD, ID> {
 }
 
 #[derive(Debug)]
-struct PortWorker<RD: RealDevice, ID: Identifier> {
-    devices: OneIndexed<Option<Arc<CompleteRealDevice<RD, ID>>>, { MAX_PORTS as usize }>,
+struct PortWorker<CRD: CompleteRealDevice> {
+    devices: OneIndexed<Option<Arc<CRD>>, { MAX_PORTS as usize }>,
     portsc: Arc<OneIndexed<PortscRegister, { MAX_PORTS as usize }>>,
     event_sender: EventSender,
     // the worker does not use the sender itself but needs to pass clones of the sender to detach listeners
-    msg_sender: mpsc::UnboundedSender<PortMessage<RD, ID>>,
-    msg_recv: mpsc::UnboundedReceiver<PortMessage<RD, ID>>,
+    msg_sender: mpsc::UnboundedSender<PortMessage<CRD>>,
+    msg_recv: mpsc::UnboundedReceiver<PortMessage<CRD>>,
     async_runtime: runtime::Handle,
 }
 
 #[derive(Debug)]
-pub enum PortMessage<RD: RealDevice, ID: Identifier> {
-    Attach(CompleteRealDevice<RD, ID>, oneshot::Sender<Response>),
-    Detach(ID, oneshot::Sender<Response>),
-    ListAttached(oneshot::Sender<Vec<ID>>),
+pub enum PortMessage<CRD: CompleteRealDevice> {
+    Attach(CRD, oneshot::Sender<Response>),
+    Detach(CRD::ID, oneshot::Sender<Response>),
+    ListAttached(oneshot::Sender<Vec<CRD::ID>>),
     // port id
-    GetDevice(
-        usize,
-        oneshot::Sender<Option<Arc<CompleteRealDevice<RD, ID>>>>,
-    ),
+    GetDevice(usize, oneshot::Sender<Option<Arc<CRD>>>),
 }
 
-impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
+impl<CRD: CompleteRealDevice> PortWorker<CRD> {
     async fn run(mut self) {
         match self.run_loop().await {
             Ok(_) => unreachable!(),
@@ -126,20 +123,20 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
         }
     }
 
-    async fn next_msg(&mut self) -> anyhow::Result<PortMessage<RD, ID>> {
+    async fn next_msg(&mut self) -> anyhow::Result<PortMessage<CRD>> {
         self.msg_recv
             .recv()
             .await
             .ok_or_else(|| anyhow!("port channel closed"))
     }
 
-    fn attach(&mut self, device: CompleteRealDevice<RD, ID>) -> anyhow::Result<Response> {
-        if self.attached_devices().contains(&device.identifier) {
+    fn attach(&mut self, device: CRD) -> anyhow::Result<Response> {
+        if self.attached_devices().contains(&device.identifier()) {
             warn!("Failed to attach device: A device with the same identifier is already attached");
             return Ok(Response::AlreadyAttached);
         }
 
-        let speed = match device.real_device.speed() {
+        let speed = match device.realdevice_ref().speed() {
             Some(speed) => speed,
             None => return Ok(Response::CouldNotDetermineSpeed),
         };
@@ -156,8 +153,8 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
                 };
 
         self.async_runtime.spawn(detach_listener(
-            device.cancel.clone(),
-            device.identifier,
+            device.detach_token(),
+            device.identifier(),
             self.msg_sender.clone(),
         ));
 
@@ -188,20 +185,20 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
         }
     }
 
-    fn attached_devices(&self) -> Vec<ID> {
+    fn attached_devices(&self) -> Vec<CRD::ID> {
         self.devices
             .iter()
             .filter_map(|dev| dev.as_ref())
-            .map(|dev| dev.identifier)
+            .map(|dev| dev.identifier())
             .collect()
     }
 
-    fn detach(&mut self, id: ID) -> anyhow::Result<Response> {
+    fn detach(&mut self, id: CRD::ID) -> anyhow::Result<Response> {
         // find out on which port the device is connected
         let port_id = match self
             .devices
             .enumerate()
-            .filter_map(|(i, port)| port.as_ref().map(|d| (i, d.identifier)))
+            .filter_map(|(i, port)| port.as_ref().map(|d| (i, d.identifier())))
             .filter(|(_, dev_id)| *dev_id == id)
             .map(|(i, _)| i)
             .next()
@@ -230,10 +227,10 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
     }
 }
 
-async fn detach_listener<RD: RealDevice, ID: Identifier>(
+async fn detach_listener<CRD: CompleteRealDevice>(
     cancel: CancellationToken,
-    identifier: ID,
-    msg_sender: mpsc::UnboundedSender<PortMessage<RD, ID>>,
+    identifier: CRD::ID,
+    msg_sender: mpsc::UnboundedSender<PortMessage<CRD>>,
 ) {
     let (send, recv) = oneshot::channel();
     cancel.cancelled().await;
@@ -285,12 +282,12 @@ pub const fn get_portli_index(addr: u64) -> Option<usize> {
 }
 
 #[derive(Debug, Clone)]
-pub struct HotplugControl<RD: RealDevice, ID: Identifier> {
-    msg_send: mpsc::UnboundedSender<PortMessage<RD, ID>>,
+pub struct HotplugControl<CRD: CompleteRealDevice> {
+    msg_send: mpsc::UnboundedSender<PortMessage<CRD>>,
 }
 
-impl<RD: RealDevice, ID: Identifier> HotplugControl<RD, ID> {
-    pub async fn attach(&self, device: CompleteRealDevice<RD, ID>) -> Response {
+impl<CRD: CompleteRealDevice> HotplugControl<CRD> {
+    pub async fn attach(&self, device: CRD) -> Response {
         let (responder, response_recv) = oneshot::channel();
         let msg = PortMessage::Attach(device, responder);
         self.msg_send.send(msg).expect("channel should never close");
@@ -299,7 +296,7 @@ impl<RD: RealDevice, ID: Identifier> HotplugControl<RD, ID> {
             .expect("oneshot channel should always provide a message")
     }
 
-    pub async fn detach(&self, identifier: ID) -> Response {
+    pub async fn detach(&self, identifier: CRD::ID) -> Response {
         let (responder, response_recv) = oneshot::channel();
         let msg = PortMessage::Detach(identifier, responder);
         self.msg_send.send(msg).expect("channel should never close");
@@ -308,7 +305,7 @@ impl<RD: RealDevice, ID: Identifier> HotplugControl<RD, ID> {
             .expect("oneshot channel should always provide a message")
     }
 
-    pub async fn list_devices(&self) -> Vec<ID> {
+    pub async fn list_devices(&self) -> Vec<CRD::ID> {
         let (responder, response_recv) = oneshot::channel();
         let msg = PortMessage::ListAttached(responder);
         self.msg_send.send(msg).expect("channel should never close");
@@ -319,15 +316,12 @@ impl<RD: RealDevice, ID: Identifier> HotplugControl<RD, ID> {
 }
 
 #[derive(Debug, Clone)]
-pub struct DeviceRetriever<RD: RealDevice, ID: Identifier> {
-    msg_send: mpsc::UnboundedSender<PortMessage<RD, ID>>,
+pub struct DeviceRetriever<CRD: CompleteRealDevice> {
+    msg_send: mpsc::UnboundedSender<PortMessage<CRD>>,
 }
 
-impl<RD: RealDevice, ID: Identifier> DeviceRetriever<RD, ID> {
-    pub async fn get_device(
-        &self,
-        port_id: u8,
-    ) -> anyhow::Result<Option<Arc<CompleteRealDevice<RD, ID>>>> {
+impl<CRD: CompleteRealDevice> DeviceRetriever<CRD> {
+    pub async fn get_device(&self, port_id: u8) -> anyhow::Result<Option<Arc<CRD>>> {
         let (send, recv) = oneshot::channel();
         self.msg_send
             .send(PortMessage::GetDevice(port_id as usize, send))?;

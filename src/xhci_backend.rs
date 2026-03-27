@@ -27,16 +27,16 @@ use crate::device::{
     xhci::{
         nusb::NusbRealDevice,
         port::HotplugControl,
-        real_device::{CompleteRealDevice, Identifier, RealDevice},
+        real_device::{CompleteRealDevice, CompleteRealDeviceImpl},
     },
 };
 
 use crate::{dynamic_bus::DynamicBus, memory_segment::MemorySegment};
 
 #[derive(Debug)]
-pub struct XhciBackend<RD: RealDevice, ID: Identifier> {
+pub struct XhciBackend<CRD: CompleteRealDevice> {
     dma_bus: Arc<DynamicBus>,
-    controller: XhciController<RD, ID>,
+    controller: XhciController<CRD>,
 }
 
 #[derive(Debug)]
@@ -64,7 +64,7 @@ impl InterruptLine for InterruptEventFd {
     }
 }
 
-impl<RD: RealDevice, ID: Identifier> XhciBackend<RD, ID> {
+impl<CRD: CompleteRealDevice> XhciBackend<CRD> {
     /// Create a new virtual XHCI controller with the given USB
     /// devices attached at creation time.
     pub fn new(async_runtime: runtime::Handle) -> Result<Self> {
@@ -79,12 +79,12 @@ impl<RD: RealDevice, ID: Identifier> XhciBackend<RD, ID> {
         Ok(backend)
     }
 
-    pub fn hotplug_control(&self) -> HotplugControl<RD, ID> {
+    pub fn hotplug_control(&self) -> HotplugControl<CRD> {
         self.controller.hotplug_control()
     }
 }
 
-impl XhciBackend<NusbRealDevice, (u8, u8)> {
+impl XhciBackend<CompleteRealDeviceImpl<NusbRealDevice, (u8, u8)>> {
     pub async fn add_device_from_path(
         &self,
         path: impl AsRef<Path>,
@@ -108,7 +108,7 @@ impl XhciBackend<NusbRealDevice, (u8, u8)> {
         let file = open_file("Failed to open USB device file after device reset")?;
         let device = nusb::Device::from_fd(file.into()).wait()?;
         let real_device = NusbRealDevice::try_new(device, async_runtime.clone())?;
-        let complete_device = CompleteRealDevice::new((bus, dev), real_device);
+        let complete_device = CompleteRealDeviceImpl::new((bus, dev), real_device);
         let response = self.hotplug_control().attach(complete_device).await;
         if response != Response::SuccessfulOperation {
             return Err(anyhow!(
@@ -120,7 +120,7 @@ impl XhciBackend<NusbRealDevice, (u8, u8)> {
     }
 }
 
-impl<RD: RealDevice, ID: Identifier> XhciBackend<RD, ID> {
+impl<CRD: CompleteRealDevice> XhciBackend<CRD> {
     /// Return a list of regions for [`vfio_user::Server::new`].
     pub fn regions(&self) -> Vec<vfio_region_info> {
         (0..VFIO_PCI_NUM_REGIONS)
@@ -198,7 +198,7 @@ impl<RD: RealDevice, ID: Identifier> XhciBackend<RD, ID> {
     }
 }
 
-impl<RD: RealDevice, ID: Identifier> ServerBackend for XhciBackend<RD, ID> {
+impl<CRD: CompleteRealDevice> ServerBackend for XhciBackend<CRD> {
     fn region_read(
         &mut self,
         region: u32,

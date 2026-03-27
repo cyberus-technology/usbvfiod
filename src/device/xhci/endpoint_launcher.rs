@@ -14,7 +14,7 @@ use crate::{
             hotplug_endpoint_handle::HotplugEndpointHandleImpl,
             interrupter::EventSender,
             port::DeviceRetriever,
-            real_device::{Identifier, RealDevice},
+            real_device::{CompleteRealDevice, RealDevice},
             slot_manager::{EndpointContext, EndpointType},
         },
     },
@@ -22,9 +22,9 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct EndpointLauncher<RD: RealDevice, ID: Identifier> {
+pub struct EndpointLauncher<CRD: CompleteRealDevice> {
     request_recv: mpsc::UnboundedReceiver<LaunchRequest>,
-    device_retriever: DeviceRetriever<RD, ID>,
+    device_retriever: DeviceRetriever<CRD>,
     async_runtime: runtime::Handle,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
@@ -67,9 +67,9 @@ impl LaunchRequester {
     }
 }
 
-impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
+impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
     pub fn start(
-        device_retriever: DeviceRetriever<RD, ID>,
+        device_retriever: DeviceRetriever<CRD>,
         async_runtime: runtime::Handle,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
@@ -115,7 +115,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
             let endpoint_sender = match device {
                 Some(device) => match endpoint_type {
                     EndpointType::Control => {
-                        let real_endpoint = device.real_device.control_endpoint_handle();
+                        let real_endpoint = device.realdevice_ref().control_endpoint_handle();
                         let endpoint_handle = ControlEndpointHandle::new(
                             request.slot_id,
                             request.endpoint_id,
@@ -128,7 +128,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             request.endpoint_id,
                             endpoint_handle,
                             self.event_sender.clone(),
-                            device.cancel.clone(),
+                            device.detach_token(),
                             &self.async_runtime,
                         );
 
@@ -141,7 +141,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                     }
                     EndpointType::BulkIn => {
                         let real_endpoint = device
-                            .real_device
+                            .realdevice_ref()
                             .bulk_in_endpoint_handle(request.endpoint_id);
                         let endpoint_handle = InEndpointHandle::new(
                             request.slot_id,
@@ -155,7 +155,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             request.endpoint_id,
                             endpoint_handle,
                             self.event_sender.clone(),
-                            device.cancel.clone(),
+                            device.detach_token(),
                             &self.async_runtime,
                         );
 
@@ -168,7 +168,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                     }
                     EndpointType::BulkOut => {
                         let real_endpoint = device
-                            .real_device
+                            .realdevice_ref()
                             .bulk_out_endpoint_handle(request.endpoint_id);
                         let endpoint_handle = OutEndpointHandle::new(
                             request.slot_id,
@@ -182,7 +182,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             request.endpoint_id,
                             endpoint_handle,
                             self.event_sender.clone(),
-                            device.cancel.clone(),
+                            device.detach_token(),
                             &self.async_runtime,
                         );
 
@@ -195,7 +195,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                     }
                     EndpointType::InterruptIn => {
                         let real_endpoint = device
-                            .real_device
+                            .realdevice_ref()
                             .interrupt_in_endpoint_handle(request.endpoint_id);
                         let endpoint_handle = InEndpointHandle::new(
                             request.slot_id,
@@ -209,7 +209,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             request.endpoint_id,
                             endpoint_handle,
                             self.event_sender.clone(),
-                            device.cancel.clone(),
+                            device.detach_token(),
                             &self.async_runtime,
                         );
 
@@ -222,7 +222,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                     }
                     EndpointType::InterruptOut => {
                         let real_endpoint = device
-                            .real_device
+                            .realdevice_ref()
                             .interrupt_out_endpoint_handle(request.endpoint_id);
                         let endpoint_handle = OutEndpointHandle::new(
                             request.slot_id,
@@ -236,7 +236,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             request.endpoint_id,
                             endpoint_handle,
                             self.event_sender.clone(),
-                            device.cancel.clone(),
+                            device.detach_token(),
                             &self.async_runtime,
                         );
 

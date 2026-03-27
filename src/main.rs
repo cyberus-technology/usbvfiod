@@ -21,9 +21,7 @@ use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 use vfio_user::Server;
 
-use crate::{
-    async_runtime::runtime, device::xhci::nusb::NusbRealDevice, xhci_backend::XhciBackend,
-};
+use crate::async_runtime::runtime;
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -45,9 +43,8 @@ fn main() -> Result<()> {
     init_runtime().context("Failed to initialize async runtime")?;
     let runtime = runtime();
 
-    let mut backend: XhciBackend<NusbRealDevice, (u8, u8)> =
-        xhci_backend::XhciBackend::new(runtime.clone())
-            .context("Failed to create virtual XHCI controller")?;
+    let mut backend = xhci_backend::XhciBackend::new(runtime.clone())
+        .context("Failed to create virtual XHCI controller")?;
     for device in &args.devices {
         let path = device.as_path();
         // if device attachment fails, just warn

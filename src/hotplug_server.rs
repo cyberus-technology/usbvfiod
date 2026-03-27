@@ -10,12 +10,12 @@ use tracing::{debug, warn};
 use usbvfiod::hotplug_protocol::{command::Command, response::Response};
 
 use crate::device::xhci::{
-    nusb::NusbRealDevice, port::HotplugControl, real_device::CompleteRealDevice,
+    nusb::NusbRealDevice, port::HotplugControl, real_device::CompleteRealDeviceImpl,
 };
 
 pub fn run_hotplug_server(
     socket: UnixListener,
-    hotplug_control: HotplugControl<NusbRealDevice, (u8, u8)>,
+    hotplug_control: HotplugControl<CompleteRealDeviceImpl<NusbRealDevice, (u8, u8)>>,
     async_runtime: runtime::Handle,
 ) {
     loop {
@@ -39,7 +39,7 @@ pub fn run_hotplug_server(
 fn handle_command(
     command: Command,
     socket: &mut UnixStream,
-    hotplug_control: &HotplugControl<NusbRealDevice, (u8, u8)>,
+    hotplug_control: &HotplugControl<CompleteRealDeviceImpl<NusbRealDevice, (u8, u8)>>,
     async_runtime: &runtime::Handle,
 ) -> Result<()> {
     match command {
@@ -69,14 +69,14 @@ fn handle_attach(
     dev: u8,
     fd: File,
     socket: &mut UnixStream,
-    hotplug_control: &HotplugControl<NusbRealDevice, (u8, u8)>,
+    hotplug_control: &HotplugControl<CompleteRealDeviceImpl<NusbRealDevice, (u8, u8)>>,
     async_runtime: &runtime::Handle,
 ) -> Result<()> {
     let device = nusb::Device::from_fd(fd.into())
         .wait()
         .context("Failed to open nusb device from the supplied file descriptor")?;
     let real_device = NusbRealDevice::try_new(device, async_runtime.clone())?;
-    let complete_device = CompleteRealDevice::new((bus, dev), real_device);
+    let complete_device = CompleteRealDeviceImpl::new((bus, dev), real_device);
     let response = async_runtime.block_on(hotplug_control.attach(complete_device));
     response
         .send_over_socket(socket)
@@ -89,7 +89,7 @@ fn handle_detach(
     bus: u8,
     dev: u8,
     socket: &mut UnixStream,
-    hotplug_control: &HotplugControl<NusbRealDevice, (u8, u8)>,
+    hotplug_control: &HotplugControl<CompleteRealDeviceImpl<NusbRealDevice, (u8, u8)>>,
     async_runtime: &runtime::Handle,
 ) -> Result<()> {
     let response = async_runtime.block_on(hotplug_control.detach((bus, dev)));

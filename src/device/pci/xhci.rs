@@ -13,7 +13,7 @@ use crate::device::{
     xhci::{
         endpoint_launcher::EndpointLauncher,
         port::{get_portli_index, get_portsc_index, HotplugControl, PortArray},
-        real_device::{Identifier, RealDevice},
+        real_device::CompleteRealDevice,
         registers::{new_usbcmd_and_usbsts, UsbcmdRegister, UsbstsRegister},
         slot_manager::SlotManager,
     },
@@ -22,21 +22,21 @@ use crate::device::{pci::constants::xhci::capability, xhci::command_ring::Comman
 use crate::device::{pci::constants::xhci::OP_BASE, xhci::interrupter::Interrupter};
 
 #[derive(Debug)]
-pub struct XhciController<RD: RealDevice, ID: Identifier> {
+pub struct XhciController<CRD: CompleteRealDevice> {
     /// The PCI Configuration Space of the controller.
     ///
     /// Only the vfio-user thread accesses this field, so we use a standard Mutex
     /// instead of the tokio variant.
     config_space: Mutex<ConfigSpace>,
     interrupter: Interrupter,
-    port_array: PortArray<RD, ID>,
+    port_array: PortArray<CRD>,
     command_ring: CommandRing,
     slot_manager: SlotManager,
     usbcmd: UsbcmdRegister,
     usbsts: UsbstsRegister,
 }
 
-impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
+impl<CRD: CompleteRealDevice> XhciController<CRD> {
     pub fn new(dma_bus: BusDeviceRef, async_runtime: runtime::Handle) -> Self {
         let interrupter = Interrupter::new(dma_bus.clone(), &async_runtime);
         let port_array = PortArray::new(interrupter.create_event_sender(), async_runtime.clone());
@@ -84,12 +84,12 @@ impl<RD: RealDevice, ID: Identifier> XhciController<RD, ID> {
             .expect("Interrupter should be alive");
     }
 
-    pub fn hotplug_control(&self) -> HotplugControl<RD, ID> {
+    pub fn hotplug_control(&self) -> HotplugControl<CRD> {
         self.port_array.create_hotplug_control()
     }
 }
 
-impl<RD: RealDevice, ID: Identifier> PciDevice for XhciController<RD, ID> {
+impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
     fn write_cfg(&self, req: crate::device::bus::Request, value: u64) {
         self.config_space.lock().unwrap().write(req, value);
     }
