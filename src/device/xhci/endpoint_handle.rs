@@ -4,16 +4,14 @@ use tracing::debug;
 
 use crate::device::{
     bus::BusDeviceRef,
-    pci::{
-        trb::{CompletionCode, EventTrb, RawTrb, TransferTrb, TransferTrbVariant},
-        usbrequest::UsbRequest,
-    },
+    pci::trb::{CompletionCode, EventTrb, RawTrb, TransferTrb, TransferTrbVariant},
     xhci::{
         interrupter::EventSender,
         real_endpoint_handle::{
             ControlRequestProcessingResult, InTrbProcessingResult, OutTrbProcessingResult,
             RealControlEndpointHandle, RealInEndpointHandle, RealOutEndpointHandle,
         },
+        usbrequest::UsbRequest,
     },
 };
 

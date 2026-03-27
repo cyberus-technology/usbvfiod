@@ -9,5 +9,4 @@ pub mod msix_table;
 pub mod registers;
 pub mod traits;
 pub mod trb;
-pub mod usbrequest;
 pub mod xhci_async;

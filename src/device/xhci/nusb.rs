@@ -12,15 +12,13 @@ use tokio::{runtime, select, sync::mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::device::{
-    pci::usbrequest::UsbRequest,
-    xhci::{
-        real_device::{RealDevice, Speed},
-        real_endpoint_handle::{
-            ControlRequestProcessingResult, InTrbProcessingResult, RealControlEndpointHandle,
-            RealInEndpointHandle, RealOutEndpointHandle,
-        },
+use crate::device::xhci::{
+    real_device::{RealDevice, Speed},
+    real_endpoint_handle::{
+        ControlRequestProcessingResult, InTrbProcessingResult, RealControlEndpointHandle,
+        RealInEndpointHandle, RealOutEndpointHandle,
     },
+    usbrequest::UsbRequest,
 };
 
 use super::real_endpoint_handle::OutTrbProcessingResult;

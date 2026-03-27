@@ -1,6 +1,6 @@
 use std::{fmt::Debug, future::Future};
 
-use crate::device::pci::usbrequest::UsbRequest;
+use crate::device::xhci::usbrequest::UsbRequest;
 
 pub trait RealControlEndpointHandle: Debug + Send + Sync + 'static {
     type TrbCompletionFuture<'a>: Future<Output = anyhow::Result<ControlRequestProcessingResult>>
