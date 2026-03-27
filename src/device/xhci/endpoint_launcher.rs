@@ -151,6 +151,15 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                         )
                     }
                     EndpointType::BulkOut => {
+                        let bus_number = device.bus_number.unwrap_or(0);
+                        let device_address = device.device_address.unwrap_or(0);
+                        let pcap_meta = Some(EndpointPcapMeta {
+                            bus_number: u16::from(bus_number),
+                            device_address,
+                            endpoint_id: request.endpoint_id,
+                            transfer_type: UsbTransferType::Bulk,
+                            direction: UsbDirection::HostToDevice,
+                        });
                         let real_endpoint = device
                             .real_device
                             .bulk_out_endpoint_handle(request.endpoint_id);
@@ -160,6 +169,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             real_endpoint,
                             self.dma_bus.clone(),
                             self.event_sender.clone(),
+                            pcap_meta,
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
                             request.slot_id,
@@ -214,6 +224,15 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                         )
                     }
                     EndpointType::InterruptOut => {
+                        let bus_number = device.bus_number.unwrap_or(0);
+                        let device_address = device.device_address.unwrap_or(0);
+                        let pcap_meta = Some(EndpointPcapMeta {
+                            bus_number: u16::from(bus_number),
+                            device_address,
+                            endpoint_id: request.endpoint_id,
+                            transfer_type: UsbTransferType::Interrupt,
+                            direction: UsbDirection::HostToDevice,
+                        });
                         let real_endpoint = device
                             .real_device
                             .interrupt_out_endpoint_handle(request.endpoint_id);
@@ -223,6 +242,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             real_endpoint,
                             self.dma_bus.clone(),
                             self.event_sender.clone(),
+                            pcap_meta,
                         );
                         let hotplug_endpoint_handle = HotplugEndpointHandle::new(
                             request.slot_id,
