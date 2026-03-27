@@ -1,17 +1,14 @@
 use std::{fmt::Debug, future::Future};
 
-use crate::device::xhci::usbrequest::UsbRequest;
+use crate::device::xhci::{hotplug_endpoint_handle::BaseEndpointHandle, usbrequest::UsbRequest};
 
-pub trait RealControlEndpointHandle: Debug + Send + Sync + 'static {
+pub trait RealControlEndpointHandle: BaseEndpointHandle {
     type TrbCompletionFuture<'a>: Future<Output = anyhow::Result<ControlRequestProcessingResult>>
         + Send
         + 'a;
-    type CompletionFuture<'a>: Future<Output = anyhow::Result<()>> + Send + 'a;
 
     fn submit_control_request(&mut self, request: UsbRequest) -> anyhow::Result<()>;
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
-    fn cancel(&mut self) -> Self::CompletionFuture<'_>;
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
 }
 
 #[derive(Debug)]
@@ -23,16 +20,13 @@ pub enum ControlRequestProcessingResult {
     SuccessfulControlOut,
 }
 
-pub trait RealOutEndpointHandle: Debug + Send + Sync + 'static {
+pub trait RealOutEndpointHandle: BaseEndpointHandle {
     type TrbCompletionFuture<'a>: Future<Output = anyhow::Result<OutTrbProcessingResult>>
         + Send
         + 'a;
-    type CompletionFuture<'a>: Future<Output = anyhow::Result<()>> + Send + 'a;
 
     fn submit(&mut self, data: Vec<u8>) -> anyhow::Result<()>;
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
-    fn cancel(&mut self) -> Self::CompletionFuture<'_>;
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
 }
 
 #[derive(Debug)]
@@ -43,14 +37,11 @@ pub enum OutTrbProcessingResult {
     Success,
 }
 
-pub trait RealInEndpointHandle: Debug + Send + Sync + 'static {
+pub trait RealInEndpointHandle: BaseEndpointHandle {
     type TrbCompletionFuture<'a>: Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a;
-    type CompletionFuture<'a>: Future<Output = anyhow::Result<()>> + Send + 'a;
 
     fn submit(&mut self, data: usize) -> anyhow::Result<()>;
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
-    fn cancel(&mut self) -> Self::CompletionFuture<'_>;
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
 }
 
 #[derive(Debug)]

@@ -34,17 +34,22 @@ impl HotplugTrbProcessingResult {
     }
 }
 
+// all traits in the endpoint abstractions implement this trait
+pub trait BaseEndpointHandle: Debug + Send + 'static {
+    type CompletionFuture<'a>: Future<Output = anyhow::Result<()>> + Send + 'a;
+
+    fn cancel(&mut self) -> Self::CompletionFuture<'_>;
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
+}
+
 // trait exists to hide the EndpointHandle generic parameter from the endpoint state machine
-pub trait HotplugEndpointHandle: Debug + Send + 'static {
+pub trait HotplugEndpointHandle: BaseEndpointHandle {
     type TrbCompletionFuture<'a>: Future<Output = anyhow::Result<HotplugTrbProcessingResult>>
         + Send
         + 'a;
-    type CompletionFuture<'a>: Future<Output = anyhow::Result<()>> + Send + 'a;
 
     fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()>;
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
-    fn cancel(&mut self) -> Self::CompletionFuture<'_>;
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
 }
 
 #[derive(Debug)]
@@ -106,7 +111,6 @@ impl<EH: EndpointHandle> HotplugEndpointHandleImpl<EH> {
 impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH> {
     type TrbCompletionFuture<'a> =
         Pin<Box<dyn Future<Output = anyhow::Result<HotplugTrbProcessingResult>> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
         if let Ok(mut guard) = self.endpoint_handle.try_lock() {
@@ -171,6 +175,10 @@ impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH>
             Ok(result)
         })
     }
+}
+
+impl<EH: EndpointHandle> BaseEndpointHandle for HotplugEndpointHandleImpl<EH> {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {

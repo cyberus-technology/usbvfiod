@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::device::xhci::{
+    hotplug_endpoint_handle::BaseEndpointHandle,
     real_device::{RealDevice, Speed},
     real_endpoint_handle::{
         ControlRequestProcessingResult, InTrbProcessingResult, RealControlEndpointHandle,
@@ -156,7 +157,6 @@ impl Drop for ControlEndpointHandle {
 impl RealControlEndpointHandle for ControlEndpointHandle {
     type TrbCompletionFuture<'a> =
         Pin<Box<dyn Future<Output = anyhow::Result<ControlRequestProcessingResult>> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn submit_control_request(&mut self, request: UsbRequest) -> anyhow::Result<()> {
         self.request_submitter.send(request)?;
@@ -174,6 +174,10 @@ impl RealControlEndpointHandle for ControlEndpointHandle {
             Ok(result)
         })
     }
+}
+
+impl BaseEndpointHandle for ControlEndpointHandle {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         // nothing we can do
@@ -340,7 +344,6 @@ impl<EpType: EndpointType, Dir: EndpointDirection> NormalEndpointHandle<EpType, 
 impl<EpType: BulkOrInterrupt> RealOutEndpointHandle for NormalEndpointHandle<EpType, Out> {
     type TrbCompletionFuture<'a> =
         Pin<Box<dyn Future<Output = anyhow::Result<OutTrbProcessingResult>> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn submit(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
         let buf = Buffer::from(data);
@@ -367,36 +370,11 @@ impl<EpType: BulkOrInterrupt> RealOutEndpointHandle for NormalEndpointHandle<EpT
             Ok(result)
         })
     }
-
-    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async {
-            let ep = self.endpoint();
-            ep.cancel_all();
-
-            // have to consume all cancelled TRBs (should be 0 or 1)
-            if ep.pending() > 1 {
-                warn!("while cancelling: saw more than one pending TRB");
-            }
-            while ep.pending() > 0 {
-                let _ = ep.next_complete().await;
-            }
-
-            Ok(())
-        })
-    }
-
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async {
-            self.endpoint().clear_halt().await?;
-            Ok(())
-        })
-    }
 }
 
 impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpType, In> {
     type TrbCompletionFuture<'a> =
         Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn submit(&mut self, len: usize) -> anyhow::Result<()> {
         let endpoint = self.endpoint();
@@ -425,6 +403,12 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
             Ok(result)
         })
     }
+}
+
+impl<EpType: BulkOrInterrupt, Dir: EndpointDirection> BaseEndpointHandle
+    for NormalEndpointHandle<EpType, Dir>
+{
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {

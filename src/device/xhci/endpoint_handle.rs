@@ -5,6 +5,7 @@ use tracing::debug;
 use crate::device::{
     bus::BusDeviceRef,
     xhci::{
+        hotplug_endpoint_handle::BaseEndpointHandle,
         interrupter::EventSender,
         real_endpoint_handle::{
             ControlRequestProcessingResult, InTrbProcessingResult, OutTrbProcessingResult,
@@ -15,14 +16,11 @@ use crate::device::{
     },
 };
 
-pub trait EndpointHandle: Debug + Send + 'static {
+pub trait EndpointHandle: BaseEndpointHandle {
     type TrbCompletionFuture<'a>: Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a;
-    type CompletionFuture<'a>: Future<Output = anyhow::Result<()>> + Send + 'a;
 
     fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()>;
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
-    fn cancel(&mut self) -> Self::CompletionFuture<'_>;
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -38,7 +36,6 @@ pub type DummyEndpointHandle = ();
 impl EndpointHandle for DummyEndpointHandle {
     type TrbCompletionFuture<'a> =
         Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn submit_trb(&mut self, _trb: RawTrb) -> anyhow::Result<()> {
         panic!("should never call functions of dummy endpoint handle");
@@ -47,6 +44,10 @@ impl EndpointHandle for DummyEndpointHandle {
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         panic!("should never call functions of dummy endpoint handle");
     }
+}
+
+impl BaseEndpointHandle for DummyEndpointHandle {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         panic!("should never call functions of dummy endpoint handle");
@@ -103,7 +104,6 @@ enum ControlSubmissionState {
 impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<RCEH> {
     type TrbCompletionFuture<'a> =
         Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
         let trb_address = trb.address;
@@ -206,6 +206,10 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
             Ok(result)
         })
     }
+}
+
+impl<RCEH: RealControlEndpointHandle> BaseEndpointHandle for ControlEndpointHandle<RCEH> {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async { self.real_ep.cancel().await })
@@ -392,7 +396,6 @@ enum NormalSubmissionState {
 impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
     type TrbCompletionFuture<'a> =
         Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
         assert!(
@@ -489,6 +492,10 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
             Ok(result)
         })
     }
+}
+
+impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for OutEndpointHandle<ROEH> {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async { self.real_ep.cancel().await })
@@ -531,7 +538,6 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
 impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
     type TrbCompletionFuture<'a> =
         Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
         assert!(
@@ -635,6 +641,10 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
             Ok(result)
         })
     }
+}
+
+impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for InEndpointHandle<RIEH> {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async { self.real_ep.cancel().await })
