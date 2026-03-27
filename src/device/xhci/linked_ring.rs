@@ -85,7 +85,7 @@ impl LinkedRing {
             .read_bulk(self.dequeue_pointer, &mut trb_buffer);
 
         trace!(
-            "interpreting transfer TRB at dequeue pointer; cycle state = {}, TRB = {:?}",
+            "interpreting TRB at dequeue pointer; cycle state = {}, TRB = {:?}",
             self.cycle_state as u8,
             trb_buffer
         );
