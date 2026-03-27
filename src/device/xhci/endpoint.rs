@@ -10,8 +10,8 @@ use crate::{
         bus::BusDeviceRef,
         pci::{constants::xhci::device_slots::endpoint_state, trb::CompletionCode},
         xhci::{
-            endpoint_handle::{EndpointHandle, HotplugEndpointHandle, TrbProcessingResult},
-            linked_ring::LinkedRing,
+            hotplug_endpoint_handle::HotplugEndpointHandle,
+            hotplug_endpoint_handle::HotplugTrbProcessingResult, linked_ring::LinkedRing,
             slot_manager::EndpointContext,
         },
     },
@@ -19,12 +19,12 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct EndpointWorker<EH: EndpointHandle> {
+pub struct EndpointWorker<EH: HotplugEndpointHandle> {
     state: WorkerState,
     context: EndpointContext,
     transfer_ring: LinkedRing,
     recv: mpsc::UnboundedReceiver<EndpointMessage>,
-    real_endpoint: HotplugEndpointHandle<EH>,
+    real_endpoint: EH,
 }
 
 #[derive(Debug)]
@@ -51,11 +51,11 @@ pub enum EndpointMessage {
     Terminate(oneshot::Sender<()>),
 }
 
-impl<EH: EndpointHandle> EndpointWorker<EH> {
+impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
     pub fn launch(
         async_runtime: &runtime::Handle,
         dma_bus: BusDeviceRef,
-        trb_consumer: HotplugEndpointHandle<EH>,
+        trb_consumer: EH,
         context: EndpointContext,
     ) -> EndpointSender {
         let (sender, recv) = mpsc::unbounded_channel();
@@ -110,30 +110,27 @@ impl<EH: EndpointHandle> EndpointWorker<EH> {
                 }
                 WorkerState::WaitForTrbCompletion => select! {
                     result = self.real_endpoint.next_completion() => match result {
-                        TrbProcessingResult::Ok => {
+                        HotplugTrbProcessingResult::Ok => {
                             self.transfer_ring.advance();
                             self.state = WorkerState::LookForTrb;
                         },
-                        TrbProcessingResult::Stall => {
+                        HotplugTrbProcessingResult::Stall => {
                             self.context.set_state(endpoint_state::HALTED);
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
                             self.state = WorkerState::Halted;
                         },
-                        TrbProcessingResult::TransactionError => {
+                        HotplugTrbProcessingResult::TransactionError => {
                             self.context.set_state(endpoint_state::HALTED);
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
                             self.state = WorkerState::Halted;
                         },
-                        TrbProcessingResult::TrbError => {
+                        HotplugTrbProcessingResult::TrbError => {
                             self.context.set_state(endpoint_state::ERROR);
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
                             self.state = WorkerState::Error;
-                        },
-                        TrbProcessingResult::Disconnect => {
-                            unreachable!();
                         },
                     },
                     // cannot use self.next_msg() because the &mut it takes clashes with the self.real_endpoint above

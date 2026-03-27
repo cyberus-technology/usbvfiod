@@ -28,7 +28,16 @@ pub trait EndpointHandle: Debug + Send + 'static {
     fn clear_halt(&mut self);
 }
 
-type DummyEndpointHandle = ();
+#[derive(Debug, Clone, Copy)]
+pub enum TrbProcessingResult {
+    Ok,
+    Stall,
+    TrbError,
+    TransactionError,
+    Disconnect,
+}
+
+pub type DummyEndpointHandle = ();
 impl EndpointHandle for DummyEndpointHandle {
     type CompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
 
@@ -46,164 +55,6 @@ impl EndpointHandle for DummyEndpointHandle {
 
     fn clear_halt(&mut self) {
         panic!("should never call functions of dummy endpoint handle");
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum TrbProcessingResult {
-    Ok,
-    Stall,
-    TrbError,
-    TransactionError,
-    Disconnect,
-}
-
-#[derive(Debug)]
-pub struct HotplugEndpointHandle<EH: EndpointHandle> {
-    slot_id: u8,
-    endpoint_id: u8,
-    endpoint_handle: Arc<Mutex<Option<EH>>>,
-    event_sender: EventSender,
-    notify_detach: CancellationToken,
-    submission_state: HotplugSubmissionState,
-}
-
-#[derive(Debug, Default)]
-enum HotplugSubmissionState {
-    #[default]
-    NoTrbSubmitted,
-    // TRB address
-    TrbSubmitted(u64),
-}
-
-impl<EH: EndpointHandle> HotplugEndpointHandle<EH> {
-    pub fn new(
-        slot_id: u8,
-        endpoint_id: u8,
-        endpoint_handle: EH,
-        event_sender: EventSender,
-        notify_detach: CancellationToken,
-        async_runtime: &runtime::Handle,
-    ) -> Self {
-        let endpoint_handle = Arc::new(Mutex::new(Some(endpoint_handle)));
-
-        async_runtime.spawn(Self::detach_handler(
-            endpoint_handle.clone(),
-            notify_detach.clone(),
-        ));
-
-        Self {
-            slot_id,
-            endpoint_id,
-            endpoint_handle,
-            event_sender,
-            notify_detach,
-            submission_state: HotplugSubmissionState::NoTrbSubmitted,
-        }
-    }
-
-    pub fn submit_trb(&mut self, trb: RawTrb) {
-        if let Ok(mut guard) = self.endpoint_handle.try_lock() {
-            assert!(
-                matches!(
-                    self.submission_state,
-                    HotplugSubmissionState::NoTrbSubmitted
-                ),
-                "submit_trb called twice without calling next_completion"
-            );
-
-            self.submission_state = HotplugSubmissionState::TrbSubmitted(trb.address);
-            if let Some(device) = guard.as_mut() {
-                device.submit_trb(trb);
-            }
-        }
-    }
-
-    pub async fn next_completion(&mut self) -> TrbProcessingResult {
-        let trb_addr = match self.submission_state {
-            HotplugSubmissionState::TrbSubmitted(addr) => addr,
-            HotplugSubmissionState::NoTrbSubmitted => {
-                panic!("next_completion called without prior submit_trb")
-            }
-        };
-
-        // the event to send in case the real endpoint is/gets detached
-        let event = || {
-            EventTrb::new_transfer_event_trb(
-                trb_addr,
-                0,
-                CompletionCode::UsbTransactionError,
-                false,
-                self.endpoint_id,
-                self.slot_id,
-            )
-        };
-        let result = match self.endpoint_handle.lock().await.as_mut() {
-            Some(ep) => select! {
-                result = ep.next_completion() => match result {
-                    TrbProcessingResult::Disconnect => {
-                        self.notify_detach.cancel();
-                        TrbProcessingResult::TransactionError
-                    },
-                    result => result,
-                },
-                _ = self.notify_detach.cancelled() => {
-                    self.event_sender.send(event());
-                    TrbProcessingResult::TransactionError
-                },
-            },
-            None => {
-                self.event_sender.send(event());
-                TrbProcessingResult::TransactionError
-            }
-        };
-
-        self.submission_state = HotplugSubmissionState::NoTrbSubmitted;
-        result
-    }
-
-    pub fn cancel(&self) {
-        if let Ok(mut guard) = self.endpoint_handle.try_lock() {
-            if let Some(device) = guard.as_mut() {
-                device.cancel();
-            }
-        }
-    }
-
-    pub fn clear_halt(&self) {
-        if let Ok(mut guard) = self.endpoint_handle.try_lock() {
-            if let Some(device) = guard.as_mut() {
-                device.clear_halt();
-            }
-        }
-    }
-
-    // wait for signal of other endpoints or the central detach.
-    // Drop device when receiving notification.
-    async fn detach_handler(
-        endpoint_handle: Arc<Mutex<Option<EH>>>,
-        notify_detach: CancellationToken,
-    ) {
-        notify_detach.cancelled().await;
-        let mut ep = endpoint_handle.lock().await;
-        *ep = None;
-    }
-}
-
-impl HotplugEndpointHandle<DummyEndpointHandle> {
-    // Necessary because AddressDevice/ConfigureEndpoint might open an endpoint while the device just recently was removed.
-    // It makes no sense to fail the command then. So we create a dummy endpoint handle that behaves the same as the
-    // endpoint handle of a removed device.
-    pub fn dummy(slot_id: u8, endpoint_id: u8, event_sender: EventSender) -> Self {
-        Self {
-            slot_id,
-            endpoint_id,
-            event_sender,
-            endpoint_handle: Arc::new(Mutex::new(None)),
-            submission_state: HotplugSubmissionState::NoTrbSubmitted,
-            // just a dummy; nobody will notify, nobody listens
-            notify_detach: CancellationToken::new(),
-        }
     }
 }
 

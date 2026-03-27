@@ -10,9 +10,8 @@ use crate::{
         bus::BusDeviceRef,
         xhci::{
             endpoint::{EndpointSender, EndpointWorker},
-            endpoint_handle::{
-                ControlEndpointHandle, HotplugEndpointHandle, InEndpointHandle, OutEndpointHandle,
-            },
+            endpoint_handle::{ControlEndpointHandle, InEndpointHandle, OutEndpointHandle},
+            hotplug_endpoint_handle::HotplugEndpointHandleImpl,
             interrupter::EventSender,
             port::PortMessage,
             real_device::{Identifier, RealDevice},
@@ -94,7 +93,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.dma_bus.clone(),
                             self.event_sender.clone(),
                         );
-                        let hotplug_endpoint_handle = HotplugEndpointHandle::new(
+                        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
                             request.slot_id,
                             request.endpoint_id,
                             endpoint_handle,
@@ -121,7 +120,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.dma_bus.clone(),
                             self.event_sender.clone(),
                         );
-                        let hotplug_endpoint_handle = HotplugEndpointHandle::new(
+                        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
                             request.slot_id,
                             request.endpoint_id,
                             endpoint_handle,
@@ -148,7 +147,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.dma_bus.clone(),
                             self.event_sender.clone(),
                         );
-                        let hotplug_endpoint_handle = HotplugEndpointHandle::new(
+                        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
                             request.slot_id,
                             request.endpoint_id,
                             endpoint_handle,
@@ -175,7 +174,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.dma_bus.clone(),
                             self.event_sender.clone(),
                         );
-                        let hotplug_endpoint_handle = HotplugEndpointHandle::new(
+                        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
                             request.slot_id,
                             request.endpoint_id,
                             endpoint_handle,
@@ -202,7 +201,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                             self.dma_bus.clone(),
                             self.event_sender.clone(),
                         );
-                        let hotplug_endpoint_handle = HotplugEndpointHandle::new(
+                        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
                             request.slot_id,
                             request.endpoint_id,
                             endpoint_handle,
@@ -227,7 +226,7 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                 // creating an invalid state)
                 None => {
                     debug!("Could not get real device, using dummy endpoint handle");
-                    let hotplug_endpoint_handle = HotplugEndpointHandle::dummy(
+                    let hotplug_endpoint_handle = HotplugEndpointHandleImpl::dummy(
                         request.slot_id, request.endpoint_id, self.event_sender.clone()
                     );
 
