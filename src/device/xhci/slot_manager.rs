@@ -211,6 +211,24 @@ impl SlotWorker {
                         .await?;
                     sender.send_anyhow(result)?;
                 }
+                SlotMessage::EvaluateContext(trb_data, sender) => {
+                    let slot = match self
+                        .slots
+                        .get(trb_data.slot_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let result = slot
+                        .handle_evaluate_context(trb_data.input_context_pointer)
+                        .await?;
+                    sender.send_anyhow(result)?;
+                }
                 SlotMessage::StopEndpoint(slot_id, endpoint_id, sender) => {
                     let slot = match self
                         .slots
@@ -295,24 +313,6 @@ impl SlotWorker {
                         trb_data.dequeue_cycle_state,
                         sender,
                     )?;
-                }
-                SlotMessage::EvaluateContext(trb_data, sender) => {
-                    let slot = match self
-                        .slots
-                        .get(trb_data.slot_id as usize)
-                        .and_then(|opt| opt.as_ref())
-                    {
-                        Some(slot) => slot,
-                        None => {
-                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
-                            continue;
-                        }
-                    };
-
-                    let result = slot
-                        .handle_evaluate_context(trb_data.input_context_pointer)
-                        .await?;
-                    sender.send_anyhow(result)?;
                 }
             }
         }
