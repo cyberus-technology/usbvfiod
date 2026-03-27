@@ -223,11 +223,7 @@ impl SlotWorker {
                         }
                     };
 
-                    let ep_sender = match slot
-                        .endpoint_senders
-                        .get(endpoint_id as usize)
-                        .and_then(|opt| opt.as_ref())
-                    {
+                    let ep_sender = match slot.endpoint_sender(endpoint_id) {
                         Some(ep_sender) => ep_sender,
                         None => {
                             sender.send_anyhow(CompletionCode::EndpointNotEnabledError)?;
@@ -246,11 +242,7 @@ impl SlotWorker {
                         }
                     };
 
-                    let ep_sender = match slot
-                        .endpoint_senders
-                        .get(endpoint_id as usize)
-                        .and_then(|opt| opt.as_ref())
-                    {
+                    let ep_sender = match slot.endpoint_sender(endpoint_id) {
                         Some(ep_sender) => ep_sender,
                         None => {
                             sender.send_anyhow(CompletionCode::EndpointNotEnabledError)?;
@@ -269,11 +261,7 @@ impl SlotWorker {
                         }
                     };
 
-                    let ep_sender = match slot
-                        .endpoint_senders
-                        .get(trb_data.endpoint_id as usize)
-                        .and_then(|opt| opt.as_ref())
-                    {
+                    let ep_sender = match slot.endpoint_sender(trb_data.endpoint_id) {
                         Some(ep_sender) => ep_sender,
                         None => {
                             sender.send_anyhow(CompletionCode::EndpointNotEnabledError)?;
@@ -389,6 +377,12 @@ impl Slot {
         } else {
             panic!("Tried to access slot context before knowing base_address");
         }
+    }
+
+    fn endpoint_sender(&self, endpoint_id: u8) -> Option<&EndpointSender> {
+        self.endpoint_senders
+            .get(endpoint_id as usize)
+            .and_then(|opt| opt.as_ref())
     }
 
     // 4.6.5 for reference
