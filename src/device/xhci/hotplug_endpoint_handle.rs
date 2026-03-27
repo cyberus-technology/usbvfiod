@@ -38,10 +38,12 @@ impl HotplugTrbProcessingResult {
 
 // trait exists to hide the EndpointHandle generic parameter from the endpoint state machine
 pub trait HotplugEndpointHandle: Debug + Send + 'static {
-    type TrbCompletionFuture<'a>: Future<Output = HotplugTrbProcessingResult> + Send + 'a;
-    type CompletionFuture<'a>: Future<Output = ()> + Send + 'a;
+    type TrbCompletionFuture<'a>: Future<Output = anyhow::Result<HotplugTrbProcessingResult>>
+        + Send
+        + 'a;
+    type CompletionFuture<'a>: Future<Output = anyhow::Result<()>> + Send + 'a;
 
-    fn submit_trb(&mut self, trb: RawTrb);
+    fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()>;
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
     fn cancel(&mut self) -> Self::CompletionFuture<'_>;
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
@@ -105,10 +107,10 @@ impl<EH: EndpointHandle> HotplugEndpointHandleImpl<EH> {
 
 impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH> {
     type TrbCompletionFuture<'a> =
-        Pin<Box<dyn Future<Output = HotplugTrbProcessingResult> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+        Pin<Box<dyn Future<Output = anyhow::Result<HotplugTrbProcessingResult>> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    fn submit_trb(&mut self, trb: RawTrb) {
+    fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
         if let Ok(mut guard) = self.endpoint_handle.try_lock() {
             assert!(
                 matches!(
@@ -120,9 +122,11 @@ impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH>
 
             self.submission_state = HotplugSubmissionState::TrbSubmitted(trb.address);
             if let Some(device) = guard.as_mut() {
-                device.submit_trb(trb);
+                device.submit_trb(trb)?;
             }
         }
+
+        Ok(())
     }
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
@@ -147,7 +151,7 @@ impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH>
             };
             let result = match self.endpoint_handle.lock().await.as_mut() {
                 Some(ep) => select! {
-                    result = ep.next_completion() => match result {
+                    result = ep.next_completion() => match result? {
                         TrbProcessingResult::Disconnect => {
                             self.notify_detach.cancel();
                             HotplugTrbProcessingResult::TransactionError
@@ -155,34 +159,36 @@ impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH>
                         result => HotplugTrbProcessingResult::map_result(result),
                     },
                     _ = self.notify_detach.cancelled() => {
-                        self.event_sender.send(event());
+                        self.event_sender.send(event())?;
                         HotplugTrbProcessingResult::TransactionError
                     },
                 },
                 None => {
-                    self.event_sender.send(event());
+                    self.event_sender.send(event())?;
                     HotplugTrbProcessingResult::TransactionError
                 }
             };
 
             self.submission_state = HotplugSubmissionState::NoTrbSubmitted;
-            result
+            Ok(result)
         })
     }
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
             if let Some(device) = self.endpoint_handle.lock().await.as_mut() {
-                device.cancel().await;
+                device.cancel().await?;
             }
+            Ok(())
         })
     }
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
             if let Some(device) = self.endpoint_handle.lock().await.as_mut() {
-                device.clear_halt().await;
+                device.clear_halt().await?;
             }
+            Ok(())
         })
     }
 }

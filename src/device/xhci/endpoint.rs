@@ -102,14 +102,14 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 },
                 WorkerState::LookForTrb => {
                     if let Some(trb) = self.transfer_ring.next_trb() {
-                        self.real_endpoint.submit_trb(trb);
+                        self.real_endpoint.submit_trb(trb)?;
                         self.state = WorkerState::WaitForTrbCompletion;
                     } else {
                         self.state = WorkerState::WaitForDoorbell;
                     }
                 }
                 WorkerState::WaitForTrbCompletion => select! {
-                    result = self.real_endpoint.next_completion() => match result {
+                    result = self.real_endpoint.next_completion() => match result? {
                         HotplugTrbProcessingResult::Ok => {
                             self.transfer_ring.advance();
                             self.state = WorkerState::LookForTrb;
@@ -145,7 +145,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 },
                 WorkerState::Halted => match self.next_msg().await? {
                     EndpointMessage::Reset(completion) => {
-                        self.real_endpoint.clear_halt().await;
+                        self.real_endpoint.clear_halt().await?;
                         self.context.set_state(endpoint_state::STOPPED);
                         self.state = WorkerState::Stopped;
                         completion.send_anyhow(CompletionCode::Success)?;
@@ -167,7 +167,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 },
                 WorkerState::StoppedWithContinuableTrb => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
-                        self.real_endpoint.cancel().await;
+                        self.real_endpoint.cancel().await?;
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion)
                     }
                     EndpointMessage::Doorbell => {

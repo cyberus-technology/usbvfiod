@@ -18,10 +18,10 @@ use crate::device::{
 };
 
 pub trait EndpointHandle: Debug + Send + 'static {
-    type TrbCompletionFuture<'a>: Future<Output = TrbProcessingResult> + Send + 'a;
-    type CompletionFuture<'a>: Future<Output = ()> + Send + 'a;
+    type TrbCompletionFuture<'a>: Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a;
+    type CompletionFuture<'a>: Future<Output = anyhow::Result<()>> + Send + 'a;
 
-    fn submit_trb(&mut self, trb: RawTrb);
+    fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()>;
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
     fn cancel(&mut self) -> Self::CompletionFuture<'_>;
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
@@ -38,10 +38,11 @@ pub enum TrbProcessingResult {
 
 pub type DummyEndpointHandle = ();
 impl EndpointHandle for DummyEndpointHandle {
-    type TrbCompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    type TrbCompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    fn submit_trb(&mut self, _trb: RawTrb) {
+    fn submit_trb(&mut self, _trb: RawTrb) -> anyhow::Result<()> {
         panic!("should never call functions of dummy endpoint handle");
     }
 
@@ -102,10 +103,11 @@ enum ControlSubmissionState {
 }
 
 impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<RCEH> {
-    type TrbCompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    type TrbCompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    fn submit_trb(&mut self, trb: RawTrb) {
+    fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
         let trb_address = trb.address;
         if let ControlFlow::Break(res) = self.trb_parser.trb(trb) {
             match res {
@@ -113,7 +115,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     let request_copy = request.clone_without_data();
                     let is_out_request = request.request_type & 0x80 == 0;
 
-                    self.real_ep.submit_control_request(request);
+                    self.real_ep.submit_control_request(request)?;
 
                     self.submission_state = match is_out_request {
                         true => ControlSubmissionState::AwaitingControlOut(request_copy),
@@ -127,6 +129,8 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
         } else {
             self.submission_state = ControlSubmissionState::ParserConsumedTrb;
         }
+
+        Ok(())
     }
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
@@ -142,11 +146,11 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         self.endpoint_id,
                         self.slot_id,
                     );
-                    self.event_sender.send(event);
+                    self.event_sender.send(event)?;
                     TrbProcessingResult::TrbError
                 }
                 ControlSubmissionState::AwaitingControlIn(ref usb_request) => {
-                    let processing_result = self.real_ep.next_completion().await;
+                    let processing_result = self.real_ep.next_completion().await?;
                     match processing_result {
                         ControlRequestProcessingResult::SuccessfulControlIn(data) => {
                             debug!("got data from control in: {data:?}");
@@ -163,18 +167,18 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                                 self.endpoint_id,
                                 self.slot_id,
                             );
-                            self.event_sender.send(event);
+                            self.event_sender.send(event)?;
 
                             TrbProcessingResult::Ok
                         }
                         ControlRequestProcessingResult::SuccessfulControlOut => unreachable!(),
                         processing_error => {
-                            self.handle_processing_error(processing_error, usb_request.address)
+                            self.handle_processing_error(processing_error, usb_request.address)?
                         }
                     }
                 }
                 ControlSubmissionState::AwaitingControlOut(ref usb_request) => {
-                    let processing_result = self.real_ep.next_completion().await;
+                    let processing_result = self.real_ep.next_completion().await?;
                     match processing_result {
                         ControlRequestProcessingResult::SuccessfulControlIn(_) => {
                             unreachable!()
@@ -188,12 +192,12 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                                 self.endpoint_id,
                                 self.slot_id,
                             );
-                            self.event_sender.send(event);
+                            self.event_sender.send(event)?;
 
                             TrbProcessingResult::Ok
                         }
                         processing_error => {
-                            self.handle_processing_error(processing_error, usb_request.address)
+                            self.handle_processing_error(processing_error, usb_request.address)?
                         }
                     }
                 }
@@ -201,7 +205,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
             };
             self.submission_state = ControlSubmissionState::NoTrbSubmitted;
 
-            result
+            Ok(result)
         })
     }
 
@@ -219,8 +223,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         &mut self,
         error: ControlRequestProcessingResult,
         request_address: u64,
-    ) -> TrbProcessingResult {
-        match error {
+    ) -> anyhow::Result<TrbProcessingResult> {
+        let mapped = match error {
             ControlRequestProcessingResult::Disconnect => {
                 // send transaction error event to driver
                 // forward disconnect result, so that the hotplugendpointhandle can handle
@@ -232,7 +236,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     self.endpoint_id,
                     self.slot_id,
                 );
-                self.event_sender.send(event);
+                self.event_sender.send(event)?;
                 TrbProcessingResult::TransactionError
             }
             ControlRequestProcessingResult::Stall => {
@@ -244,7 +248,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     self.endpoint_id,
                     self.slot_id,
                 );
-                self.event_sender.send(event);
+                self.event_sender.send(event)?;
                 TrbProcessingResult::Stall
             }
             ControlRequestProcessingResult::TransactionError => {
@@ -256,7 +260,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     self.endpoint_id,
                     self.slot_id,
                 );
-                self.event_sender.send(event);
+                self.event_sender.send(event)?;
                 TrbProcessingResult::TransactionError
             }
             ControlRequestProcessingResult::SuccessfulControlIn(_) => {
@@ -265,7 +269,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             ControlRequestProcessingResult::SuccessfulControlOut => {
                 panic!("SuccessfulControlOut should be handled elsewhere")
             }
-        }
+        };
+        Ok(mapped)
     }
 }
 
@@ -387,10 +392,11 @@ enum NormalSubmissionState {
 }
 
 impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
-    type TrbCompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    type TrbCompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    fn submit_trb(&mut self, trb: RawTrb) {
+    fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
         assert!(
             matches!(self.submission_state, NormalSubmissionState::NoTrbSubmitted),
             "submit_trb called twice without calling next_completion"
@@ -401,7 +407,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
             TransferTrbVariant::Normal(normal_data) => {
                 let mut data = vec![0; normal_data.transfer_length as usize];
                 self.dma_bus.read_bulk(normal_data.data_pointer, &mut data);
-                self.real_ep.submit(data);
+                self.real_ep.submit(data)?;
                 self.submission_state = NormalSubmissionState::AwaitingRealTransfer(TransferTrb {
                     address: trb.address,
                     variant: transfer_trb,
@@ -409,6 +415,8 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
             }
             _ => self.submission_state = NormalSubmissionState::UnsupportedTrbType(trb),
         }
+
+        Ok(())
     }
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
@@ -428,13 +436,13 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                         self.endpoint_id,
                         self.slot_id,
                     );
-                    self.event_sender.send(transfer_event);
+                    self.event_sender.send(transfer_event)?;
 
                     TrbProcessingResult::TrbError
                 }
                 NormalSubmissionState::AwaitingRealTransfer(ref transfer_trb) => {
                     let (completion_code, processing_result) =
-                        match self.real_ep.next_completion().await {
+                        match self.real_ep.next_completion().await? {
                             OutTrbProcessingResult::Disconnect => (
                                 Some(CompletionCode::UsbTransactionError),
                                 TrbProcessingResult::Disconnect,
@@ -471,7 +479,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                             self.endpoint_id,
                             self.slot_id,
                         );
-                        self.event_sender.send(transfer_event);
+                        self.event_sender.send(transfer_event)?;
                     }
 
                     processing_result
@@ -480,7 +488,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
             };
             self.submission_state = NormalSubmissionState::NoTrbSubmitted;
 
-            result
+            Ok(result)
         })
     }
 
@@ -523,10 +531,11 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
 }
 
 impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
-    type TrbCompletionFuture<'a> = Pin<Box<dyn Future<Output = TrbProcessingResult> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    type TrbCompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    fn submit_trb(&mut self, trb: RawTrb) {
+    fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
         assert!(
             matches!(self.submission_state, NormalSubmissionState::NoTrbSubmitted),
             "submit_trb called twice without calling next_completion"
@@ -535,7 +544,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         let transfer_trb = TransferTrbVariant::parse(trb.buffer);
         match &transfer_trb {
             TransferTrbVariant::Normal(normal_data) => {
-                self.real_ep.submit(normal_data.transfer_length as usize);
+                self.real_ep.submit(normal_data.transfer_length as usize)?;
                 self.submission_state = NormalSubmissionState::AwaitingRealTransfer(TransferTrb {
                     address: trb.address,
                     variant: transfer_trb,
@@ -543,6 +552,8 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
             }
             _ => self.submission_state = NormalSubmissionState::UnsupportedTrbType(trb),
         }
+
+        Ok(())
     }
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
@@ -562,13 +573,13 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                         self.endpoint_id,
                         self.slot_id,
                     );
-                    self.event_sender.send(transfer_event);
+                    self.event_sender.send(transfer_event)?;
 
                     TrbProcessingResult::TrbError
                 }
                 NormalSubmissionState::AwaitingRealTransfer(ref transfer_trb) => {
                     let (completion_code, processing_result) =
-                        match self.real_ep.next_completion().await {
+                        match self.real_ep.next_completion().await? {
                             InTrbProcessingResult::Disconnect => (
                                 Some(CompletionCode::UsbTransactionError),
                                 TrbProcessingResult::Disconnect,
@@ -614,7 +625,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                             self.slot_id,
                         );
 
-                        self.event_sender.send(transfer_event);
+                        self.event_sender.send(transfer_event)?;
                     }
 
                     processing_result
@@ -623,7 +634,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
             };
             self.submission_state = NormalSubmissionState::NoTrbSubmitted;
 
-            result
+            Ok(result)
         })
     }
 

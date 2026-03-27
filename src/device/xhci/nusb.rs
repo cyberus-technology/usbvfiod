@@ -157,30 +157,36 @@ impl Drop for ControlEndpointHandle {
 
 impl RealControlEndpointHandle for ControlEndpointHandle {
     type TrbCompletionFuture<'a> =
-        Pin<Box<dyn Future<Output = ControlRequestProcessingResult> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+        Pin<Box<dyn Future<Output = anyhow::Result<ControlRequestProcessingResult>> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    fn submit_control_request(&mut self, request: UsbRequest) {
-        self.request_submitter.send(request);
+    fn submit_control_request(&mut self, request: UsbRequest) -> anyhow::Result<()> {
+        self.request_submitter.send(request)?;
+
+        Ok(())
     }
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
-            match self.response_receiver.recv().await {
+            let result = match self.response_receiver.recv().await {
                 Some(res) => res,
+                // background worker is dead and has dropped the response sender
+                // maybe we want to error here instead
                 None => ControlRequestProcessingResult::TransactionError,
-            }
+            };
+
+            Ok(result)
         })
     }
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         // nothing we can do
-        Box::pin(async { () })
+        Box::pin(async { Ok(()) })
     }
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
         // nusb handles clearing halts on control endpoints by itself
-        Box::pin(async { () })
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -217,11 +223,12 @@ async fn cancellable_control_endpoint_worker(
     }
 }
 
+// this function can only return with an error, but ! cannot be used in Result
 async fn control_endpoint_worker(
     device: nusb::Device,
     mut request_receiver: mpsc::UnboundedReceiver<UsbRequest>,
     response_submitter: mpsc::UnboundedSender<ControlRequestProcessingResult>,
-) {
+) -> anyhow::Result<()> {
     loop {
         if let Some(request) = request_receiver.recv().await {
             let (recipient, control_type) = extract_recipient_and_type(request.request_type);
@@ -265,7 +272,7 @@ async fn control_endpoint_worker(
                 }
             };
 
-            response_submitter.send(processing_result);
+            response_submitter.send(processing_result)?;
         }
     }
 }
@@ -336,18 +343,20 @@ impl<EpType: EndpointType, Dir: EndpointDirection> NormalEndpointHandle<EpType, 
 
 impl<EpType: BulkOrInterrupt> RealOutEndpointHandle for NormalEndpointHandle<EpType, Out> {
     type TrbCompletionFuture<'a> =
-        Pin<Box<dyn Future<Output = OutTrbProcessingResult> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+        Pin<Box<dyn Future<Output = anyhow::Result<OutTrbProcessingResult>> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    fn submit(&mut self, data: Vec<u8>) {
+    fn submit(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
         let buf = Buffer::from(data);
         self.endpoint().submit(buf);
+
+        Ok(())
     }
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
             let completion = self.endpoint().next_complete().await;
-            match completion.status {
+            let result = match completion.status {
                 Err(err) => match err {
                     TransferError::Cancelled => OutTrbProcessingResult::TransactionError,
                     TransferError::Stall => OutTrbProcessingResult::Stall,
@@ -357,36 +366,45 @@ impl<EpType: BulkOrInterrupt> RealOutEndpointHandle for NormalEndpointHandle<EpT
                     TransferError::Unknown(_) => OutTrbProcessingResult::TransactionError,
                 },
                 Ok(_) => OutTrbProcessingResult::Success,
-            }
+            };
+
+            Ok(result)
         })
     }
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async { self.endpoint().cancel_all() })
+        Box::pin(async {
+            self.endpoint().cancel_all();
+            Ok(())
+        })
     }
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
-            self.endpoint().clear_halt().await;
+            self.endpoint().clear_halt().await?;
+            Ok(())
         })
     }
 }
 
 impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpType, In> {
-    type TrbCompletionFuture<'a> = Pin<Box<dyn Future<Output = InTrbProcessingResult> + Send + 'a>>;
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    type TrbCompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    fn submit(&mut self, len: usize) {
+    fn submit(&mut self, len: usize) -> anyhow::Result<()> {
         let endpoint = self.endpoint();
         let request_len = determine_buffer_size(len, endpoint.max_packet_size());
         let buf = Buffer::new(request_len);
         endpoint.submit(buf);
+
+        Ok(())
     }
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
             let completion = self.endpoint().next_complete().await.into_result();
-            match completion {
+            let result = match completion {
                 Ok(buf) => InTrbProcessingResult::Success(buf.into_vec()),
                 Err(err) => match err {
                     TransferError::Cancelled => InTrbProcessingResult::TransactionError,
@@ -396,17 +414,23 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
                     TransferError::InvalidArgument => InTrbProcessingResult::TransactionError,
                     TransferError::Unknown(_) => InTrbProcessingResult::TransactionError,
                 },
-            }
+            };
+
+            Ok(result)
         })
     }
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async { self.endpoint().cancel_all() })
+        Box::pin(async {
+            self.endpoint().cancel_all();
+            Ok(())
+        })
     }
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
-            self.endpoint().clear_halt().await;
+            self.endpoint().clear_halt().await?;
+            Ok(())
         })
     }
 }
