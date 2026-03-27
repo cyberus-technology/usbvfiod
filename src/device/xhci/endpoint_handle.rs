@@ -173,7 +173,7 @@ impl<EH: EndpointHandle> HotplugEndpointHandle<EH> {
     pub fn clear_halt(&self) {
         if let Ok(mut guard) = self.endpoint_handle.try_lock() {
             if let Some(device) = guard.as_mut() {
-                device.cancel();
+                device.clear_halt();
             }
         }
     }
