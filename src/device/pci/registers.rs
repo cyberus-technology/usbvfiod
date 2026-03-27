@@ -16,39 +16,32 @@ use crate::device::pci::constants::xhci::{
 /// later react to 1-to-clear writes (RW1C) to get a device to show up.
 /// Perhaps later we need more fine-grained access to the bits or state
 /// handling, but we can use the simplistic implementation for now.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct PortscRegister {
-    value: u64,
-    bitmask_rw1c: u64,
+    value: AtomicU64,
 }
+
+const BITMASK_RW1C: u64 = 0x00260000;
 
 impl Default for PortscRegister {
     fn default() -> Self {
         Self {
-            value: portsc::PP,
-            bitmask_rw1c: 0x00260000,
+            value: AtomicU64::new(portsc::PP),
         }
     }
 }
 
 impl PortscRegister {
-    /// Create a new instance of the PORTSC register.
-    ///
-    /// # Parameters
-    ///
-    /// - initial_value: the initial value of the register.
-    pub const fn new(initial_value: u64) -> Self {
-        Self {
-            value: initial_value,
-            bitmask_rw1c: 0x00260000,
-        }
+    pub fn set(&self, value: u64) {
+        self.value
+            .store(value, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Read the current register value.
     ///
     /// This function should be called when an MMIO read happens.
-    pub const fn read(&self) -> u64 {
-        self.value
+    pub fn read(&self) -> u64 {
+        self.value.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Update the current register value.
@@ -56,9 +49,16 @@ impl PortscRegister {
     /// This function should be called when an MMIO write happens.
     /// RW1C bits are updates according to RW1C semantics, all
     /// other bits are treated as read-only.
-    pub const fn write(&mut self, new_value: u64) {
-        let bits_to_clear = new_value & self.bitmask_rw1c;
-        self.value &= !bits_to_clear;
+    pub fn write(&self, new_value: u64) {
+        let _ = self.value.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |reg| {
+                let bits_to_clear = new_value & BITMASK_RW1C;
+                let new_value = reg & !bits_to_clear;
+                Some(new_value)
+            },
+        );
     }
 }
 
@@ -186,7 +186,8 @@ mod tests {
 
     #[test]
     fn portsc_read_write() {
-        let mut reg = PortscRegister::new(0x00260203);
+        let reg = PortscRegister::default();
+        reg.set(0x00260203);
         assert_eq!(reg.read(), 0x00260203);
 
         reg.write(0x0);

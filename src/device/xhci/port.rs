@@ -1,7 +1,4 @@
-use std::{
-    array,
-    sync::{atomic::AtomicU64, Arc},
-};
+use std::{array, sync::Arc};
 
 use anyhow::anyhow;
 use tokio::{
@@ -16,6 +13,7 @@ use crate::{
     device::{
         pci::{
             constants::xhci::{offset, operational::portsc, MAX_PORTS, NUM_USB3_PORTS},
+            registers::PortscRegister,
             trb::EventTrb,
         },
         xhci::{
@@ -243,58 +241,6 @@ async fn detach_listener<RD: RealDevice, ID: Identifier>(
     cancel.cancelled().await;
     let _ = msg_sender.send(PortMessage::Detach(identifier, send));
     let _ = recv.await;
-}
-
-/// A simple PORTSC register implementation supporting RW1C bits.
-///
-/// The PORTSC register requires us to initially set some bits and
-/// later react to 1-to-clear writes (RW1C) to get a device to show up.
-/// Perhaps later we need more fine-grained access to the bits or state
-/// handling, but we can use the simplistic implementation for now.
-#[derive(Debug)]
-pub struct PortscRegister {
-    value: AtomicU64,
-}
-
-const BITMASK_RW1C: u64 = 0x00260000;
-
-impl Default for PortscRegister {
-    fn default() -> Self {
-        Self {
-            value: AtomicU64::new(portsc::PP),
-        }
-    }
-}
-
-impl PortscRegister {
-    fn set(&self, value: u64) {
-        self.value
-            .store(value, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Read the current register value.
-    ///
-    /// This function should be called when an MMIO read happens.
-    fn read(&self) -> u64 {
-        self.value.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Update the current register value.
-    ///
-    /// This function should be called when an MMIO write happens.
-    /// RW1C bits are updates according to RW1C semantics, all
-    /// other bits are treated as read-only.
-    fn write(&self, new_value: u64) {
-        let _ = self.value.fetch_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |reg| {
-                let bits_to_clear = new_value & BITMASK_RW1C;
-                let new_value = reg & !bits_to_clear;
-                Some(new_value)
-            },
-        );
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
