@@ -10,7 +10,7 @@ use nusb::{
 };
 use tokio::{runtime, select, sync::mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::device::xhci::{
     real_device::{RealDevice, Speed},
@@ -370,7 +370,17 @@ impl<EpType: BulkOrInterrupt> RealOutEndpointHandle for NormalEndpointHandle<EpT
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
-            self.endpoint().cancel_all();
+            let ep = self.endpoint();
+            ep.cancel_all();
+
+            // have to consume all cancelled TRBs (should be 0 or 1)
+            if ep.pending() > 1 {
+                warn!("while cancelling: saw more than one pending TRB");
+            }
+            while ep.pending() > 0 {
+                let _ = ep.next_complete().await;
+            }
+
             Ok(())
         })
     }
@@ -418,7 +428,17 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
-            self.endpoint().cancel_all();
+            let ep = self.endpoint();
+            ep.cancel_all();
+
+            // have to consume all cancelled TRBs (should be 0 or 1)
+            if ep.pending() > 1 {
+                warn!("while cancelling: saw more than one pending TRB");
+            }
+            while ep.pending() > 0 {
+                let _ = ep.next_complete().await;
+            }
+
             Ok(())
         })
     }
