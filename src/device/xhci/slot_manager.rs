@@ -326,7 +326,7 @@ impl SlotWorker {
             .ok_or_else(|| anyhow!("slot channel closed"))
     }
 
-    pub fn allocate_slot(&mut self) -> Result<u8, CompletionCode> {
+    fn allocate_slot(&mut self) -> Result<u8, CompletionCode> {
         let available_slot_id = (1..=self.config_reg.num_slots_enabled())
             .find(|&slot_id| self.slots[slot_id as usize].is_none());
 
@@ -343,7 +343,7 @@ impl SlotWorker {
         available_slot_id.ok_or(CompletionCode::NoSlotsAvailableError)
     }
 
-    pub async fn disable_slot(&mut self, slot_id: u8) -> anyhow::Result<CompletionCode> {
+    async fn disable_slot(&mut self, slot_id: u8) -> anyhow::Result<CompletionCode> {
         assert!(slot_id >= 1 && slot_id <= self.config_reg.num_slots_enabled());
 
         let slot = match self
