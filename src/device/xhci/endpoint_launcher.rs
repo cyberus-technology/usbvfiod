@@ -1,23 +1,25 @@
+use anyhow::anyhow;
 use tokio::{
     runtime,
     sync::{mpsc, oneshot},
 };
-use tracing::debug;
+use tracing::{debug, info};
 
-use crate::device::{
-    bus::BusDeviceRef,
-    xhci::{
-        endpoint::{EndpointMessage, EndpointSender, EndpointWorker},
-        endpoint_handle::{
-            ControlEndpointHandle, EndpointHandle, HotplugEndpointHandle, InEndpointHandle,
-            OutEndpointHandle,
+use crate::{
+    device::{
+        bus::BusDeviceRef,
+        xhci::{
+            endpoint::{EndpointSender, EndpointWorker},
+            endpoint_handle::{
+                ControlEndpointHandle, HotplugEndpointHandle, InEndpointHandle, OutEndpointHandle,
+            },
+            interrupter::EventSender,
+            port::PortMessage,
+            real_device::{Identifier, RealDevice},
+            slot_manager::{EndpointContext, EndpointType},
         },
-        interrupter::EventSender,
-        nusb::NormalEndpointHandle,
-        port::PortMessage,
-        real_device::{Identifier, RealDevice},
-        slot_manager::{EndpointContext, EndpointType},
     },
+    oneshot_anyhow::SendWithAnyhowError,
 };
 
 #[derive(Debug)]
@@ -56,13 +58,19 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
         async_runtime.spawn(launcher.run());
     }
 
-    async fn run(mut self) -> ! {
+    async fn run(mut self) {
+        match self.run_loop().await {
+            Ok(_) => unreachable!(),
+            Err(err) => {
+                info!("EndpointLauncher stopped {err}");
+            }
+        }
+    }
+
+    // function only returns on error, but cannot use ! in Result
+    async fn run_loop(&mut self) -> anyhow::Result<()> {
         loop {
-            let request = self
-                .request_recv
-                .recv()
-                .await
-                .expect("channel should never close");
+            let request = self.next_msg().await?;
             debug!(
                 "endpoint launch request for slot {} endpoint {} with device at root hub port {}",
                 request.slot_id, request.endpoint_id, request.root_hub_port
@@ -70,10 +78,8 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
 
             let (send, recv) = oneshot::channel();
             self.port_msg_sender
-                .send(PortMessage::GetDevice(request.root_hub_port as usize, send));
-            let device = recv
-                .await
-                .expect("port worker should always send a response");
+                .send(PortMessage::GetDevice(request.root_hub_port as usize, send))?;
+            let device = recv.await?;
             let endpoint_type = request.endpoint_context.get_endpoint_type();
             debug!("endpoint context specifies endpoint type {endpoint_type:?}");
 
@@ -234,7 +240,14 @@ impl<RD: RealDevice, ID: Identifier> EndpointLauncher<RD, ID> {
                 }
             };
 
-            request.responder.send(endpoint_sender);
+            request.responder.send_anyhow(endpoint_sender)?;
         }
+    }
+
+    async fn next_msg(&mut self) -> anyhow::Result<LaunchRequest> {
+        self.request_recv
+            .recv()
+            .await
+            .ok_or_else(|| anyhow!("channel should never close"))
     }
 }
