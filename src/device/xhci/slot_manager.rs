@@ -798,6 +798,17 @@ impl SlotWorkerHandle {
         Ok(completion_code)
     }
 
+    pub async fn evaluate_context(
+        &self,
+        trb_data: EvaluateContextCommandTrbData,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::EvaluateContext(trb_data, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
     pub async fn stop_endpoint(
         &self,
         slot_id: u8,

@@ -601,7 +601,7 @@ impl TrbData for ConfigureEndpointCommandTrbData {
 /// Evaluate Context Command TRB data structure.
 ///
 /// See XHCI specification Section 6.4.3.6 for detailed field descriptions.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct EvaluateContextCommandTrbData {
     pub input_context_pointer: u64,
     pub slot_id: u8,
