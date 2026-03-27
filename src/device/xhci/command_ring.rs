@@ -161,7 +161,7 @@ impl CommandWorker {
     // function only returns on error, but cannot use ! in Result
     async fn run_loop(&mut self) -> anyhow::Result<()> {
         loop {
-            match &mut self.state {
+            match &self.state {
                 WorkerState::Stopped => match self.next_msg().await? {
                     WorkerMessage::SetDequeuePointerAndCS(dp, cs) => {
                         debug!("Updating command ring parameters: dp={dp:#x}, cs={cs}");
@@ -212,8 +212,8 @@ impl CommandWorker {
                         WorkerState::ProcessingCommand(command_trb)
                     });
                 }
-                WorkerState::ProcessingCommand(_) => {
-                    self.process_command().await?;
+                WorkerState::ProcessingCommand(command_trb) => {
+                    self.process_command(command_trb).await?;
                     self.ring.advance();
                     self.state = WorkerState::LookingForNewCommand;
                 }
@@ -240,118 +240,105 @@ impl CommandWorker {
         }
     }
 
-    async fn process_command(&self) -> anyhow::Result<()> {
-        assert!(
-            matches!(self.state, WorkerState::ProcessingCommand(_)),
-            "process_command called in state {:?}",
-            self.state
-        );
-
-        if let WorkerState::ProcessingCommand(trb) = &self.state {
-            debug!("Processing command {:?}", trb);
-            let completion_event = match &trb.variant {
-                CommandTrbVariant::EnableSlot => {
-                    let (slot_id, completion_code) = match self.slot_handle.enable_slot().await? {
-                        Ok(slot_id) => (slot_id, CompletionCode::Success),
-                        Err(completion_error_code) => (0, completion_error_code),
-                    };
-                    EventTrb::new_command_completion_event_trb(
-                        trb.address,
-                        0,
-                        completion_code,
-                        slot_id,
-                    )
-                }
-                CommandTrbVariant::DisableSlot(data) => {
-                    let completion_code = self.slot_handle.disable_slot(data.slot_id).await?;
-                    EventTrb::new_command_completion_event_trb(
-                        trb.address,
-                        0,
-                        completion_code,
-                        data.slot_id,
-                    )
-                }
-                CommandTrbVariant::AddressDevice(data) => {
-                    let completion_code = self.slot_handle.address_device(*data).await?;
-                    EventTrb::new_command_completion_event_trb(
-                        trb.address,
-                        0,
-                        completion_code,
-                        data.slot_id,
-                    )
-                }
-                CommandTrbVariant::ConfigureEndpoint(data) => {
-                    let completion_code = self.slot_handle.configure_endpoint(*data).await?;
-                    EventTrb::new_command_completion_event_trb(
-                        trb.address,
-                        0,
-                        completion_code,
-                        data.slot_id,
-                    )
-                }
-                CommandTrbVariant::EvaluateContext(data) => {
-                    let completion_code = self.slot_handle.evaluate_context(*data).await?;
-                    EventTrb::new_command_completion_event_trb(
-                        trb.address,
-                        0,
-                        completion_code,
-                        data.slot_id,
-                    )
-                }
-                CommandTrbVariant::ResetEndpoint(data) => {
-                    let completion_code = self
-                        .slot_handle
-                        .reset_endpoint(data.slot_id, data.endpoint_id)
-                        .await?;
-                    EventTrb::new_command_completion_event_trb(
-                        trb.address,
-                        0,
-                        completion_code,
-                        data.slot_id,
-                    )
-                }
-                CommandTrbVariant::StopEndpoint(data) => {
-                    let completion_code = self
-                        .slot_handle
-                        .stop_endpoint(data.slot_id, data.endpoint_id)
-                        .await?;
-                    EventTrb::new_command_completion_event_trb(
-                        trb.address,
-                        0,
-                        completion_code,
-                        data.slot_id,
-                    )
-                }
-                CommandTrbVariant::SetTrDequeuePointer(data) => {
-                    let completion_code = self.slot_handle.set_tr_dequeue_pointer(*data).await?;
-                    EventTrb::new_command_completion_event_trb(
-                        trb.address,
-                        0,
-                        completion_code,
-                        data.slot_id,
-                    )
-                }
-                CommandTrbVariant::ResetDevice(data) => EventTrb::new_command_completion_event_trb(
+    async fn process_command(&self, trb: &CommandTrb) -> anyhow::Result<()> {
+        debug!("Processing command {:?}", trb);
+        let completion_event = match &trb.variant {
+            CommandTrbVariant::EnableSlot => {
+                let (slot_id, completion_code) = match self.slot_handle.enable_slot().await? {
+                    Ok(slot_id) => (slot_id, CompletionCode::Success),
+                    Err(completion_error_code) => (0, completion_error_code),
+                };
+                EventTrb::new_command_completion_event_trb(trb.address, 0, completion_code, slot_id)
+            }
+            CommandTrbVariant::DisableSlot(data) => {
+                let completion_code = self.slot_handle.disable_slot(data.slot_id).await?;
+                EventTrb::new_command_completion_event_trb(
                     trb.address,
                     0,
-                    CompletionCode::Success,
+                    completion_code,
                     data.slot_id,
-                ),
-                CommandTrbVariant::ForceHeader => todo!(),
-                CommandTrbVariant::NoOp => todo!(),
-                CommandTrbVariant::Unrecognized(_, trb_parse_error) => {
-                    warn!("Failed to parse command TRB {trb_parse_error:?}");
-                    EventTrb::new_command_completion_event_trb(
-                        trb.address,
-                        0,
-                        CompletionCode::TrbError,
-                        0,
-                    )
-                }
-            };
-            debug!("command {} finished: {completion_event:?}", trb.address);
-            self.event_sender.send(completion_event)?;
-        }
+                )
+            }
+            CommandTrbVariant::AddressDevice(data) => {
+                let completion_code = self.slot_handle.address_device(*data).await?;
+                EventTrb::new_command_completion_event_trb(
+                    trb.address,
+                    0,
+                    completion_code,
+                    data.slot_id,
+                )
+            }
+            CommandTrbVariant::ConfigureEndpoint(data) => {
+                let completion_code = self.slot_handle.configure_endpoint(*data).await?;
+                EventTrb::new_command_completion_event_trb(
+                    trb.address,
+                    0,
+                    completion_code,
+                    data.slot_id,
+                )
+            }
+            CommandTrbVariant::EvaluateContext(data) => {
+                let completion_code = self.slot_handle.evaluate_context(*data).await?;
+                EventTrb::new_command_completion_event_trb(
+                    trb.address,
+                    0,
+                    completion_code,
+                    data.slot_id,
+                )
+            }
+            CommandTrbVariant::ResetEndpoint(data) => {
+                let completion_code = self
+                    .slot_handle
+                    .reset_endpoint(data.slot_id, data.endpoint_id)
+                    .await?;
+                EventTrb::new_command_completion_event_trb(
+                    trb.address,
+                    0,
+                    completion_code,
+                    data.slot_id,
+                )
+            }
+            CommandTrbVariant::StopEndpoint(data) => {
+                let completion_code = self
+                    .slot_handle
+                    .stop_endpoint(data.slot_id, data.endpoint_id)
+                    .await?;
+                EventTrb::new_command_completion_event_trb(
+                    trb.address,
+                    0,
+                    completion_code,
+                    data.slot_id,
+                )
+            }
+            CommandTrbVariant::SetTrDequeuePointer(data) => {
+                let completion_code = self.slot_handle.set_tr_dequeue_pointer(*data).await?;
+                EventTrb::new_command_completion_event_trb(
+                    trb.address,
+                    0,
+                    completion_code,
+                    data.slot_id,
+                )
+            }
+            CommandTrbVariant::ResetDevice(data) => EventTrb::new_command_completion_event_trb(
+                trb.address,
+                0,
+                CompletionCode::Success,
+                data.slot_id,
+            ),
+            CommandTrbVariant::ForceHeader => todo!(),
+            CommandTrbVariant::NoOp => todo!(),
+            CommandTrbVariant::Unrecognized(_, trb_parse_error) => {
+                warn!("Failed to parse command TRB {trb_parse_error:?}");
+                EventTrb::new_command_completion_event_trb(
+                    trb.address,
+                    0,
+                    CompletionCode::TrbError,
+                    0,
+                )
+            }
+        };
+        debug!("command {} finished: {completion_event:?}", trb.address);
+        self.event_sender.send(completion_event)?;
 
         Ok(())
     }
