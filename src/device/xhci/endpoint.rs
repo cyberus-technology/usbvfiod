@@ -64,7 +64,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
         let (dequeue_pointer, cycle_state) = context.get_dequeue_pointer_and_cycle_state();
         let transfer_ring = LinkedRing::new(dma_bus, dequeue_pointer, cycle_state);
 
-        let worker = EndpointWorker {
+        let worker = Self {
             state: WorkerState::WaitForDoorbell,
             context,
             recv,
@@ -96,7 +96,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                         sender.send_anyhow(CompletionCode::Success)?;
                     }
                     EndpointMessage::Terminate(sender) => {
-                        self.state = WorkerState::Terminating(sender)
+                        self.state = WorkerState::Terminating(sender);
                     }
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },
@@ -168,7 +168,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 WorkerState::StoppedWithContinuableTrb => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
                         self.real_endpoint.cancel().await?;
-                        self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion)
+                        self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
                     }
                     EndpointMessage::Doorbell => {
                         self.context.set_state(endpoint_state::RUNNING);
@@ -185,10 +185,10 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                         self.state = WorkerState::LookForTrb;
                     }
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
-                        self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion)
+                        self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
                     }
                     EndpointMessage::Terminate(sender) => {
-                        self.state = WorkerState::Terminating(sender)
+                        self.state = WorkerState::Terminating(sender);
                     }
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },

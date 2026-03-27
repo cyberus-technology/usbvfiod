@@ -220,7 +220,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
 
 impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
     fn handle_processing_error(
-        &mut self,
+        &self,
         error: ControlRequestProcessingResult,
         request_address: u64,
     ) -> anyhow::Result<TrbProcessingResult> {
@@ -285,7 +285,7 @@ impl ControlRequestParser {
     fn new(dma_bus: BusDeviceRef) -> Self {
         Self {
             state: ControlRequestParserState::Initial,
-            dma_bus: dma_bus,
+            dma_bus,
             request_builder: Default::default(),
         }
     }

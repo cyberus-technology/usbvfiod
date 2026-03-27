@@ -24,14 +24,14 @@ pub enum HotplugTrbProcessingResult {
 }
 
 impl HotplugTrbProcessingResult {
-    fn map_result(value: TrbProcessingResult) -> Self {
+    const fn map_result(value: TrbProcessingResult) -> Self {
         match value {
-            TrbProcessingResult::Ok => HotplugTrbProcessingResult::Ok,
-            TrbProcessingResult::Stall => HotplugTrbProcessingResult::Stall,
-            TrbProcessingResult::TrbError => HotplugTrbProcessingResult::TrbError,
-            TrbProcessingResult::TransactionError => HotplugTrbProcessingResult::TransactionError,
+            TrbProcessingResult::Ok => Self::Ok,
+            TrbProcessingResult::Stall => Self::Stall,
+            TrbProcessingResult::TrbError => Self::TrbError,
+            TrbProcessingResult::TransactionError => Self::TransactionError,
             // A device disconnect looks like a failed transaction for the endpoint state machine
-            TrbProcessingResult::Disconnect => HotplugTrbProcessingResult::TransactionError,
+            TrbProcessingResult::Disconnect => Self::TransactionError,
         }
     }
 }

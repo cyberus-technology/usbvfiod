@@ -56,7 +56,7 @@ impl LinkedRing {
 
             // lookup first TRB in the new memory segment
             let second_trb_buffer = self.next_trb_raw()?;
-            if let Some(_) = LinkTrb::parse(second_trb_buffer) {
+            if LinkTrb::parse(second_trb_buffer).is_some() {
                 panic!("Link TRB should not follow directly after another Link TRB");
             }
             second_trb_buffer
@@ -101,17 +101,17 @@ impl LinkedRing {
         Some(trb_buffer)
     }
 
-    pub fn advance(&mut self) {
+    pub const fn advance(&mut self) {
         // advance to next TRB
         self.dequeue_pointer = self.dequeue_pointer.wrapping_add(TRB_SIZE as u64);
     }
 
-    pub fn set_dequeue_pointer(&mut self, dequeue_pointer: u64, cycle_state: bool) {
+    pub const fn set_dequeue_pointer(&mut self, dequeue_pointer: u64, cycle_state: bool) {
         self.dequeue_pointer = dequeue_pointer;
         self.cycle_state = cycle_state;
     }
 
-    pub fn get_dequeue_pointer(&self) -> (u64, bool) {
+    pub const fn get_dequeue_pointer(&self) -> (u64, bool) {
         (self.dequeue_pointer, self.cycle_state)
     }
 }

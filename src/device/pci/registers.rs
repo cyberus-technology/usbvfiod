@@ -176,7 +176,7 @@ impl ErstbaRegister {
     }
 
     pub async fn write_notification(&self) {
-        self.notify.notified().await
+        self.notify.notified().await;
     }
 }
 

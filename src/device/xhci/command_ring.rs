@@ -89,7 +89,6 @@ impl CommandRing {
         }
     }
 
-    #[must_use]
     pub fn doorbell(&self) -> anyhow::Result<()> {
         debug!("Doorbell for the controller");
         self.send_to_worker(WorkerMessage::Doorbell)?;
@@ -202,17 +201,14 @@ impl CommandWorker {
                     // TODO check R/S and stop if equals 0
 
                     // check for TRB
-                    self.state = match self.ring.next_trb() {
-                        Some(trb) => {
-                            let trb_data = CommandTrbVariant::parse(trb.buffer);
-                            let command_trb = CommandTrb {
-                                address: trb.address,
-                                variant: trb_data,
-                            };
-                            WorkerState::ProcessingCommand(command_trb)
-                        }
-                        None => WorkerState::Idle,
-                    };
+                    self.state = self.ring.next_trb().map_or(WorkerState::Idle, |trb| {
+                        let trb_data = CommandTrbVariant::parse(trb.buffer);
+                        let command_trb = CommandTrb {
+                            address: trb.address,
+                            variant: trb_data,
+                        };
+                        WorkerState::ProcessingCommand(command_trb)
+                    });
                 }
                 WorkerState::ProcessingCommand(_) => {
                     self.process_command().await?;

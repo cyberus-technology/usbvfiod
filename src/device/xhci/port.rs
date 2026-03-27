@@ -184,7 +184,7 @@ impl<RD: RealDevice, ID: Identifier> PortWorker<RD, ID> {
 
     fn port_version(port_id: u64) -> UsbVersion {
         match port_id {
-            id if id >= 1 && id <= NUM_USB3_PORTS => UsbVersion::USB3,
+            1..=NUM_USB3_PORTS => UsbVersion::USB3,
             id if id > NUM_USB3_PORTS && id <= MAX_PORTS => UsbVersion::USB2,
             id => panic!("asked for port version of non-existent port id {id}"),
         }

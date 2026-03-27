@@ -168,12 +168,10 @@ impl RealControlEndpointHandle for ControlEndpointHandle {
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
-            let result = match self.response_receiver.recv().await {
-                Some(res) => res,
+            let result = (self.response_receiver.recv().await)
                 // background worker is dead and has dropped the response sender
                 // maybe we want to error here instead
-                None => ControlRequestProcessingResult::TransactionError,
-            };
+                .map_or(ControlRequestProcessingResult::TransactionError, |res| res);
 
             Ok(result)
         })
@@ -277,7 +275,7 @@ async fn control_endpoint_worker(
     }
 }
 
-fn map_error(error: TransferError) -> ControlRequestProcessingResult {
+const fn map_error(error: TransferError) -> ControlRequestProcessingResult {
     match error {
         TransferError::Cancelled => ControlRequestProcessingResult::TransactionError,
         TransferError::Stall => ControlRequestProcessingResult::Stall,
@@ -311,7 +309,7 @@ pub struct NormalEndpointHandle<EpType: EndpointType + 'static, Dir: EndpointDir
 }
 
 impl<EpType: EndpointType, Dir: EndpointDirection> NormalEndpointHandle<EpType, Dir> {
-    fn new(id: u8, device_wrapper: Arc<NusbDeviceWrapper>) -> Self {
+    const fn new(id: u8, device_wrapper: Arc<NusbDeviceWrapper>) -> Self {
         Self {
             id,
             device_wrapper,

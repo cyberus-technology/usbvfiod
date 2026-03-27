@@ -325,7 +325,7 @@ impl SlotWorker {
 
     pub fn allocate_slot(&mut self) -> Result<u8, CompletionCode> {
         let available_slot_id = (1..=self.config_reg.num_slots_enabled())
-            .find(|&slot_id| matches!(self.slots[slot_id as usize], None));
+            .find(|&slot_id| self.slots[slot_id as usize].is_none());
 
         if let Some(slot_id) = available_slot_id {
             let dcbaae = self.dcbaap.read().wrapping_add(slot_id as u64 * 8);
@@ -410,9 +410,7 @@ impl Slot {
         }
     }
 
-    // &mut self is not technically necessary, but we take it to ensure
-    // DMA accesses to the slot context are exclusive
-    fn write_slot_state(&mut self, state: u8) {
+    fn write_slot_state(&self, state: u8) {
         if let Some(base_address) = self.base_address {
             let addr = base_address.wrapping_add(15);
             self.dma_bus
@@ -436,7 +434,7 @@ impl Slot {
         // target an incorrect device (after quick detach--reattach).
 
         // we should not touch anything if the input is bad
-        if self.check_slot_and_ep0_input_context(input_context_pointer) == false {
+        if !self.check_slot_and_ep0_input_context(input_context_pointer) {
             return Ok(CompletionCode::ParameterError);
         }
 
@@ -492,18 +490,15 @@ impl Slot {
         Ok(CompletionCode::Success)
     }
 
-    fn check_slot_and_ep0_input_context(&self, _input_context_pointer: u64) -> bool {
+    const fn check_slot_and_ep0_input_context(&self, _input_context_pointer: u64) -> bool {
         // TODO look if the fields have proper values
         true
     }
 
     fn dma_copy_slot_and_ep0_context(&self, input_context_pointer: u64) {
-        let base_addr = match self.base_address {
-            Some(base_addr) => base_addr,
-            None => panic!(
-                "do not call dma_copy_slot_and_ep0_context when base_addr is not initialized"
-            ),
-        };
+        let base_addr = self.base_address.unwrap_or_else(|| {
+            panic!("do not call dma_copy_slot_and_ep0_context when base_addr is not initialized")
+        });
         let mut context_buffer = [0; 32];
 
         let input_slot_context_addr = input_context_pointer.wrapping_add(32);
@@ -519,10 +514,9 @@ impl Slot {
     }
 
     fn dma_copy_ep_context(&self, endpoint_id: u8, input_context_pointer: u64) {
-        let base_addr = match self.base_address {
-            Some(base_addr) => base_addr,
-            None => panic!("do not call dma_copy_ep_context when base_addr is not initialized"),
-        };
+        let base_addr = self.base_address.unwrap_or_else(|| {
+            panic!("do not call dma_copy_ep_context when base_addr is not initialized")
+        });
         let mut context_buffer = [0; 32];
 
         let input_ep_context_addr =
@@ -534,10 +528,9 @@ impl Slot {
     }
 
     fn root_hub_port(&self) -> u8 {
-        let base_addr = match self.base_address {
-            Some(base_addr) => base_addr,
-            None => panic!("do not call root_hub_port when base_addr is not initialized"),
-        };
+        let base_addr = self.base_address.unwrap_or_else(|| {
+            panic!("do not call root_hub_port when base_addr is not initialized")
+        });
 
         self.dma_bus
             .read(Request::new(base_addr.wrapping_add(6), RequestSize::Size1)) as u8
@@ -550,6 +543,7 @@ impl Slot {
     ) -> anyhow::Result<CompletionCode> {
         // configure endpoint with DC=0 transitions from Addressed/Configured to Configured
         // configure endpoint with DC=1 transitions from Configured to Addressed
+        #[allow(clippy::nonminimal_bool)]
         if (!deconfigure
             && !(self.state == SlotState::Addressed || self.state == SlotState::Configured))
             || (deconfigure && self.state != SlotState::Configured)

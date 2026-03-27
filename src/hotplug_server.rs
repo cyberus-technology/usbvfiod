@@ -51,7 +51,7 @@ fn handle_command(
             .context("Failed to handle attach command")?,
         Command::Detach { bus, device } => {
             handle_detach(bus, device, socket, hotplug_control, async_runtime)
-                .context("Failed to handle detach command")?
+                .context("Failed to handle detach command")?;
         }
         Command::List => {
             let devices = async_runtime.block_on(hotplug_control.list_devices());
