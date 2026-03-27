@@ -8,13 +8,11 @@ use tracing::{debug, info, trace, warn};
 use crate::{
     device::{
         bus::{BusDeviceRef, Request, RequestSize},
-        pci::{
-            constants::xhci::{device_slots::slot_state, MAX_SLOTS},
-            registers::{ConfigureRegister, DcbaapRegister},
-        },
+        pci::constants::xhci::{device_slots::slot_state, MAX_SLOTS},
         xhci::{
             endpoint::EndpointSender,
             endpoint_launcher::LaunchRequester,
+            registers::{ConfigureRegister, DcbaapRegister},
             trb::{
                 AddressDeviceCommandTrbData, CompletionCode, ConfigureEndpointCommandTrbData,
                 EvaluateContextCommandTrbData, SetTrDequeuePointerCommandTrbData,

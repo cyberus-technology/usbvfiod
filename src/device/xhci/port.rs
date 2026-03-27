@@ -11,13 +11,11 @@ use usbvfiod::hotplug_protocol::response::Response;
 
 use crate::{
     device::{
-        pci::{
-            constants::xhci::{offset, operational::portsc, MAX_PORTS, NUM_USB3_PORTS},
-            registers::PortscRegister,
-        },
+        pci::constants::xhci::{offset, operational::portsc, MAX_PORTS, NUM_USB3_PORTS},
         xhci::{
             interrupter::EventSender,
             real_device::{CompleteRealDevice, Identifier, RealDevice, Speed},
+            registers::PortscRegister,
             trb::EventTrb,
         },
     },

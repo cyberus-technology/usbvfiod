@@ -6,6 +6,5 @@
 pub mod config_space;
 pub mod constants;
 pub mod msix_table;
-pub mod registers;
 pub mod traits;
 pub mod xhci_async;

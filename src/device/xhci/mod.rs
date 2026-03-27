@@ -10,6 +10,7 @@ pub mod nusb;
 pub mod port;
 pub mod real_device;
 pub mod real_endpoint_handle;
+pub mod registers;
 pub mod slot_manager;
 pub mod trb;
 pub mod usbrequest;

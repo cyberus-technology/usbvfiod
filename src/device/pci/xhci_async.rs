@@ -8,13 +8,13 @@ use crate::device::{
     pci::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
         constants::xhci::{offset, MAX_INTRS, RUN_BASE},
-        registers::{new_usbcmd_and_usbsts, UsbcmdRegister, UsbstsRegister},
         traits::PciDevice,
     },
     xhci::{
         endpoint_launcher::EndpointLauncher,
         port::{get_portli_index, get_portsc_index, HotplugControl, PortArray},
         real_device::{Identifier, RealDevice},
+        registers::{new_usbcmd_and_usbsts, UsbcmdRegister, UsbstsRegister},
         slot_manager::SlotManager,
     },
 };
