@@ -2,13 +2,11 @@ use tracing::{debug, trace};
 
 use crate::device::{
     bus::{BusDeviceRef, Request, RequestSize},
-    pci::{
-        constants::xhci::rings::{
-            event_ring::segments_table_entry_offsets::{SEGMENT_BASE, SIZE},
-            TRB_SIZE,
-        },
-        trb::EventTrb,
+    pci::constants::xhci::rings::{
+        event_ring::segments_table_entry_offsets::{SEGMENT_BASE, SIZE},
+        TRB_SIZE,
     },
+    xhci::trb::EventTrb,
 };
 
 ///Ring: A unidirectional means of communication, allowing the XHCI

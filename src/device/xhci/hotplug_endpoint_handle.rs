@@ -3,12 +3,10 @@ use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc};
 use tokio::{runtime, select, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
-use crate::device::{
-    pci::trb::{CompletionCode, EventTrb, RawTrb},
-    xhci::{
-        endpoint_handle::{DummyEndpointHandle, EndpointHandle, TrbProcessingResult},
-        interrupter::EventSender,
-    },
+use crate::device::xhci::{
+    endpoint_handle::{DummyEndpointHandle, EndpointHandle, TrbProcessingResult},
+    interrupter::EventSender,
+    trb::{CompletionCode, EventTrb, RawTrb},
 };
 
 // same as TrbProcessingResult but without the Disconnect variant.

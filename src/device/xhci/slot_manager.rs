@@ -11,12 +11,15 @@ use crate::{
         pci::{
             constants::xhci::{device_slots::slot_state, MAX_SLOTS},
             registers::{ConfigureRegister, DcbaapRegister},
+        },
+        xhci::{
+            endpoint::EndpointSender,
+            endpoint_launcher::LaunchRequester,
             trb::{
                 AddressDeviceCommandTrbData, CompletionCode, ConfigureEndpointCommandTrbData,
                 EvaluateContextCommandTrbData, SetTrDequeuePointerCommandTrbData,
             },
         },
-        xhci::{endpoint::EndpointSender, endpoint_launcher::LaunchRequester},
     },
     one_indexed_array::OneIndexed,
     oneshot_anyhow::SendWithAnyhowError,

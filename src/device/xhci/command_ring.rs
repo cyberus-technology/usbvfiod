@@ -14,11 +14,13 @@ use tracing::{debug, info, warn};
 
 use crate::device::{
     bus::BusDeviceRef,
-    pci::{
-        constants::xhci::operational::crcr,
+    pci::constants::xhci::operational::crcr,
+    xhci::{
+        interrupter::EventSender,
+        linked_ring::LinkedRing,
+        slot_manager::SlotWorkerHandle,
         trb::{CommandTrb, CommandTrbVariant, CompletionCode, EventTrb},
     },
-    xhci::{interrupter::EventSender, linked_ring::LinkedRing, slot_manager::SlotWorkerHandle},
 };
 
 #[derive(Debug)]

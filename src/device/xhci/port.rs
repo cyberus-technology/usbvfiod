@@ -14,11 +14,11 @@ use crate::{
         pci::{
             constants::xhci::{offset, operational::portsc, MAX_PORTS, NUM_USB3_PORTS},
             registers::PortscRegister,
-            trb::EventTrb,
         },
         xhci::{
             interrupter::EventSender,
             real_device::{CompleteRealDevice, Identifier, RealDevice, Speed},
+            trb::EventTrb,
         },
     },
     one_indexed_array::OneIndexed,

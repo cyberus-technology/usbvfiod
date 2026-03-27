@@ -6,7 +6,7 @@
 use thiserror::Error;
 use tracing::warn;
 
-use super::constants::xhci::rings::trb_types::{self, *};
+use super::super::pci::constants::xhci::rings::trb_types::{self, *};
 
 /// Dedicated type to indicate that a 16 byte array represents the contents
 /// of a Transfer Request Block.

@@ -8,11 +8,11 @@ use tracing::{trace, warn};
 use crate::{
     device::{
         bus::BusDeviceRef,
-        pci::{constants::xhci::device_slots::endpoint_state, trb::CompletionCode},
+        pci::constants::xhci::device_slots::endpoint_state,
         xhci::{
             hotplug_endpoint_handle::HotplugEndpointHandle,
             hotplug_endpoint_handle::HotplugTrbProcessingResult, linked_ring::LinkedRing,
-            slot_manager::EndpointContext,
+            slot_manager::EndpointContext, trb::CompletionCode,
         },
     },
     oneshot_anyhow::SendWithAnyhowError,

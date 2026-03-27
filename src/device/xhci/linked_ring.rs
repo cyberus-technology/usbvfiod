@@ -2,10 +2,8 @@ use tracing::trace;
 
 use crate::device::{
     bus::BusDeviceRef,
-    pci::{
-        constants::xhci::rings::TRB_SIZE,
-        trb::{zeroed_trb_buffer, LinkTrb, RawTrb, RawTrbBuffer},
-    },
+    pci::constants::xhci::rings::TRB_SIZE,
+    xhci::trb::{zeroed_trb_buffer, LinkTrb, RawTrb, RawTrbBuffer},
 };
 
 /// Transfer Rings: Unidirectional means of communication, allowing the

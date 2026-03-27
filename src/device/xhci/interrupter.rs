@@ -7,8 +7,8 @@ use crate::device::bus::BusDeviceRef;
 use crate::device::interrupt_line::{DummyInterruptLine, InterruptLine};
 use crate::device::pci::constants::xhci::runtime::IMOD_DEFAULT;
 use crate::device::pci::registers::{ErstbaRegister, GenericRwRegister};
-use crate::device::pci::trb::EventTrb;
 use crate::device::xhci::event_ring::EventRing;
+use crate::device::xhci::trb::EventTrb;
 use std::sync::Arc;
 
 #[derive(Debug)]
