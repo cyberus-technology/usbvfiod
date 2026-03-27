@@ -136,11 +136,7 @@ impl SlotWorker {
         loop {
             match self.next_msg().await? {
                 SlotMessage::Doorbell(slot_id, endpoint_id) => {
-                    let slot = match self
-                        .slots
-                        .get(slot_id as usize)
-                        .and_then(|opt| opt.as_ref())
-                    {
+                    let slot = match self.slot_ref(slot_id) {
                         Some(slot) => slot,
                         None => {
                             warn!("Doorbell for disabled slot {slot_id}");
@@ -171,11 +167,7 @@ impl SlotWorker {
                     sender.send_anyhow(result)?;
                 }
                 SlotMessage::AddressDevice(trb_data, sender) => {
-                    let slot = match self
-                        .slots
-                        .get_mut(trb_data.slot_id as usize)
-                        .and_then(|opt| opt.as_mut())
-                    {
+                    let slot = match self.slot_mut(trb_data.slot_id) {
                         Some(slot) => slot,
                         None => {
                             sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
@@ -192,11 +184,7 @@ impl SlotWorker {
                     sender.send_anyhow(result)?;
                 }
                 SlotMessage::ConfigureEndpoint(trb_data, sender) => {
-                    let slot = match self
-                        .slots
-                        .get_mut(trb_data.slot_id as usize)
-                        .and_then(|opt| opt.as_mut())
-                    {
+                    let slot = match self.slot_mut(trb_data.slot_id) {
                         Some(slot) => slot,
                         None => {
                             sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
@@ -213,11 +201,7 @@ impl SlotWorker {
                     sender.send_anyhow(result)?;
                 }
                 SlotMessage::EvaluateContext(trb_data, sender) => {
-                    let slot = match self
-                        .slots
-                        .get(trb_data.slot_id as usize)
-                        .and_then(|opt| opt.as_ref())
-                    {
+                    let slot = match self.slot_ref(trb_data.slot_id) {
                         Some(slot) => slot,
                         None => {
                             sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
@@ -231,11 +215,7 @@ impl SlotWorker {
                     sender.send_anyhow(result)?;
                 }
                 SlotMessage::StopEndpoint(slot_id, endpoint_id, sender) => {
-                    let slot = match self
-                        .slots
-                        .get(slot_id as usize)
-                        .and_then(|opt| opt.as_ref())
-                    {
+                    let slot = match self.slot_ref(slot_id) {
                         Some(slot) => slot,
                         None => {
                             sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
@@ -258,11 +238,7 @@ impl SlotWorker {
                     ep_sender.stop(sender)?;
                 }
                 SlotMessage::ResetEndpoint(slot_id, endpoint_id, sender) => {
-                    let slot = match self
-                        .slots
-                        .get(slot_id as usize)
-                        .and_then(|opt| opt.as_ref())
-                    {
+                    let slot = match self.slot_ref(slot_id) {
                         Some(slot) => slot,
                         None => {
                             sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
@@ -285,11 +261,7 @@ impl SlotWorker {
                     ep_sender.reset(sender)?;
                 }
                 SlotMessage::SetTrDequeuePointer(trb_data, sender) => {
-                    let slot = match self
-                        .slots
-                        .get(trb_data.slot_id as usize)
-                        .and_then(|opt| opt.as_ref())
-                    {
+                    let slot = match self.slot_ref(trb_data.slot_id) {
                         Some(slot) => slot,
                         None => {
                             sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
@@ -324,6 +296,18 @@ impl SlotWorker {
             .recv()
             .await
             .ok_or_else(|| anyhow!("slot channel closed"))
+    }
+
+    fn slot_ref(&self, slot_id: u8) -> Option<&Slot> {
+        self.slots
+            .get(slot_id as usize)
+            .and_then(|opt| opt.as_ref())
+    }
+
+    fn slot_mut(&mut self, slot_id: u8) -> Option<&mut Slot> {
+        self.slots
+            .get_mut(slot_id as usize)
+            .and_then(|opt| opt.as_mut())
     }
 
     fn allocate_slot(&mut self) -> Result<u8, CompletionCode> {
@@ -361,22 +345,6 @@ impl SlotWorker {
 
         Ok(CompletionCode::Success)
     }
-
-    // pub fn slot_ref(&self, slot_id: u8) -> Option<impl Deref<Target = Slot> + '_> {
-    //     assert!(matches!(self.slots[slot_id as usize], None));
-
-    //     self.slots[slot_id as usize]
-    //         .as_ref()
-    //         .map(|rwlock| rwlock.read().unwrap())
-    // }
-
-    // pub fn slot_mut(&self, slot_id: u8) -> Option<impl DerefMut<Target = Slot> + '_> {
-    //     assert!(matches!(self.slots[slot_id as usize], None));
-
-    //     self.slots[slot_id as usize]
-    //         .as_ref()
-    //         .map(|rwlock| rwlock.write().unwrap())
-    // }
 }
 
 #[derive(Debug)]
