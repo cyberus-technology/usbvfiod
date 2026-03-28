@@ -511,30 +511,39 @@ impl Slot {
             RequestSize::Size4,
         ));
 
-        let mut to_deconfigure = Vec::new();
-        let mut to_configure = Vec::new();
-
-        for i in 2..=31 {
-            if drop_flags & (1 << i) != 0 {
-                debug!("D{i} set");
-                to_deconfigure.push(i);
+        if deconfigure {
+            for ep_id in 2..=31 {
+                self.deconfigure_endpoint(ep_id).await?;
             }
-            if add_flags & (1 << i) != 0 {
-                debug!("A{i} set");
-                to_configure.push(i);
+
+            self.state = SlotState::Addressed(base_address);
+        } else {
+            let mut to_deconfigure = Vec::new();
+            let mut to_configure = Vec::new();
+
+            for i in 2..=31 {
+                if drop_flags & (1 << i) != 0 {
+                    debug!("D{i} set");
+                    to_deconfigure.push(i);
+                }
+                if add_flags & (1 << i) != 0 {
+                    debug!("A{i} set");
+                    to_configure.push(i);
+                }
             }
+
+            for ep in to_deconfigure {
+                self.deconfigure_endpoint(ep).await?;
+            }
+
+            for ep in to_configure {
+                self.dma_copy_ep_context(ep, input_context_pointer, base_address);
+                self.configure_endpoint(ep, base_address).await?;
+            }
+
+            self.state = SlotState::Configured(base_address);
         }
 
-        for ep in to_deconfigure {
-            self.deconfigure_endpoint(ep).await?;
-        }
-
-        for ep in to_configure {
-            self.dma_copy_ep_context(ep, input_context_pointer, base_address);
-            self.configure_endpoint(ep, base_address).await?;
-        }
-
-        self.state = SlotState::Configured(base_address);
         self.write_slot_state();
 
         Ok(CompletionCode::Success)
