@@ -442,9 +442,10 @@ impl Slot {
             }
             _ => return Ok(CompletionCode::ContextStateError),
         };
-        self.dma_copy_slot_and_ep0_context(input_context_pointer, base_address);
+        self.dma_copy_slot_context(input_context_pointer, base_address);
         self.write_slot_state();
 
+        self.dma_copy_ep_context(1, input_context_pointer, base_address);
         self.configure_endpoint(1, base_address).await?;
 
         Ok(CompletionCode::Success)
@@ -455,19 +456,13 @@ impl Slot {
         true
     }
 
-    fn dma_copy_slot_and_ep0_context(&self, input_context_pointer: u64, base_address: u64) {
+    fn dma_copy_slot_context(&self, input_context_pointer: u64, base_address: u64) {
         let mut context_buffer = [0; 32];
 
         let input_slot_context_addr = input_context_pointer.wrapping_add(32);
         self.dma_bus
             .read_bulk(input_slot_context_addr, &mut context_buffer);
         self.dma_bus.write_bulk(base_address, &context_buffer);
-
-        let input_ep_context_addr = input_context_pointer.wrapping_add(64);
-        let ep_context_addr = base_address.wrapping_add(32);
-        self.dma_bus
-            .read_bulk(input_ep_context_addr, &mut context_buffer);
-        self.dma_bus.write_bulk(ep_context_addr, &context_buffer);
     }
 
     fn dma_copy_ep_context(&self, endpoint_id: u8, input_context_pointer: u64, base_address: u64) {
