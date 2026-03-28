@@ -341,19 +341,18 @@ struct Slot {
     state: SlotState,
     // guest address of the DCBAA entry of this slot
     dcbaae: u64,
-    // read from dcbaae once valid (through AddressDevice)
-    base_address: Option<u64>,
     dma_bus: BusDeviceRef,
     endpoint_senders: OneIndexed<Option<EndpointSender>, 31>,
     ep_launch_requester: LaunchRequester,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum SlotState {
     Enabled,
-    Default,
-    Addressed,
-    Configured,
+    // slot base address in all three states below
+    Default(u64),
+    Addressed(u64),
+    Configured(u64),
 }
 
 impl Slot {
@@ -362,21 +361,25 @@ impl Slot {
             id,
             state: SlotState::Enabled,
             dcbaae,
-            base_address: None,
             dma_bus,
             endpoint_senders: [const { None }; 31].into(),
             ep_launch_requester: ep_launch_sender,
         }
     }
 
-    fn write_slot_state(&self, state: u8) {
-        if let Some(base_address) = self.base_address {
-            let addr = base_address.wrapping_add(15);
-            self.dma_bus
-                .write(Request::new(addr, RequestSize::Size1), (state << 3) as u64);
-        } else {
-            panic!("Tried to access slot context before knowing base_address");
-        }
+    fn write_slot_state(&self) {
+        let (base_address, state) = match self.state {
+            // in Enabled we do not even know the address context where to write the state to
+            SlotState::Enabled => panic!("called write_slot_state in Enabled state"),
+            SlotState::Default(base_address) => (base_address, slot_state::DEFAULT),
+            SlotState::Addressed(base_address) => (base_address, slot_state::ADDRESSED),
+            SlotState::Configured(base_address) => (base_address, slot_state::CONFIGURED),
+        };
+        let state_addr = base_address.wrapping_add(15);
+        self.dma_bus.write(
+            Request::new(state_addr, RequestSize::Size1),
+            (state << 3) as u64,
+        );
     }
 
     fn endpoint_sender(&self, endpoint_id: u8) -> Option<&EndpointSender> {
@@ -403,54 +406,46 @@ impl Slot {
             return Ok(CompletionCode::ParameterError);
         }
 
-        match (&self.state, bsr) {
+        let base_address = match (&self.state, bsr) {
             (SlotState::Enabled, true) => {
                 // We transition from Enabled only to Default, a second AddressDevice
                 // with BSR=0 will then transition to Addressed
 
-                // DCBAA entry of this slot is now valid. Load and cache.
-                self.base_address = Some(
-                    self.dma_bus
-                        .read(Request::new(self.dcbaae, RequestSize::Size8)),
-                );
+                let base_address = self
+                    .dma_bus
+                    .read(Request::new(self.dcbaae, RequestSize::Size8));
 
-                self.dma_copy_slot_and_ep0_context(input_context_pointer);
+                self.state = SlotState::Default(base_address);
 
-                // set slot state
-                self.state = SlotState::Default;
-                self.write_slot_state(slot_state::DEFAULT);
+                base_address
             }
             (SlotState::Enabled, false) => {
                 // We transition from Enabled directly to Addressed (USB-3 case)
 
-                // DCBAA entry of this slot is now valid. Load and cache.
-                self.base_address = Some(
-                    self.dma_bus
-                        .read(Request::new(self.dcbaae, RequestSize::Size8)),
-                );
+                let base_address = self
+                    .dma_bus
+                    .read(Request::new(self.dcbaae, RequestSize::Size8));
 
-                self.dma_copy_slot_and_ep0_context(input_context_pointer);
-
-                self.state = SlotState::Addressed;
-                self.write_slot_state(slot_state::ADDRESSED);
+                self.state = SlotState::Addressed(base_address);
+                base_address
             }
-            (SlotState::Default, false) => {
+            (SlotState::Default(base_address), false) => {
                 // another AddressDevice (with BSR=1) transitioned us to Default.
 
-                // no need to read dcbaae again
+                let base_address = *base_address;
 
                 // ep0 worker is already running. Terminate before copying ep0 context.
                 self.deconfigure_endpoint(1).await?;
 
-                self.dma_copy_slot_and_ep0_context(input_context_pointer);
-
-                self.state = SlotState::Addressed;
-                self.write_slot_state(slot_state::ADDRESSED);
+                self.state = SlotState::Addressed(base_address);
+                base_address
             }
             _ => return Ok(CompletionCode::ContextStateError),
-        }
+        };
+        self.dma_copy_slot_and_ep0_context(input_context_pointer, base_address);
+        self.write_slot_state();
 
-        self.configure_endpoint(1).await?;
+        self.configure_endpoint(1, base_address).await?;
 
         Ok(CompletionCode::Success)
     }
@@ -460,45 +455,37 @@ impl Slot {
         true
     }
 
-    fn dma_copy_slot_and_ep0_context(&self, input_context_pointer: u64) {
-        let base_addr = self.base_address.unwrap_or_else(|| {
-            panic!("do not call dma_copy_slot_and_ep0_context when base_addr is not initialized")
-        });
+    fn dma_copy_slot_and_ep0_context(&self, input_context_pointer: u64, base_address: u64) {
         let mut context_buffer = [0; 32];
 
         let input_slot_context_addr = input_context_pointer.wrapping_add(32);
         self.dma_bus
             .read_bulk(input_slot_context_addr, &mut context_buffer);
-        self.dma_bus.write_bulk(base_addr, &context_buffer);
+        self.dma_bus.write_bulk(base_address, &context_buffer);
 
         let input_ep_context_addr = input_context_pointer.wrapping_add(64);
-        let ep_context_addr = base_addr.wrapping_add(32);
+        let ep_context_addr = base_address.wrapping_add(32);
         self.dma_bus
             .read_bulk(input_ep_context_addr, &mut context_buffer);
         self.dma_bus.write_bulk(ep_context_addr, &context_buffer);
     }
 
-    fn dma_copy_ep_context(&self, endpoint_id: u8, input_context_pointer: u64) {
-        let base_addr = self.base_address.unwrap_or_else(|| {
-            panic!("do not call dma_copy_ep_context when base_addr is not initialized")
-        });
+    fn dma_copy_ep_context(&self, endpoint_id: u8, input_context_pointer: u64, base_address: u64) {
         let mut context_buffer = [0; 32];
 
         let input_ep_context_addr =
             input_context_pointer.wrapping_add((endpoint_id as u64 + 1) * 32);
-        let ep_context_addr = base_addr.wrapping_add(endpoint_id as u64 * 32);
+        let ep_context_addr = base_address.wrapping_add(endpoint_id as u64 * 32);
         self.dma_bus
             .read_bulk(input_ep_context_addr, &mut context_buffer);
         self.dma_bus.write_bulk(ep_context_addr, &context_buffer);
     }
 
-    fn root_hub_port(&self) -> u8 {
-        let base_addr = self.base_address.unwrap_or_else(|| {
-            panic!("do not call root_hub_port when base_addr is not initialized")
-        });
-
-        self.dma_bus
-            .read(Request::new(base_addr.wrapping_add(6), RequestSize::Size1)) as u8
+    fn root_hub_port(&self, base_address: u64) -> u8 {
+        self.dma_bus.read(Request::new(
+            base_address.wrapping_add(6),
+            RequestSize::Size1,
+        )) as u8
     }
 
     async fn handle_configure_endpoint(
@@ -508,13 +495,16 @@ impl Slot {
     ) -> anyhow::Result<CompletionCode> {
         // configure endpoint with DC=0 transitions from Addressed/Configured to Configured
         // configure endpoint with DC=1 transitions from Configured to Addressed
-        #[allow(clippy::nonminimal_bool)]
-        if (!deconfigure
-            && !(self.state == SlotState::Addressed || self.state == SlotState::Configured))
-            || (deconfigure && self.state != SlotState::Configured)
-        {
-            return Ok(CompletionCode::ContextStateError);
-        }
+        let base_address = match self.state {
+            SlotState::Enabled | SlotState::Default(_) => {
+                return Ok(CompletionCode::ContextStateError)
+            }
+            SlotState::Addressed(base_address) => match deconfigure {
+                true => return Ok(CompletionCode::ContextStateError),
+                false => base_address,
+            },
+            SlotState::Configured(base_address) => base_address,
+        };
 
         // TODO input checks
 
@@ -545,43 +535,52 @@ impl Slot {
         }
 
         for ep in to_configure {
-            self.dma_copy_ep_context(ep, input_context_pointer);
-            self.configure_endpoint(ep).await?;
+            self.dma_copy_ep_context(ep, input_context_pointer, base_address);
+            self.configure_endpoint(ep, base_address).await?;
         }
 
-        self.state = SlotState::Configured;
-        self.write_slot_state(slot_state::CONFIGURED);
+        self.state = SlotState::Configured(base_address);
+        self.write_slot_state();
 
         Ok(CompletionCode::Success)
     }
 
-    // helper method for address_advice and configure_endpoint.
-    // do only call for already disabled endpoints.
     async fn deconfigure_endpoint(&mut self, endpoint_id: u8) -> anyhow::Result<()> {
-        self.endpoint_senders[endpoint_id as usize]
-            .as_ref()
-            .expect("deconfigure_endpoint called on disabled endpoint")
-            .terminate()
-            .await?;
-        self.endpoint_senders[endpoint_id as usize] = None;
+        match self.endpoint_sender(endpoint_id) {
+            Some(ep_sender) => {
+                ep_sender.terminate().await?;
+                self.endpoint_senders[endpoint_id as usize] = None;
+            }
+            None => {
+                trace!(
+                    "deconfigure_endpoint called on disabled endpoint (id {endpoint_id}). Ignoring"
+                );
+            }
+        }
 
         Ok(())
     }
 
     // helper method for address_advice and configure_endpoint.
     // do only call for already enabled endpoints.
-    async fn configure_endpoint(&mut self, endpoint_id: u8) -> anyhow::Result<()> {
-        // Safety: either base_address was already initialized or we just initialized
+    async fn configure_endpoint(
+        &mut self,
+        endpoint_id: u8,
+        base_address: u64,
+    ) -> anyhow::Result<()> {
         let context = EndpointContext::new(
-            self.base_address
-                .unwrap()
-                .wrapping_add(endpoint_id as u64 * 32),
+            base_address.wrapping_add(endpoint_id as u64 * 32),
             self.dma_bus.clone(),
         );
 
         let ep_sender = self
             .ep_launch_requester
-            .request_launch(self.id, endpoint_id, self.root_hub_port(), context)
+            .request_launch(
+                self.id,
+                endpoint_id,
+                self.root_hub_port(base_address),
+                context,
+            )
             .await?;
         self.endpoint_senders[endpoint_id as usize] = Some(ep_sender);
 
@@ -599,21 +598,12 @@ impl Slot {
     // call before dropping (disabling this slot)
     async fn pre_drop(&mut self) -> anyhow::Result<()> {
         // disable EP0 if active
-        if self.state != SlotState::Enabled {
+        if !matches!(self.state, SlotState::Enabled) {
             self.deconfigure_endpoint(1).await?;
         }
 
         Ok(())
     }
-
-    // fn send_to_endpoint(&self, endpoint_id: u8, msg: EndpointMessage) -> anyhow::Result<()> {
-    //     self.endpoint_senders[endpoint_id as usize]
-    //         .as_ref()
-    //         .expect("send_to_endpoint called on disabled endpoint")
-    //         .send(msg)?;
-
-    //     Ok(())
-    // }
 }
 
 /// A wrapper around DMA accesses to endpoint context structures.
