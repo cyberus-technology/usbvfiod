@@ -14,7 +14,7 @@ use crate::device::{
         endpoint_launcher::EndpointLauncher,
         port::{get_portli_index, get_portsc_index, HotplugControl, PortArray},
         real_device::CompleteRealDevice,
-        registers::{new_usbcmd_and_usbsts, UsbcmdRegister, UsbstsRegister},
+        registers::{UsbcmdRegister, UsbstsRegister},
         slot_manager::SlotManager,
     },
 };
@@ -38,6 +38,8 @@ pub struct XhciController<CRD: CompleteRealDevice> {
 
 impl<CRD: CompleteRealDevice> XhciController<CRD> {
     pub fn new(dma_bus: BusDeviceRef, async_runtime: runtime::Handle) -> Self {
+        let usbcmd = UsbcmdRegister::new();
+        let usbsts = UsbstsRegister::new(usbcmd.running_bit());
         let interrupter = Interrupter::new(dma_bus.clone(), &async_runtime);
         let port_array = PortArray::new(interrupter.create_event_sender(), async_runtime.clone());
         let ep_launch_requester = EndpointLauncher::start(
@@ -53,7 +55,6 @@ impl<CRD: CompleteRealDevice> XhciController<CRD> {
             interrupter.create_event_sender(),
             slot_manager.create_slot_worker_handle(),
         );
-        let (usbcmd, usbsts) = new_usbcmd_and_usbsts();
 
         Self {
             config_space: Mutex::new(Self::build_config_space()),

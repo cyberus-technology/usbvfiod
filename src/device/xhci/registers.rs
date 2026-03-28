@@ -104,8 +104,18 @@ pub struct UsbcmdRegister {
 }
 
 impl UsbcmdRegister {
+    pub fn new() -> Self {
+        let running = Arc::new(AtomicBool::new(false));
+
+        Self { running }
+    }
+
     pub fn write(&self, value: u64) {
         self.running.store(value & 0x1 != 0, Ordering::Relaxed);
+    }
+
+    pub fn running_bit(&self) -> Arc<AtomicBool> {
+        self.running.clone()
     }
 }
 
@@ -115,6 +125,10 @@ pub struct UsbstsRegister {
 }
 
 impl UsbstsRegister {
+    pub const fn new(running: Arc<AtomicBool>) -> Self {
+        Self { running }
+    }
+
     pub fn read(&self) -> u64 {
         let hch = if self.running.load(Ordering::Relaxed) {
             0
@@ -123,15 +137,6 @@ impl UsbstsRegister {
         };
         hch | usbsts::EINT | usbsts::PCD
     }
-}
-
-pub fn new_usbcmd_and_usbsts() -> (UsbcmdRegister, UsbstsRegister) {
-    let running = Arc::new(AtomicBool::new(false));
-    let usbcmd = UsbcmdRegister {
-        running: running.clone(),
-    };
-    let usbsts = UsbstsRegister { running };
-    (usbcmd, usbsts)
 }
 
 #[derive(Debug, Default, Clone)]
