@@ -2,6 +2,7 @@ use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc};
 
 use tokio::{runtime, select, sync::Mutex};
 use tokio_util::sync::CancellationToken;
+use tracing::trace;
 
 use crate::device::xhci::{
     endpoint_handle::{DummyEndpointHandle, EndpointHandle, TrbProcessingResult},
@@ -113,19 +114,28 @@ impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH>
         Pin<Box<dyn Future<Output = anyhow::Result<HotplugTrbProcessingResult>> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
-        if let Ok(mut guard) = self.endpoint_handle.try_lock() {
-            assert!(
-                matches!(
-                    self.submission_state,
-                    HotplugSubmissionState::NoTrbSubmitted
-                ),
-                "submit_trb called twice without calling next_completion"
-            );
+        assert!(
+            matches!(
+                self.submission_state,
+                HotplugSubmissionState::NoTrbSubmitted
+            ),
+            "submit_trb called twice without calling next_completion"
+        );
 
-            self.submission_state = HotplugSubmissionState::TrbSubmitted(trb.address);
+        // independently of whether we forward the TRB to the endpoint handle, we need
+        // to track that we submitted the TRB. We have to send transaction error event
+        // with TRB address even if device is gone.
+        self.submission_state = HotplugSubmissionState::TrbSubmitted(trb.address);
+
+        if let Ok(mut guard) = self.endpoint_handle.try_lock() {
             if let Some(device) = guard.as_mut() {
                 device.submit_trb(trb)?;
+            } else {
+                trace!("TRB submission for detached device");
             }
+        } else {
+            trace!("try_lock failed during submit_trb: detach_handler currently has the lock");
+            // After the lock release, the device will be gone, so no need to actually acquire the lock.
         }
 
         Ok(())
@@ -182,18 +192,34 @@ impl<EH: EndpointHandle> BaseEndpointHandle for HotplugEndpointHandleImpl<EH> {
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
-            if let Some(device) = self.endpoint_handle.lock().await.as_mut() {
-                device.cancel().await?;
+            if let Ok(mut guard) = self.endpoint_handle.try_lock() {
+                if let Some(device) = guard.as_mut() {
+                    device.cancel().await?;
+                } else {
+                    trace!("cancel for detached device");
+                }
+            } else {
+                trace!("try_lock failed during cancel: detach_handler currently has the lock");
+                // After the lock release, the device will be gone, so no need to actually acquire the lock.
             }
+
             Ok(())
         })
     }
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
-            if let Some(device) = self.endpoint_handle.lock().await.as_mut() {
-                device.clear_halt().await?;
+            if let Ok(mut guard) = self.endpoint_handle.try_lock() {
+                if let Some(device) = guard.as_mut() {
+                    device.clear_halt().await?;
+                } else {
+                    trace!("clear_halt for detached device");
+                }
+            } else {
+                trace!("try_lock failed during clear_halt: detach_handler currently has the lock");
+                // After the lock release, the device will be gone, so no need to actually acquire the lock.
             }
+
             Ok(())
         })
     }
