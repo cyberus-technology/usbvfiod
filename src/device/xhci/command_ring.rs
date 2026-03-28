@@ -10,7 +10,7 @@ use tokio::{
     runtime,
     sync::mpsc::{self, error::TryRecvError},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -33,7 +33,8 @@ pub struct CommandRing {
 struct CommandWorker {
     state: WorkerState,
     receiver: mpsc::UnboundedReceiver<WorkerMessage>,
-    running: Arc<AtomicBool>,
+    commandring_running: Arc<AtomicBool>,
+    controller_running: Arc<AtomicBool>,
     event_sender: EventSender,
     ring: LinkedRing,
     slot_handle: SlotWorkerHandle,
@@ -70,6 +71,7 @@ impl CommandRing {
         async_runtime: &runtime::Handle,
         event_sender: EventSender,
         slot_handle: SlotWorkerHandle,
+        controller_running: Arc<AtomicBool>,
     ) -> Self {
         let (sender_to_worker, receiver) = mpsc::unbounded_channel();
         let running = Arc::new(AtomicBool::new(false));
@@ -78,7 +80,8 @@ impl CommandRing {
         let worker = CommandWorker {
             state: WorkerState::Stopped,
             receiver,
-            running: running.clone(),
+            commandring_running: running.clone(),
+            controller_running,
             event_sender,
             ring,
             slot_handle,
@@ -168,9 +171,12 @@ impl CommandWorker {
                         self.ring.set_dequeue_pointer(dp, cs);
                     }
                     WorkerMessage::Doorbell => {
-                        // TODO check R/S == 1
-                        self.running.store(true, Ordering::Relaxed);
-                        self.state = WorkerState::LookingForNewCommand;
+                        if self.controller_running.load(Ordering::Relaxed) {
+                            self.commandring_running.store(true, Ordering::Relaxed);
+                            self.state = WorkerState::LookingForNewCommand;
+                        } else {
+                            warn!("received doorbell while controller is not running. Ignoring");
+                        }
                     }
                     msg => warn!("Unexpected message: msg={msg:?}, state={:?}", self.state),
                 },
@@ -200,7 +206,11 @@ impl CommandWorker {
                             msg => warn!("Unexpected message: msg={msg:?}, state={:?}", self.state),
                         }
                     }
-                    // TODO check R/S and stop if equals 0
+                    if !self.controller_running.load(Ordering::Relaxed) {
+                        trace!("Detected controller is not running; moving command ring to stopped state");
+                        self.state = WorkerState::Stopped;
+                        continue;
+                    }
 
                     // check for TRB
                     self.state = self.ring.next_trb().map_or(WorkerState::Idle, |trb| {
@@ -218,7 +228,7 @@ impl CommandWorker {
                     self.state = WorkerState::LookingForNewCommand;
                 }
                 WorkerState::Stopping => {
-                    self.running.store(false, Ordering::Relaxed);
+                    self.commandring_running.store(false, Ordering::Relaxed);
                     self.state = WorkerState::Stopped;
                 }
             }

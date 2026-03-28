@@ -54,6 +54,7 @@ impl<CRD: CompleteRealDevice> XhciController<CRD> {
             &async_runtime,
             interrupter.create_event_sender(),
             slot_manager.create_slot_worker_handle(),
+            usbcmd.running_bit(),
         );
 
         Self {
