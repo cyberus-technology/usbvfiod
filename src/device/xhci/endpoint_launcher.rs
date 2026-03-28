@@ -3,6 +3,7 @@ use tokio::{
     runtime,
     sync::{mpsc, oneshot},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::{
@@ -10,7 +11,9 @@ use crate::{
         bus::BusDeviceRef,
         xhci::{
             endpoint::{EndpointSender, EndpointWorker},
-            endpoint_handle::{ControlEndpointHandle, InEndpointHandle, OutEndpointHandle},
+            endpoint_handle::{
+                ControlEndpointHandle, EndpointHandle, InEndpointHandle, OutEndpointHandle,
+            },
             hotplug_endpoint_handle::HotplugEndpointHandleImpl,
             interrupter::EventSender,
             port::DeviceRetriever,
@@ -116,136 +119,31 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                 Some(device) => match endpoint_type {
                     EndpointType::Control => {
                         let real_endpoint = device.realdevice_ref().control_endpoint_handle();
-                        let endpoint_handle = ControlEndpointHandle::new(
-                            request.slot_id,
-                            request.endpoint_id,
-                            real_endpoint,
-                            self.dma_bus.clone(),
-                            self.event_sender.clone(),
-                        );
-                        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
-                            request.slot_id,
-                            request.endpoint_id,
-                            endpoint_handle,
-                            self.event_sender.clone(),
-                            device.detach_token(),
-                            &self.async_runtime,
-                        );
-
-                        EndpointWorker::launch(
-                            &self.async_runtime,
-                            self.dma_bus.clone(),
-                            hotplug_endpoint_handle,
-                            request.endpoint_context,
-                        )
+                        self.launch_helper(ControlEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
                     }
                     EndpointType::BulkIn => {
                         let real_endpoint = device
                             .realdevice_ref()
                             .bulk_in_endpoint_handle(request.endpoint_id);
-                        let endpoint_handle = InEndpointHandle::new(
-                            request.slot_id,
-                            request.endpoint_id,
-                            real_endpoint,
-                            self.dma_bus.clone(),
-                            self.event_sender.clone(),
-                        );
-                        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
-                            request.slot_id,
-                            request.endpoint_id,
-                            endpoint_handle,
-                            self.event_sender.clone(),
-                            device.detach_token(),
-                            &self.async_runtime,
-                        );
-
-                        EndpointWorker::launch(
-                            &self.async_runtime,
-                            self.dma_bus.clone(),
-                            hotplug_endpoint_handle,
-                            request.endpoint_context,
-                        )
+                        self.launch_helper(InEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
                     }
                     EndpointType::BulkOut => {
                         let real_endpoint = device
                             .realdevice_ref()
                             .bulk_out_endpoint_handle(request.endpoint_id);
-                        let endpoint_handle = OutEndpointHandle::new(
-                            request.slot_id,
-                            request.endpoint_id,
-                            real_endpoint,
-                            self.dma_bus.clone(),
-                            self.event_sender.clone(),
-                        );
-                        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
-                            request.slot_id,
-                            request.endpoint_id,
-                            endpoint_handle,
-                            self.event_sender.clone(),
-                            device.detach_token(),
-                            &self.async_runtime,
-                        );
-
-                        EndpointWorker::launch(
-                            &self.async_runtime,
-                            self.dma_bus.clone(),
-                            hotplug_endpoint_handle,
-                            request.endpoint_context,
-                        )
+                        self.launch_helper(OutEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
                     }
                     EndpointType::InterruptIn => {
                         let real_endpoint = device
                             .realdevice_ref()
                             .interrupt_in_endpoint_handle(request.endpoint_id);
-                        let endpoint_handle = InEndpointHandle::new(
-                            request.slot_id,
-                            request.endpoint_id,
-                            real_endpoint,
-                            self.dma_bus.clone(),
-                            self.event_sender.clone(),
-                        );
-                        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
-                            request.slot_id,
-                            request.endpoint_id,
-                            endpoint_handle,
-                            self.event_sender.clone(),
-                            device.detach_token(),
-                            &self.async_runtime,
-                        );
-
-                        EndpointWorker::launch(
-                            &self.async_runtime,
-                            self.dma_bus.clone(),
-                            hotplug_endpoint_handle,
-                            request.endpoint_context,
-                        )
+                        self.launch_helper(InEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
                     }
                     EndpointType::InterruptOut => {
                         let real_endpoint = device
                             .realdevice_ref()
                             .interrupt_out_endpoint_handle(request.endpoint_id);
-                        let endpoint_handle = OutEndpointHandle::new(
-                            request.slot_id,
-                            request.endpoint_id,
-                            real_endpoint,
-                            self.dma_bus.clone(),
-                            self.event_sender.clone(),
-                        );
-                        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
-                            request.slot_id,
-                            request.endpoint_id,
-                            endpoint_handle,
-                            self.event_sender.clone(),
-                            device.detach_token(),
-                            &self.async_runtime,
-                        );
-
-                        EndpointWorker::launch(
-                            &self.async_runtime,
-                            self.dma_bus.clone(),
-                            hotplug_endpoint_handle,
-                            request.endpoint_context,
-                        )
+                        self.launch_helper(OutEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
                     }
                     EndpointType::Unsupported => unreachable!(
                         "the slot should early-reject configure endpoint commands with unsupported endpoint types"
@@ -278,5 +176,42 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             .recv()
             .await
             .ok_or_else(|| anyhow!("channel should never close"))
+    }
+
+    fn launch_helper<RealEndpoint, Endpoint, EndpointConstructor>(
+        &self,
+        constructor: EndpointConstructor,
+        slot_id: u8,
+        endpoint_id: u8,
+        real_endpoint: RealEndpoint,
+        endpoint_context: EndpointContext,
+        detach_token: CancellationToken,
+    ) -> EndpointSender
+    where
+        Endpoint: EndpointHandle,
+        EndpointConstructor: FnOnce(u8, u8, RealEndpoint, BusDeviceRef, EventSender) -> Endpoint,
+    {
+        let endpoint_handle = constructor(
+            slot_id,
+            endpoint_id,
+            real_endpoint,
+            self.dma_bus.clone(),
+            self.event_sender.clone(),
+        );
+        let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
+            slot_id,
+            endpoint_id,
+            endpoint_handle,
+            self.event_sender.clone(),
+            detach_token,
+            &self.async_runtime,
+        );
+
+        EndpointWorker::launch(
+            &self.async_runtime,
+            self.dma_bus.clone(),
+            hotplug_endpoint_handle,
+            endpoint_context,
+        )
     }
 }
