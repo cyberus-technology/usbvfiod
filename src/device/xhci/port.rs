@@ -1,4 +1,4 @@
-use std::{array, sync::Arc};
+use std::{array, mem, sync::Arc};
 
 use anyhow::anyhow;
 use tokio::{
@@ -208,13 +208,28 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
                 i
             }
             None => {
-                warn!("Could not find the device to detach");
+                // This message is expected once per soft detach:
+                // - this handler runs
+                // - cancels the detach token
+                // - detach_listener_tasks notices the cancellation and calls this handler again
+                // - second handler of course now cannot find this devices
+                //
+                // However, this message will also be printed when detach command for unknown identifier
+                // is received.
+                debug!("Could not find the device to detach");
                 return Ok(Response::NoSuchDevice);
             }
         };
 
-        // remove device
-        self.devices[port_id] = None;
+        // inform everybody else (endpoint handles) about the detach, so that they can drop
+        // their reference of the device, too. This operation also removes the device from
+        // the devices array.
+        //
+        // Safety: just determined that this port_id refers to the device we want to detach
+        mem::take(&mut self.devices[port_id])
+            .unwrap()
+            .detach_token()
+            .cancel();
 
         // update portsc register
         self.portsc[port_id].set(portsc::PP | portsc::CSC);
