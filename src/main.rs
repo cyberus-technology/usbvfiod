@@ -6,6 +6,8 @@ mod device;
 mod dynamic_bus;
 mod hotplug_server;
 mod memory_segment;
+mod one_indexed_array;
+mod oneshot_anyhow;
 mod xhci_backend;
 
 use std::{os::unix::net::UnixListener, thread};
@@ -18,6 +20,8 @@ use hotplug_server::run_hotplug_server;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 use vfio_user::Server;
+
+use crate::async_runtime::runtime;
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -37,9 +41,17 @@ fn main() -> Result<()> {
     tracing_log::LogTracer::init()?;
 
     init_runtime().context("Failed to initialize async runtime")?;
+    let runtime = runtime();
 
-    let mut backend = xhci_backend::XhciBackend::new(&args.devices)
+    let mut backend = xhci_backend::XhciBackend::new(runtime.clone())
         .context("Failed to create virtual XHCI controller")?;
+    for device in &args.devices {
+        let path = device.as_path();
+        // if initial device attachment fails, make it clear by panicking
+        if let Err(err) = runtime.block_on(backend.add_device_from_path(path, runtime.clone())) {
+            panic!("Device attachment failed for {path:?}: {err}");
+        }
+    }
 
     let server = if let cli::ServerSocket::Path(socket_path) = args.server_socket() {
         Server::new(socket_path, true, backend.irqs(), backend.regions())
@@ -50,11 +62,11 @@ fn main() -> Result<()> {
 
     // listen on socket for hot-attach fds
     if let Some(hotplug_socket_path) = args.hotplug_socket_path {
-        let controller = backend.get_controller();
+        let hotplug_control = backend.hotplug_control();
         let socket = UnixListener::bind(hotplug_socket_path.as_path()).unwrap();
         thread::Builder::new()
             .name("hot-attach-socket listener".to_string())
-            .spawn(move || run_hotplug_server(socket, controller))
+            .spawn(move || run_hotplug_server(socket, hotplug_control, runtime.clone()))
             .unwrap();
     }
 
