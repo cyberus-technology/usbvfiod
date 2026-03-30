@@ -15,3 +15,4 @@ pub mod interval;
 pub mod msi_message;
 pub mod pci;
 pub mod register_set;
+pub mod xhci;
