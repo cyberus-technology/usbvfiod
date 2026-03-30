@@ -9,6 +9,5 @@ pub mod device_slots;
 pub mod msix_table;
 pub mod nusb;
 pub mod realdevice;
-pub mod registers;
 pub mod traits;
 pub mod xhci;
