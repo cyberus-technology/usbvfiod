@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context};
 use tokio::sync::mpsc;
 use tokio::{runtime, select};
-use tracing_log::log::info;
+use tracing::{debug, info};
 
 use crate::device::bus::BusDeviceRef;
 use crate::device::interrupt_line::{DummyInterruptLine, InterruptLine};
@@ -171,9 +171,11 @@ impl EventWorker {
                         self.registers.eventring_dequeue_pointer.read(),
                     );
                     self.interrupt_line.interrupt();
+                    debug!("Sent event: {event_trb:?}");
                 }
                 InterrupterMessage::UpdateInterruptLine(interrupt_line) => {
                     self.interrupt_line = interrupt_line;
+                    debug!("Updated interrupt line");
                 }
             }
         }
