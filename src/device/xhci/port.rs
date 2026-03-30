@@ -152,9 +152,10 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
                     None => return Ok(Response::NoFreePort),
                 };
 
+        let identifier = device.identifier();
         self.async_runtime.spawn(detach_listener(
             device.detach_token(),
-            device.identifier(),
+            identifier,
             self.msg_sender.clone(),
         ));
 
@@ -169,7 +170,9 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
                 | (speed as u64) << 10,
         );
 
-        info!("Attached {speed} device to port {available_port_id} ({version:?} port)");
+        info!(
+            "Attached {speed} device {identifier:?} to port {available_port_id} ({version:?} port)"
+        );
 
         let event = EventTrb::new_port_status_change_event_trb(available_port_id as u8);
         self.event_sender.send(event)?;
@@ -237,6 +240,8 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
         // send port status change event
         let event = EventTrb::new_port_status_change_event_trb(port_id as u8);
         self.event_sender.send(event)?;
+
+        info!("Detached device {id:?} from port {port_id}");
 
         Ok(Response::SuccessfulOperation)
     }
