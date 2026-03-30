@@ -10,7 +10,6 @@ pub mod msix_table;
 pub mod nusb;
 pub mod realdevice;
 pub mod registers;
-pub mod rings;
 pub mod traits;
 pub mod usbrequest;
 pub mod xhci;
