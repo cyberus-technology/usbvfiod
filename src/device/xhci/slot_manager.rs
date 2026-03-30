@@ -58,7 +58,7 @@ impl SlotManager {
     }
 
     pub fn doorbell(&self, slot_id: u8, endpoint_id: u8) -> anyhow::Result<()> {
-        trace!("Doorbell for slot {slot_id} endpoint {endpoint_id}");
+        debug!("Doorbell for slot {slot_id} endpoint {endpoint_id}");
         self.msg_send
             .send(SlotMessage::Doorbell(slot_id, endpoint_id))?;
 
