@@ -8,6 +8,5 @@ pub mod constants;
 pub mod device_slots;
 pub mod msix_table;
 pub mod nusb;
-pub mod realdevice;
 pub mod traits;
 pub mod xhci;
