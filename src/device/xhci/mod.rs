@@ -6,6 +6,7 @@ pub mod event_ring;
 pub mod hotplug_endpoint_handle;
 pub mod interrupter;
 pub mod linked_ring;
+pub mod nusb;
 pub mod port;
 pub mod real_device;
 pub mod real_endpoint_handle;
