@@ -4,6 +4,7 @@ pub mod event_ring;
 pub mod hotplug_endpoint_handle;
 pub mod interrupter;
 pub mod linked_ring;
+pub mod real_endpoint_handle;
 pub mod registers;
 pub mod trb;
 pub mod usbrequest;
