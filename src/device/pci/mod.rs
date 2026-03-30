@@ -5,7 +5,6 @@
 //! emulation logic for the configuration space.
 pub mod config_space;
 pub mod constants;
-pub mod device_slots;
 pub mod msix_table;
 pub mod nusb;
 pub mod traits;
