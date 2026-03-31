@@ -614,7 +614,7 @@ impl TransferRing {
             }
             Some(TransferTrb {
                 address,
-                variant: TransferTrbVariant::StatusStage,
+                variant: TransferTrbVariant::StatusStage(_),
             }) => {
                 // happy case, we skipped Data Stage TRB and already got Status
                 // Stage.
@@ -647,7 +647,7 @@ impl TransferRing {
                     }
                     Some(TransferTrb {
                         address,
-                        variant: TransferTrbVariant::StatusStage,
+                        variant: TransferTrbVariant::StatusStage(_),
                     }) => {
                         // happy case, we got a Data Stage TRB
                         address
