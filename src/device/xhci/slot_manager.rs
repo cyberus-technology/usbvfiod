@@ -97,6 +97,7 @@ pub enum SlotMessage {
         EvaluateContextCommandTrbData,
         oneshot::Sender<CompletionCode>,
     ),
+    ResetDevice(u8, oneshot::Sender<CompletionCode>),
     // slot_id, endpoint_id
     StopEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
     ResetEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
@@ -212,6 +213,18 @@ impl SlotWorker {
                     let result = slot
                         .handle_evaluate_context(trb_data.input_context_pointer)
                         .await?;
+                    sender.send_anyhow(result)?;
+                }
+                SlotMessage::ResetDevice(slot_id, sender) => {
+                    let slot = match self.slot_mut(slot_id) {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let result = slot.handle_reset_device().await?;
                     sender.send_anyhow(result)?;
                 }
                 SlotMessage::StopEndpoint(slot_id, endpoint_id, sender) => {
@@ -608,6 +621,25 @@ impl Slot {
 
         Ok(())
     }
+
+    async fn handle_reset_device(&mut self) -> anyhow::Result<CompletionCode> {
+        let base_address = match self.state {
+            SlotState::Enabled | SlotState::Default(_) => {
+                return Ok(CompletionCode::ContextStateError);
+            }
+            SlotState::Addressed(base_address) => base_address,
+            SlotState::Configured(base_address) => base_address,
+        };
+
+        // disable all endpoints except control
+        for ep_id in 2..=31 {
+            self.deconfigure_endpoint(ep_id).await?;
+        }
+
+        self.state = SlotState::Default(base_address);
+
+        Ok(CompletionCode::Success)
+    }
 }
 
 /// A wrapper around DMA accesses to endpoint context structures.
@@ -746,6 +778,14 @@ impl SlotWorkerHandle {
     ) -> anyhow::Result<CompletionCode> {
         let (send, recv) = oneshot::channel();
         let msg = SlotMessage::EvaluateContext(trb_data, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn reset_device(&self, slot_id: u8) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::ResetDevice(slot_id, send);
         self.msg_send.send(msg)?;
         let completion_code = recv.await?;
         Ok(completion_code)
