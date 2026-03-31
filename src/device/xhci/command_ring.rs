@@ -329,12 +329,15 @@ impl CommandWorker {
                     data.slot_id,
                 )
             }
-            CommandTrbVariant::ResetDevice(data) => EventTrb::new_command_completion_event_trb(
-                trb.address,
-                0,
-                CompletionCode::Success,
-                data.slot_id,
-            ),
+            CommandTrbVariant::ResetDevice(data) => {
+                let completion_code = self.slot_handle.reset_device(data.slot_id).await?;
+                EventTrb::new_command_completion_event_trb(
+                    trb.address,
+                    0,
+                    completion_code,
+                    data.slot_id,
+                )
+            }
             CommandTrbVariant::ForceHeader => todo!(),
             CommandTrbVariant::NoOp => todo!(),
             CommandTrbVariant::Unrecognized(_, trb_parse_error) => {
