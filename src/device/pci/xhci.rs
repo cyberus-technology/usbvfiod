@@ -159,7 +159,9 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
                 let port_index = get_portsc_index(addr).unwrap();
                 // port ids start at 1, so we have to convert the MMIO address offset to the id
                 let port_id = port_index + 1;
-                self.port_array.write_portsc(port_id, value);
+                self.port_array
+                    .write_portsc(port_id, value)
+                    .expect("event_sender should be alive");
             }
             addr => {
                 todo!("unknown write {}", addr);
