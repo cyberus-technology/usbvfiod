@@ -582,42 +582,52 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                     TrbProcessingResult::TrbError
                 }
                 NormalSubmissionState::AwaitingRealTransfer(ref transfer_trb) => {
-                    let (completion_code, processing_result) =
-                        match self.real_ep.next_completion().await? {
-                            InTrbProcessingResult::Disconnect => (
-                                Some(CompletionCode::UsbTransactionError),
-                                TrbProcessingResult::Disconnect,
-                            ),
-                            InTrbProcessingResult::Stall => {
-                                (Some(CompletionCode::StallError), TrbProcessingResult::Stall)
-                            }
-                            InTrbProcessingResult::TransactionError => (
-                                Some(CompletionCode::UsbTransactionError),
-                                TrbProcessingResult::TransactionError,
-                            ),
-                            InTrbProcessingResult::Success(data) => {
-                                let completion_code =
-                                    if let TransferTrbVariant::Normal(ref normal_data) =
-                                        transfer_trb.variant
-                                    {
-                                        // needs more checks.
-                                        // - we should ensure we didn't receive more data than requested
-                                        // - if we got less data, we need to do short-packet handling
-                                        self.dma_bus
-                                            .write_bulk(normal_data.data_pointer, &data[..]);
+                    let (completion_code, processing_result) = match self
+                        .real_ep
+                        .next_completion()
+                        .await?
+                    {
+                        InTrbProcessingResult::Disconnect => (
+                            Some(CompletionCode::UsbTransactionError),
+                            TrbProcessingResult::Disconnect,
+                        ),
+                        InTrbProcessingResult::Stall => {
+                            (Some(CompletionCode::StallError), TrbProcessingResult::Stall)
+                        }
+                        InTrbProcessingResult::TransactionError => (
+                            Some(CompletionCode::UsbTransactionError),
+                            TrbProcessingResult::TransactionError,
+                        ),
+                        InTrbProcessingResult::Success(data) => {
+                            let completion_code = if let TransferTrbVariant::Normal(
+                                ref normal_data,
+                            ) = transfer_trb.variant
+                            {
+                                // needs more checks.
+                                // - if we got less data, we need to do short-packet handling
+                                let requested_len = normal_data.transfer_length as usize;
+                                let received_len = data.len();
+                                let dma_length = if received_len > requested_len {
+                                    debug!("device delivered more data than requested. Requested {requested_len}, received {received_len}. Sending {:?}, dropping {:?}", &data[..requested_len], &data[requested_len..]);
+                                    requested_len
+                                } else {
+                                    received_len
+                                };
+                                self.dma_bus
+                                    .write_bulk(normal_data.data_pointer, &data[..dma_length]);
 
-                                        // event sending only when IOC is set
-                                        match normal_data.interrupt_on_completion {
-                                            true => Some(CompletionCode::Success),
-                                            false => None,
-                                        }
-                                    } else {
-                                        unreachable!();
-                                    };
+                                // event sending only when IOC is set
+                                match normal_data.interrupt_on_completion {
+                                    true => Some(CompletionCode::Success),
+                                    false => None,
+                                }
+                            } else {
+                                unreachable!();
+                            };
 
-                                (completion_code, TrbProcessingResult::Ok)
-                            }
-                        };
+                            (completion_code, TrbProcessingResult::Ok)
+                        }
+                    };
 
                     if let Some(completion_code) = completion_code {
                         let transfer_event = EventTrb::new_transfer_event_trb(
