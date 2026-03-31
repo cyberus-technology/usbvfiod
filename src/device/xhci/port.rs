@@ -1,12 +1,12 @@
 use std::{array, mem, sync::Arc};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use tokio::{
     runtime,
     sync::{mpsc, oneshot},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use usbvfiod::hotplug_protocol::response::Response;
 
 use crate::{
@@ -52,6 +52,28 @@ impl<CRD: CompleteRealDevice> PortArray<CRD> {
 
     pub fn write_portsc(&self, port_id: usize, value: u64) {
         self.portsc[port_id].write(value);
+
+        if value & portsc::PR != 0 {
+            match PortWorker::<CRD>::port_version(port_id as u64) {
+                UsbVersion::USB2 => {
+                    trace!("driver attempted to write portsc::PR on USB 2");
+                    let portsc_update_mask = portsc::PRC | portsc::PED | portsc::PLS;
+                    self.portsc[port_id].update_with_mask(
+                        portsc::value::PLS_U0 | portsc::PED | portsc::PRC,
+                        portsc_update_mask,
+                    );
+
+                    let event = EventTrb::new_port_status_change_event_trb(port_id as u8);
+                    let _ = self
+                        .msg_sender
+                        .send(PortMessage::Event(event))
+                        .context("event channel closed");
+                }
+                UsbVersion::USB3 => {
+                    self.portsc[port_id].update_with_mask(portsc::PRC, portsc::PRC);
+                }
+            }
+        }
     }
 
     pub fn read_portsc(&self, port_id: usize) -> u64 {
@@ -89,6 +111,7 @@ pub enum PortMessage<CRD: CompleteRealDevice> {
     ListAttached(oneshot::Sender<Vec<CRD::ID>>),
     // port id
     GetDevice(usize, oneshot::Sender<Option<Arc<CRD>>>),
+    Event(EventTrb),
 }
 
 impl<CRD: CompleteRealDevice> PortWorker<CRD> {
@@ -118,6 +141,9 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
                         .get(port_id)
                         .and_then(|opt| opt.as_ref().map(|dev| dev.clone()));
                     responder.send_anyhow(device)?;
+                }
+                PortMessage::Event(event) => {
+                    self.event_sender.send(event)?;
                 }
             };
         }
@@ -169,6 +195,25 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
                 | portsc::PRC
                 | (speed as u64) << 10,
         );
+
+        match version {
+            UsbVersion::USB3 => self.portsc[available_port_id].set(
+                portsc::CCS
+                    | portsc::PED
+                    | portsc::PP
+                    | portsc::CSC
+                    | portsc::PEC
+                    | portsc::PRC
+                    | (speed as u64) << 10,
+            ),
+            UsbVersion::USB2 => self.portsc[available_port_id].set(
+                portsc::CCS
+                    | portsc::value::PLS_POLLING
+                    | portsc::PP
+                    | (speed as u64) << 10
+                    | portsc::CSC,
+            ),
+        }
 
         info!(
             "Attached {speed} device {identifier:?} to port {available_port_id} ({version:?} port)"

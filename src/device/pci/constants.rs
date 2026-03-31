@@ -332,6 +332,9 @@ pub mod xhci {
             pub const CRR: u64 = 0x8;
         }
 
+        /// See xhci specification chapter 5.4.8
+        ///
+        /// Bitmask of the specific field in the portsc register.
         pub mod portsc {
             pub const CCS: u64 = 0x1;
             pub const PED: u64 = 0x2;
@@ -355,6 +358,14 @@ pub mod xhci {
             pub const WOE: u64 = 0x8000000;
             pub const DR: u64 = 0x40000000;
             pub const WPR: u64 = 0x80000000;
+
+            /// Some values including their offset of some portsc fields when
+            /// the field is larger than one bit.
+            pub mod value {
+                pub const PLS_U0: u64 = 0x0;
+                pub const PLS_RXDETECT: u64 = 0xa0;
+                pub const PLS_POLLING: u64 = 0xe0;
+            }
         }
 
         pub mod usbsts {

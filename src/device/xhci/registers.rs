@@ -26,7 +26,7 @@ const BITMASK_RW1C: u64 = 0x00260000;
 impl Default for PortscRegister {
     fn default() -> Self {
         Self {
-            value: AtomicU64::new(portsc::PP),
+            value: AtomicU64::new(portsc::PP | portsc::value::PLS_RXDETECT),
         }
     }
 }
@@ -59,6 +59,28 @@ impl PortscRegister {
                 Some(new_value)
             },
         );
+    }
+
+    /// Update the masked bits with the given value.
+    ///
+    /// This function is absolute and does not respect RW rules imposed for
+    /// driver access. It shall only be called as part of internal controller
+    /// logic.
+    /// Set bits in `value` not set in `mask` are silently dropped.
+    pub fn update_with_mask(&self, value: u64, mask: u64) {
+        let _previous_value = self.value.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |register| {
+                let register_clear = register & !mask;
+                let value_checked = value & mask;
+                let new_register = value_checked | register_clear;
+                Some(new_register)
+            },
+        );
+
+        //self.value &= !mask;
+        //self.value |= value & mask;
     }
 }
 
