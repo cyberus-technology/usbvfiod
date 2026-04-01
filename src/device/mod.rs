@@ -13,6 +13,7 @@ pub mod bus;
 pub mod interrupt_line;
 pub mod interval;
 pub mod msi_message;
+pub mod pcap;
 pub mod pci;
 pub mod register_set;
 pub mod xhci;
