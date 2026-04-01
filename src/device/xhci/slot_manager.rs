@@ -1,0 +1,828 @@
+use anyhow::anyhow;
+use tokio::{
+    runtime,
+    sync::{mpsc, oneshot},
+};
+use tracing::{debug, info, trace, warn};
+
+use crate::{
+    device::{
+        bus::{BusDeviceRef, Request, RequestSize},
+        pci::constants::xhci::{device_slots::slot_state, MAX_SLOTS},
+        xhci::{
+            endpoint::EndpointSender,
+            endpoint_launcher::LaunchRequester,
+            registers::{ConfigureRegister, DcbaapRegister},
+            trb::{
+                AddressDeviceCommandTrbData, CompletionCode, ConfigureEndpointCommandTrbData,
+                EvaluateContextCommandTrbData, SetTrDequeuePointerCommandTrbData,
+            },
+        },
+    },
+    one_indexed_array::OneIndexed,
+    oneshot_anyhow::SendWithAnyhowError,
+};
+
+#[derive(Debug)]
+pub struct SlotManager {
+    pub config_reg: ConfigureRegister,
+    pub dcbaap: DcbaapRegister,
+    msg_send: mpsc::UnboundedSender<SlotMessage>,
+}
+
+impl SlotManager {
+    pub fn new(
+        dma_bus: BusDeviceRef,
+        async_runtime: &runtime::Handle,
+        ep_launch_sender: LaunchRequester,
+    ) -> Self {
+        let config_reg = ConfigureRegister::default();
+        let dcbaap = DcbaapRegister::default();
+        let (msg_send, msg_recv) = mpsc::unbounded_channel();
+
+        let worker = SlotWorker::new(
+            dma_bus,
+            config_reg.clone(),
+            dcbaap.clone(),
+            ep_launch_sender,
+            msg_recv,
+        );
+
+        async_runtime.spawn(worker.run());
+
+        Self {
+            config_reg,
+            dcbaap,
+            msg_send,
+        }
+    }
+
+    pub fn doorbell(&self, slot_id: u8, endpoint_id: u8) -> anyhow::Result<()> {
+        debug!("Doorbell for slot {slot_id} endpoint {endpoint_id}");
+        self.msg_send
+            .send(SlotMessage::Doorbell(slot_id, endpoint_id))?;
+
+        Ok(())
+    }
+
+    pub fn create_slot_worker_handle(&self) -> SlotWorkerHandle {
+        SlotWorkerHandle {
+            msg_send: self.msg_send.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct SlotWorker {
+    slots: OneIndexed<Option<Slot>, { MAX_SLOTS as usize }>,
+    config_reg: ConfigureRegister,
+    dcbaap: DcbaapRegister,
+    dma_bus: BusDeviceRef,
+    ep_launch_sender: LaunchRequester,
+    msg_recv: mpsc::UnboundedReceiver<SlotMessage>,
+}
+
+#[derive(Debug)]
+pub enum SlotMessage {
+    // slot_id, endpoint_id
+    Doorbell(u8, u8),
+    EnableSlot(oneshot::Sender<Result<u8, CompletionCode>>),
+    DisableSlot(u8, oneshot::Sender<CompletionCode>),
+    AddressDevice(AddressDeviceCommandTrbData, oneshot::Sender<CompletionCode>),
+    ConfigureEndpoint(
+        ConfigureEndpointCommandTrbData,
+        oneshot::Sender<CompletionCode>,
+    ),
+    EvaluateContext(
+        EvaluateContextCommandTrbData,
+        oneshot::Sender<CompletionCode>,
+    ),
+    ResetDevice(u8, oneshot::Sender<CompletionCode>),
+    // slot_id, endpoint_id
+    StopEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
+    ResetEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
+    SetTrDequeuePointer(
+        SetTrDequeuePointerCommandTrbData,
+        oneshot::Sender<CompletionCode>,
+    ),
+}
+
+impl SlotWorker {
+    fn new(
+        dma_bus: BusDeviceRef,
+        config_reg: ConfigureRegister,
+        dcbaap: DcbaapRegister,
+        ep_launch_sender: LaunchRequester,
+        msg_recv: mpsc::UnboundedReceiver<SlotMessage>,
+    ) -> Self {
+        Self {
+            slots: [const { None }; MAX_SLOTS as usize].into(),
+            config_reg,
+            dcbaap,
+            dma_bus,
+            ep_launch_sender,
+            msg_recv,
+        }
+    }
+
+    async fn run(mut self) {
+        match self.run_loop().await {
+            Ok(_) => unreachable!(),
+            Err(err) => info!("SlotWorker stopped {err}"),
+        }
+    }
+
+    // the function only returns with an error, but ! cannot be put in Result
+    async fn run_loop(&mut self) -> anyhow::Result<()> {
+        loop {
+            match self.next_msg().await? {
+                SlotMessage::Doorbell(slot_id, endpoint_id) => {
+                    let slot = match self.slot_ref(slot_id) {
+                        Some(slot) => slot,
+                        None => {
+                            warn!("Doorbell for disabled slot {slot_id}");
+                            continue;
+                        }
+                    };
+                    let ep_sender = match slot
+                        .endpoint_senders
+                        .get(endpoint_id as usize)
+                        .and_then(|opt| opt.as_ref())
+                    {
+                        Some(ep_sender) => ep_sender,
+                        None => {
+                            warn!(
+                                "Doorbell for disabled endpoint {endpoint_id} (of slot {slot_id})"
+                            );
+                            continue;
+                        }
+                    };
+                    ep_sender.doorbell()?;
+                }
+                SlotMessage::EnableSlot(sender) => {
+                    let result = self.allocate_slot();
+                    sender.send_anyhow(result)?;
+                }
+                SlotMessage::DisableSlot(slot_id, sender) => {
+                    let result = self.disable_slot(slot_id).await?;
+                    sender.send_anyhow(result)?;
+                }
+                SlotMessage::AddressDevice(trb_data, sender) => {
+                    let slot = match self.slot_mut(trb_data.slot_id) {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let result = slot
+                        .handle_address_device(
+                            trb_data.input_context_pointer,
+                            trb_data.block_set_address_request,
+                        )
+                        .await?;
+                    sender.send_anyhow(result)?;
+                }
+                SlotMessage::ConfigureEndpoint(trb_data, sender) => {
+                    let slot = match self.slot_mut(trb_data.slot_id) {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let result = slot
+                        .handle_configure_endpoint(
+                            trb_data.input_context_pointer,
+                            trb_data.deconfigure,
+                        )
+                        .await?;
+                    sender.send_anyhow(result)?;
+                }
+                SlotMessage::EvaluateContext(trb_data, sender) => {
+                    let slot = match self.slot_ref(trb_data.slot_id) {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let result = slot
+                        .handle_evaluate_context(trb_data.input_context_pointer)
+                        .await?;
+                    sender.send_anyhow(result)?;
+                }
+                SlotMessage::ResetDevice(slot_id, sender) => {
+                    let slot = match self.slot_mut(slot_id) {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let result = slot.handle_reset_device().await?;
+                    sender.send_anyhow(result)?;
+                }
+                SlotMessage::StopEndpoint(slot_id, endpoint_id, sender) => {
+                    let slot = match self.slot_ref(slot_id) {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let ep_sender = match slot.endpoint_sender(endpoint_id) {
+                        Some(ep_sender) => ep_sender,
+                        None => {
+                            sender.send_anyhow(CompletionCode::EndpointNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    ep_sender.stop(sender)?;
+                }
+                SlotMessage::ResetEndpoint(slot_id, endpoint_id, sender) => {
+                    let slot = match self.slot_ref(slot_id) {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let ep_sender = match slot.endpoint_sender(endpoint_id) {
+                        Some(ep_sender) => ep_sender,
+                        None => {
+                            sender.send_anyhow(CompletionCode::EndpointNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    ep_sender.reset(sender)?;
+                }
+                SlotMessage::SetTrDequeuePointer(trb_data, sender) => {
+                    let slot = match self.slot_ref(trb_data.slot_id) {
+                        Some(slot) => slot,
+                        None => {
+                            sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    let ep_sender = match slot.endpoint_sender(trb_data.endpoint_id) {
+                        Some(ep_sender) => ep_sender,
+                        None => {
+                            sender.send_anyhow(CompletionCode::EndpointNotEnabledError)?;
+                            continue;
+                        }
+                    };
+
+                    ep_sender.set_tr_dequeue_pointer(
+                        trb_data.dequeue_pointer,
+                        trb_data.dequeue_cycle_state,
+                        sender,
+                    )?;
+                }
+            }
+        }
+    }
+
+    async fn next_msg(&mut self) -> anyhow::Result<SlotMessage> {
+        self.msg_recv
+            .recv()
+            .await
+            .ok_or_else(|| anyhow!("slot channel closed"))
+    }
+
+    fn slot_ref(&self, slot_id: u8) -> Option<&Slot> {
+        self.slots
+            .get(slot_id as usize)
+            .and_then(|opt| opt.as_ref())
+    }
+
+    fn slot_mut(&mut self, slot_id: u8) -> Option<&mut Slot> {
+        self.slots
+            .get_mut(slot_id as usize)
+            .and_then(|opt| opt.as_mut())
+    }
+
+    fn allocate_slot(&mut self) -> Result<u8, CompletionCode> {
+        let available_slot_id = (1..=self.config_reg.num_slots_enabled())
+            .find(|&slot_id| self.slots[slot_id as usize].is_none());
+
+        if let Some(slot_id) = available_slot_id {
+            let dcbaae = self.dcbaap.read().wrapping_add(slot_id as u64 * 8);
+            self.slots[slot_id as usize] = Some(Slot::new(
+                slot_id,
+                dcbaae,
+                self.dma_bus.clone(),
+                self.ep_launch_sender.clone(),
+            ));
+        }
+
+        available_slot_id.ok_or(CompletionCode::NoSlotsAvailableError)
+    }
+
+    async fn disable_slot(&mut self, slot_id: u8) -> anyhow::Result<CompletionCode> {
+        assert!(slot_id >= 1 && slot_id <= self.config_reg.num_slots_enabled());
+
+        let slot = match self
+            .slots
+            .get_mut(slot_id as usize)
+            .and_then(|opt| opt.as_mut())
+        {
+            Some(slot) => slot,
+            None => return Ok(CompletionCode::SlotNotEnabledError),
+        };
+        // let slot clean up itself
+        slot.pre_drop().await?;
+        // Safety: above match statements proved the slot_id is valid
+        self.slots[slot_id as usize] = None;
+
+        Ok(CompletionCode::Success)
+    }
+}
+
+#[derive(Debug)]
+struct Slot {
+    id: u8,
+    state: SlotState,
+    // guest address of the DCBAA entry of this slot
+    dcbaae: u64,
+    dma_bus: BusDeviceRef,
+    endpoint_senders: OneIndexed<Option<EndpointSender>, 31>,
+    ep_launch_requester: LaunchRequester,
+}
+
+#[derive(Debug)]
+enum SlotState {
+    Enabled,
+    // slot base address in all three states below
+    Default(u64),
+    Addressed(u64),
+    Configured(u64),
+}
+
+impl Slot {
+    fn new(id: u8, dcbaae: u64, dma_bus: BusDeviceRef, ep_launch_sender: LaunchRequester) -> Self {
+        Self {
+            id,
+            state: SlotState::Enabled,
+            dcbaae,
+            dma_bus,
+            endpoint_senders: [const { None }; 31].into(),
+            ep_launch_requester: ep_launch_sender,
+        }
+    }
+
+    fn write_slot_state(&self) {
+        let (base_address, state) = match self.state {
+            // in Enabled we do not even know the address context where to write the state to
+            SlotState::Enabled => panic!("called write_slot_state in Enabled state"),
+            SlotState::Default(base_address) => (base_address, slot_state::DEFAULT),
+            SlotState::Addressed(base_address) => (base_address, slot_state::ADDRESSED),
+            SlotState::Configured(base_address) => (base_address, slot_state::CONFIGURED),
+        };
+        let state_addr = base_address.wrapping_add(15);
+        self.dma_bus.write(
+            Request::new(state_addr, RequestSize::Size1),
+            (state << 3) as u64,
+        );
+    }
+
+    fn endpoint_sender(&self, endpoint_id: u8) -> Option<&EndpointSender> {
+        self.endpoint_senders
+            .get(endpoint_id as usize)
+            .and_then(|opt| opt.as_ref())
+    }
+
+    // 4.6.5 for reference
+    async fn handle_address_device(
+        &mut self,
+        input_context_pointer: u64,
+        bsr: bool,
+    ) -> anyhow::Result<CompletionCode> {
+        // address device with BSR=1 transitions from Enabled to Default
+        // address device with BSR=0 transitions from Enabled/Default to Addressed
+        //
+        // we currently do not do address assigning to the device.
+        // Theoretically, our root-hub-port-based device identification could
+        // target an incorrect device (after quick detach--reattach).
+
+        // we should not touch anything if the input is bad
+        if !self.check_slot_and_ep0_input_context(input_context_pointer) {
+            return Ok(CompletionCode::ParameterError);
+        }
+
+        let base_address = match (&self.state, bsr) {
+            (SlotState::Enabled, true) => {
+                // We transition from Enabled only to Default, a second AddressDevice
+                // with BSR=0 will then transition to Addressed
+
+                let base_address = self
+                    .dma_bus
+                    .read(Request::new(self.dcbaae, RequestSize::Size8));
+
+                self.state = SlotState::Default(base_address);
+
+                base_address
+            }
+            (SlotState::Enabled, false) => {
+                // We transition from Enabled directly to Addressed (USB-3 case)
+
+                let base_address = self
+                    .dma_bus
+                    .read(Request::new(self.dcbaae, RequestSize::Size8));
+
+                self.state = SlotState::Addressed(base_address);
+                base_address
+            }
+            (SlotState::Default(base_address), false) => {
+                // another AddressDevice (with BSR=1) transitioned us to Default.
+
+                let base_address = *base_address;
+
+                // ep0 worker is already running. Terminate before copying ep0 context.
+                self.deconfigure_endpoint(1).await?;
+
+                self.state = SlotState::Addressed(base_address);
+                base_address
+            }
+            _ => return Ok(CompletionCode::ContextStateError),
+        };
+        self.dma_copy_slot_context(input_context_pointer, base_address);
+        self.write_slot_state();
+
+        self.dma_copy_ep_context(1, input_context_pointer, base_address);
+        self.configure_endpoint(1, base_address).await?;
+
+        Ok(CompletionCode::Success)
+    }
+
+    const fn check_slot_and_ep0_input_context(&self, _input_context_pointer: u64) -> bool {
+        // TODO look if the fields have proper values
+        true
+    }
+
+    fn dma_copy_slot_context(&self, input_context_pointer: u64, base_address: u64) {
+        let mut context_buffer = [0; 32];
+
+        let input_slot_context_addr = input_context_pointer.wrapping_add(32);
+        self.dma_bus
+            .read_bulk(input_slot_context_addr, &mut context_buffer);
+        self.dma_bus.write_bulk(base_address, &context_buffer);
+    }
+
+    fn dma_copy_ep_context(&self, endpoint_id: u8, input_context_pointer: u64, base_address: u64) {
+        let mut context_buffer = [0; 32];
+
+        let input_ep_context_addr =
+            input_context_pointer.wrapping_add((endpoint_id as u64 + 1) * 32);
+        let ep_context_addr = base_address.wrapping_add(endpoint_id as u64 * 32);
+        self.dma_bus
+            .read_bulk(input_ep_context_addr, &mut context_buffer);
+        self.dma_bus.write_bulk(ep_context_addr, &context_buffer);
+    }
+
+    fn root_hub_port(&self, base_address: u64) -> u8 {
+        self.dma_bus.read(Request::new(
+            base_address.wrapping_add(6),
+            RequestSize::Size1,
+        )) as u8
+    }
+
+    async fn handle_configure_endpoint(
+        &mut self,
+        input_context_pointer: u64,
+        deconfigure: bool,
+    ) -> anyhow::Result<CompletionCode> {
+        // configure endpoint with DC=0 transitions from Addressed/Configured to Configured
+        // configure endpoint with DC=1 transitions from Configured to Addressed
+        let base_address = match self.state {
+            SlotState::Enabled | SlotState::Default(_) => {
+                return Ok(CompletionCode::ContextStateError)
+            }
+            SlotState::Addressed(base_address) => match deconfigure {
+                true => return Ok(CompletionCode::ContextStateError),
+                false => base_address,
+            },
+            SlotState::Configured(base_address) => base_address,
+        };
+
+        // TODO input checks
+
+        let drop_flags = self
+            .dma_bus
+            .read(Request::new(input_context_pointer, RequestSize::Size4));
+        let add_flags = self.dma_bus.read(Request::new(
+            input_context_pointer.wrapping_add(4),
+            RequestSize::Size4,
+        ));
+
+        if deconfigure {
+            for ep_id in 2..=31 {
+                self.deconfigure_endpoint(ep_id).await?;
+            }
+
+            self.state = SlotState::Addressed(base_address);
+        } else {
+            let mut to_deconfigure = Vec::new();
+            let mut to_configure = Vec::new();
+
+            for i in 2..=31 {
+                if drop_flags & (1 << i) != 0 {
+                    debug!("D{i} set");
+                    to_deconfigure.push(i);
+                }
+                if add_flags & (1 << i) != 0 {
+                    debug!("A{i} set");
+                    to_configure.push(i);
+                }
+            }
+
+            for ep in to_deconfigure {
+                self.deconfigure_endpoint(ep).await?;
+            }
+
+            for ep in to_configure {
+                self.dma_copy_ep_context(ep, input_context_pointer, base_address);
+                self.configure_endpoint(ep, base_address).await?;
+            }
+
+            self.state = SlotState::Configured(base_address);
+        }
+
+        self.write_slot_state();
+
+        Ok(CompletionCode::Success)
+    }
+
+    async fn deconfigure_endpoint(&mut self, endpoint_id: u8) -> anyhow::Result<()> {
+        match self.endpoint_sender(endpoint_id) {
+            Some(ep_sender) => {
+                ep_sender.terminate().await?;
+                self.endpoint_senders[endpoint_id as usize] = None;
+            }
+            None => {
+                trace!(
+                    "deconfigure_endpoint called on disabled endpoint (id {endpoint_id}). Ignoring"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    // helper method for address_advice and configure_endpoint.
+    // do only call for already enabled endpoints.
+    async fn configure_endpoint(
+        &mut self,
+        endpoint_id: u8,
+        base_address: u64,
+    ) -> anyhow::Result<()> {
+        let context = EndpointContext::new(
+            base_address.wrapping_add(endpoint_id as u64 * 32),
+            self.dma_bus.clone(),
+        );
+
+        let ep_sender = self
+            .ep_launch_requester
+            .request_launch(
+                self.id,
+                endpoint_id,
+                self.root_hub_port(base_address),
+                context,
+            )
+            .await?;
+        self.endpoint_senders[endpoint_id as usize] = Some(ep_sender);
+
+        Ok(())
+    }
+
+    async fn handle_evaluate_context(
+        &self,
+        _input_context_pointer: u64,
+    ) -> anyhow::Result<CompletionCode> {
+        warn!("handle_evaluate_context is not implemented yet. Just reporting success");
+        Ok(CompletionCode::Success)
+    }
+
+    // call before dropping (disabling this slot)
+    async fn pre_drop(&mut self) -> anyhow::Result<()> {
+        // disable EP0 if active
+        if !matches!(self.state, SlotState::Enabled) {
+            self.deconfigure_endpoint(1).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_reset_device(&mut self) -> anyhow::Result<CompletionCode> {
+        let base_address = match self.state {
+            SlotState::Enabled | SlotState::Default(_) => {
+                return Ok(CompletionCode::ContextStateError);
+            }
+            SlotState::Addressed(base_address) => base_address,
+            SlotState::Configured(base_address) => base_address,
+        };
+
+        // disable all endpoints except control
+        for ep_id in 2..=31 {
+            self.deconfigure_endpoint(ep_id).await?;
+        }
+
+        self.state = SlotState::Default(base_address);
+
+        Ok(CompletionCode::Success)
+    }
+}
+
+/// A wrapper around DMA accesses to endpoint context structures.
+///
+/// The structure is explained in the XHCI spec 6.2.3.
+/// An endpoint context has a size of 32 bytes, lies in guest memory, and
+/// contains information about an endpoint, most importantly for us the dequeue
+/// pointer and cycle state of the associated transfer ring.
+#[derive(Debug)]
+pub struct EndpointContext {
+    /// The address of the endpoint context in guest memory.
+    address: u64,
+    /// Reference to the guest memory.
+    dma_bus: BusDeviceRef,
+}
+
+impl EndpointContext {
+    /// Create a new instance.
+    ///
+    /// # Parameters
+    ///
+    /// - address: the address of the endpoint context in guest memory.
+    /// - dma_bus: reference to the guest memory.
+    pub const fn new(address: u64, dma_bus: BusDeviceRef) -> Self {
+        Self { address, dma_bus }
+    }
+
+    /// DMA read the dequeue pointer and consumer cycle state of the endpoint's
+    /// transfer ring.
+    pub fn get_dequeue_pointer_and_cycle_state(&self) -> (u64, bool) {
+        let bytes = self.dma_bus.read(Request::new(
+            self.address.wrapping_add(8),
+            RequestSize::Size8,
+        ));
+        let dequeue_pointer = bytes & !0xf;
+        let cycle_state = bytes & 0x1 != 0;
+        (dequeue_pointer, cycle_state)
+    }
+
+    /// DMA write the dequeue pointer and consumer cycle state of the endpoint's
+    /// transfer ring.
+    ///
+    /// Call this function after retrieving TRBs from the transfer ring.
+    pub fn set_dequeue_pointer_and_cycle_state(&self, dequeue_pointer: u64, cycle_state: bool) {
+        assert!(
+            dequeue_pointer & 0xf == 0,
+            "dequeue_pointer has to be aligned to 16 bytes"
+        );
+        self.dma_bus.write(
+            Request::new(self.address.wrapping_add(8), RequestSize::Size8),
+            dequeue_pointer | cycle_state as u64,
+        );
+    }
+
+    pub fn set_state(&self, state: u8) {
+        self.dma_bus
+            .write(Request::new(self.address, RequestSize::Size1), state as u64);
+    }
+
+    pub fn get_endpoint_type(&self) -> EndpointType {
+        let guest_mem_byte = self.dma_bus.read(Request::new(
+            self.address.wrapping_add(4),
+            RequestSize::Size1,
+        ));
+        match (guest_mem_byte >> 3) & 0x7 {
+            2 => EndpointType::BulkOut,
+            6 => EndpointType::BulkIn,
+            4 => EndpointType::Control,
+            7 => EndpointType::InterruptIn,
+            3 => EndpointType::InterruptOut,
+            val => {
+                warn!("encountered unsupported endpoint type: {}", val);
+                EndpointType::Unsupported
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointType {
+    Control,
+    BulkIn,
+    BulkOut,
+    InterruptIn,
+    InterruptOut,
+    Unsupported,
+}
+
+#[derive(Debug, Clone)]
+pub struct SlotWorkerHandle {
+    msg_send: mpsc::UnboundedSender<SlotMessage>,
+}
+
+impl SlotWorkerHandle {
+    pub async fn enable_slot(&self) -> anyhow::Result<Result<u8, CompletionCode>> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::EnableSlot(send);
+        self.msg_send.send(msg)?;
+        let response = recv.await?;
+        Ok(response)
+    }
+
+    pub async fn disable_slot(&self, slot_id: u8) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::DisableSlot(slot_id, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn address_device(
+        &self,
+        trb_data: AddressDeviceCommandTrbData,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::AddressDevice(trb_data, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn configure_endpoint(
+        &self,
+        trb_data: ConfigureEndpointCommandTrbData,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::ConfigureEndpoint(trb_data, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn evaluate_context(
+        &self,
+        trb_data: EvaluateContextCommandTrbData,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::EvaluateContext(trb_data, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn reset_device(&self, slot_id: u8) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::ResetDevice(slot_id, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn stop_endpoint(
+        &self,
+        slot_id: u8,
+        endpoint_id: u8,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::StopEndpoint(slot_id, endpoint_id, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn reset_endpoint(
+        &self,
+        slot_id: u8,
+        endpoint_id: u8,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::ResetEndpoint(slot_id, endpoint_id, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+
+    pub async fn set_tr_dequeue_pointer(
+        &self,
+        trb_data: SetTrDequeuePointerCommandTrbData,
+    ) -> anyhow::Result<CompletionCode> {
+        let (send, recv) = oneshot::channel();
+        let msg = SlotMessage::SetTrDequeuePointer(trb_data, send);
+        self.msg_send.send(msg)?;
+        let completion_code = recv.await?;
+        Ok(completion_code)
+    }
+}

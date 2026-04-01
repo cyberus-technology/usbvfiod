@@ -3,25 +3,31 @@
 use std::{
     fs::File,
     os::unix::net::{UnixListener, UnixStream},
-    sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result};
 use nusb::MaybeFuture;
+use tokio::runtime;
 use tracing::{debug, warn};
 use usbvfiod::hotplug_protocol::{command::Command, response::Response};
 
-use crate::device::pci::{
-    nusb::NusbDeviceWrapper, realdevice::IdentifiableRealDevice, xhci::XhciController,
+use crate::device::xhci::{
+    nusb::NusbRealDevice, port::HotplugControl, real_device::CompleteRealDeviceImpl,
 };
 
-pub fn run_hotplug_server(socket: UnixListener, xhci_controller: Arc<Mutex<XhciController>>) {
+pub fn run_hotplug_server(
+    socket: UnixListener,
+    hotplug_control: HotplugControl<CompleteRealDeviceImpl<NusbRealDevice, (u8, u8)>>,
+    async_runtime: runtime::Handle,
+) {
     loop {
         if let Ok((mut stream, _addr)) = socket.accept() {
             match Command::receive_from_socket(&stream) {
                 Ok(command) => {
                     debug!("Received command {:?} on hotplug socket", command);
-                    if let Err(e) = handle_command(command, &mut stream, xhci_controller.clone()) {
+                    if let Err(e) =
+                        handle_command(command, &mut stream, &hotplug_control, &async_runtime)
+                    {
                         // The error contains all the necessary context
                         warn!("{:?}", e);
                     }
@@ -35,19 +41,22 @@ pub fn run_hotplug_server(socket: UnixListener, xhci_controller: Arc<Mutex<XhciC
 fn handle_command(
     command: Command,
     socket: &mut UnixStream,
-    xhci_controller: Arc<Mutex<XhciController>>,
+    hotplug_control: &HotplugControl<CompleteRealDeviceImpl<NusbRealDevice, (u8, u8)>>,
+    async_runtime: &runtime::Handle,
 ) -> Result<()> {
     match command {
         Command::Attach {
             bus,
             device: dev,
             fd,
-        } => handle_attach(bus, dev, fd, socket, xhci_controller)
+        } => handle_attach(bus, dev, fd, socket, hotplug_control, async_runtime)
             .context("Failed to handle attach command")?,
-        Command::Detach { bus, device } => handle_detach(bus, device, socket, xhci_controller)
-            .context("Failed to handle detach command")?,
+        Command::Detach { bus, device } => {
+            handle_detach(bus, device, socket, hotplug_control, async_runtime)
+                .context("Failed to handle detach command")?;
+        }
         Command::List => {
-            let devices = xhci_controller.lock().unwrap().attached_devices();
+            let devices = async_runtime.block_on(hotplug_control.list_devices());
             Response::ListFollowing
                 .send_device_list(devices, socket)
                 .context("Failed to handle list command")?;
@@ -62,21 +71,15 @@ fn handle_attach(
     dev: u8,
     fd: File,
     socket: &mut UnixStream,
-    controller: Arc<Mutex<XhciController>>,
+    hotplug_control: &HotplugControl<CompleteRealDeviceImpl<NusbRealDevice, (u8, u8)>>,
+    async_runtime: &runtime::Handle,
 ) -> Result<()> {
     let device = nusb::Device::from_fd(fd.into())
         .wait()
         .context("Failed to open nusb device from the supplied file descriptor")?;
-    let wrapped_device = Box::new(NusbDeviceWrapper::try_from(device)?);
-    let response = controller
-        .lock()
-        .unwrap()
-        .attach_device(IdentifiableRealDevice {
-            bus_number: bus,
-            device_number: dev,
-            real_device: wrapped_device,
-        })
-        .unwrap_or_else(|response| response);
+    let real_device = NusbRealDevice::try_new(device, async_runtime.clone())?;
+    let complete_device = CompleteRealDeviceImpl::new((bus, dev), real_device);
+    let response = async_runtime.block_on(hotplug_control.attach(complete_device));
     response
         .send_over_socket(socket)
         .context("Successfully performed hot-plug command, but failed to send the response")?;
@@ -88,13 +91,10 @@ fn handle_detach(
     bus: u8,
     dev: u8,
     socket: &mut UnixStream,
-    controller: Arc<Mutex<XhciController>>,
+    hotplug_control: &HotplugControl<CompleteRealDeviceImpl<NusbRealDevice, (u8, u8)>>,
+    async_runtime: &runtime::Handle,
 ) -> Result<()> {
-    let response = controller
-        .lock()
-        .unwrap()
-        .detach_device(bus, dev)
-        .unwrap_or_else(|response| response);
+    let response = async_runtime.block_on(hotplug_control.detach((bus, dev)));
     response
         .send_over_socket(socket)
         .context("Successfully performed detach command, but failed to send the response")?;

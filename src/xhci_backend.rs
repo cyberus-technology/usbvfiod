@@ -7,8 +7,10 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use nusb::MaybeFuture;
+use tokio::runtime;
 use tracing::{debug, info, trace};
 
+use usbvfiod::hotplug_protocol::{device_paths::resolve_path, response::Response};
 use vfio_bindings::bindings::vfio::{
     vfio_region_info, VFIO_PCI_BAR0_REGION_INDEX, VFIO_PCI_BAR1_REGION_INDEX,
     VFIO_PCI_BAR2_REGION_INDEX, VFIO_PCI_BAR3_REGION_INDEX, VFIO_PCI_BAR4_REGION_INDEX,
@@ -21,19 +23,20 @@ use vfio_user::{IrqInfo, ServerBackend};
 use crate::device::{
     bus::{Request, RequestSize},
     interrupt_line::{DummyInterruptLine, InterruptLine},
-    pci::{
-        nusb::NusbDeviceWrapper, realdevice::IdentifiableRealDevice, traits::PciDevice,
-        xhci::XhciController,
+    pci::{traits::PciDevice, xhci::XhciController},
+    xhci::{
+        nusb::NusbRealDevice,
+        port::HotplugControl,
+        real_device::{CompleteRealDevice, CompleteRealDeviceImpl},
     },
 };
-use usbvfiod::hotplug_protocol::device_paths::resolve_path;
 
 use crate::{dynamic_bus::DynamicBus, memory_segment::MemorySegment};
 
 #[derive(Debug)]
-pub struct XhciBackend {
+pub struct XhciBackend<CRD: CompleteRealDevice> {
     dma_bus: Arc<DynamicBus>,
-    controller: Arc<Mutex<XhciController>>,
+    controller: XhciController<CRD>,
 }
 
 #[derive(Debug)]
@@ -61,41 +64,32 @@ impl InterruptLine for InterruptEventFd {
     }
 }
 
-impl XhciBackend {
+impl<CRD: CompleteRealDevice> XhciBackend<CRD> {
     /// Create a new virtual XHCI controller with the given USB
     /// devices attached at creation time.
-    pub fn new<I>(devices: I) -> Result<Self>
-    where
-        I: IntoIterator,
-        I::Item: AsRef<Path>,
-    {
+    pub fn new(async_runtime: runtime::Handle) -> Result<Self> {
         let dma_bus = Arc::new(DynamicBus::new());
+        let controller = XhciController::new(dma_bus.clone(), async_runtime);
 
         let backend = Self {
-            controller: Arc::new(Mutex::new(XhciController::new(dma_bus.clone()))),
+            controller,
             dma_bus,
         };
-
-        for device in devices {
-            let path = device.as_ref();
-            // if device attachment fails, just warn
-            if let Err(err) = backend.add_device_from_path(path) {
-                panic!("Device attachment failed for {path:?}: {err}");
-            }
-        }
 
         Ok(backend)
     }
 
-    /// Get access to the XhciController.
-    ///
-    /// This function is intended to hot-attach USB devices.
-    pub fn get_controller(&self) -> Arc<Mutex<XhciController>> {
-        self.controller.clone()
+    pub fn hotplug_control(&self) -> HotplugControl<CRD> {
+        self.controller.hotplug_control()
     }
+}
 
-    /// Add a USB device via its path in `/dev/bus/usb`.
-    pub fn add_device_from_path(&self, path: impl AsRef<Path>) -> Result<()> {
+impl XhciBackend<CompleteRealDeviceImpl<NusbRealDevice, (u8, u8)>> {
+    pub async fn add_device_from_path(
+        &self,
+        path: impl AsRef<Path>,
+        async_runtime: runtime::Handle,
+    ) -> Result<()> {
         let (bus, dev, path) = resolve_path(path)?;
         let open_file = |err_msg| {
             std::fs::OpenOptions::new()
@@ -113,21 +107,20 @@ impl XhciBackend {
         // to reopen.
         let file = open_file("Failed to open USB device file after device reset")?;
         let device = nusb::Device::from_fd(file.into()).wait()?;
-        let wrapped_device = Box::new(NusbDeviceWrapper::try_from(device)?);
-        self.controller
-            .lock()
-            .unwrap()
-            .attach_device(IdentifiableRealDevice {
-                bus_number: bus,
-                device_number: dev,
-                real_device: wrapped_device,
-            })
-            .map_err(|response| anyhow!("Error during device attach: {response:?}"))?;
+        let real_device = NusbRealDevice::try_new(device, async_runtime.clone())?;
+        let complete_device = CompleteRealDeviceImpl::new((bus, dev), real_device);
+        let response = self.hotplug_control().attach(complete_device).await;
+        if response != Response::SuccessfulOperation {
+            return Err(anyhow!(
+                "initial attach of device {bus:03}:{dev:03} failed: {response:?}"
+            ));
+        }
+
         Ok(())
     }
 }
 
-impl XhciBackend {
+impl<CRD: CompleteRealDevice> XhciBackend<CRD> {
     /// Return a list of regions for [`vfio_user::Server::new`].
     pub fn regions(&self) -> Vec<vfio_region_info> {
         (0..VFIO_PCI_NUM_REGIONS)
@@ -205,7 +198,7 @@ impl XhciBackend {
     }
 }
 
-impl ServerBackend for XhciBackend {
+impl<CRD: CompleteRealDevice> ServerBackend for XhciBackend<CRD> {
     fn region_read(
         &mut self,
         region: u32,
@@ -377,7 +370,7 @@ impl ServerBackend for XhciBackend {
             _ => Arc::new(DummyInterruptLine::default()),
         };
 
-        self.controller.lock().unwrap().connect_irq(irq);
+        self.controller.connect_irq(irq);
 
         Ok(())
     }
