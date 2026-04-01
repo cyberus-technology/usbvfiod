@@ -7,6 +7,7 @@ use tracing::{debug, error, info, trace, warn};
 use crate::device::xhci::trb::TransferTrb;
 use crate::device::{
     bus::BusDeviceRef,
+    pcap::{self, EndpointPcapMeta},
     xhci::{
         hotplug_endpoint_handle::BaseEndpointHandle,
         interrupter::EventSender,
@@ -83,6 +84,7 @@ pub enum ControlTransferDirection {
 pub struct ControlEndpointHandle<RCEH: RealControlEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
+    pcap_meta: EndpointPcapMeta,
     real_ep: RCEH,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
@@ -94,6 +96,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
     pub fn new(
         slot_id: u8,
         endpoint_id: u8,
+        pcap_meta: EndpointPcapMeta,
         real_ep: RCEH,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
@@ -101,6 +104,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         Self {
             slot_id,
             endpoint_id,
+            pcap_meta,
             real_ep,
             dma_bus,
             event_sender,
@@ -146,6 +150,9 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             self.control_transfer_state =
                 ControlTransferState::new(ControlTransferDirection::In(request.clone()));
 
+            pcap::control_submission(self.pcap_meta, &request);
+
+            // trigger hardware data
             self.real_ep.submit_control_request(request)?;
             self.submission_state = ControlSubmissionState::AwaitingControlIn(transfer_trb);
         } else {
@@ -310,6 +317,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             }
             ControlTransferDirection::Out(control_out) => {
                 trace!("StatusStage TRB with ControlOut");
+
+                pcap::control_submission(self.pcap_meta, control_out);
 
                 self.real_ep.submit_control_request(control_out.clone())?;
 
@@ -522,6 +531,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     TrbProcessingResult::Ok
                 }
                 ControlSubmissionState::ParserError(raw_trb) => {
+                    pcap::trb_error(self.pcap_meta, raw_trb.address);
                     warn!("ControlSubmissionState::ParserError and reporting CompletionCode::TrbError");
                     let event = EventTrb::new_transfer_event_trb(
                         raw_trb.address,
@@ -538,6 +548,11 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     let processing_result = self.real_ep.next_completion().await?;
                     match processing_result {
                         ControlRequestProcessingResult::SuccessfulControlIn(mut data) => {
+                            pcap::control_completion_in(
+                                self.pcap_meta,
+                                transfer_trb.address,
+                                &data,
+                            );
                             self.handle_setup_stage_trb_post_hardware(
                                 transfer_trb.clone(),
                                 &mut data,
@@ -546,6 +561,14 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         }
                         ControlRequestProcessingResult::SuccessfulControlOut => unreachable!(),
                         processing_error => {
+                            pcap::control_in_error(
+                                self.pcap_meta,
+                                match &self.control_transfer_state.direction {
+                                    ControlTransferDirection::In(request) => request,
+                                    _ => panic!("something"),
+                                },
+                                &processing_error,
+                            );
                             self.handle_processing_error(processing_error, transfer_trb.address)?
                         }
                     }
@@ -557,10 +580,29 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                             unreachable!()
                         }
                         ControlRequestProcessingResult::SuccessfulControlOut => {
+                            pcap::control_completion_out(
+                                self.pcap_meta,
+                                match &self.control_transfer_state.direction {
+                                    ControlTransferDirection::Out(request) => request.address,
+                                    _ => panic!("something"),
+                                },
+                                match &self.control_transfer_state.direction {
+                                    ControlTransferDirection::Out(request) => request.length as u32,
+                                    _ => panic!("something"),
+                                },
+                            );
                             self.handle_status_stage_trb_post_hardware(transfer_trb.clone())?;
                             TrbProcessingResult::Ok
                         }
                         processing_error => {
+                            pcap::control_out_error(
+                                self.pcap_meta,
+                                match &self.control_transfer_state.direction {
+                                    ControlTransferDirection::Out(request) => request,
+                                    _ => panic!("something"),
+                                },
+                                &processing_error,
+                            );
                             self.handle_processing_error(processing_error, transfer_trb.address)?
                         }
                     }
@@ -690,6 +732,7 @@ enum NormalSubmissionState {
 pub struct OutEndpointHandle<ROEH: RealOutEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
+    pcap_meta: EndpointPcapMeta,
     real_ep: ROEH,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
@@ -701,6 +744,7 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
     pub fn new(
         slot_id: u8,
         endpoint_id: u8,
+        pcap_meta: EndpointPcapMeta,
         real_ep: ROEH,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
@@ -708,6 +752,7 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         Self {
             slot_id,
             endpoint_id,
+            pcap_meta,
             real_ep,
             dma_bus,
             event_sender,
@@ -731,6 +776,12 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         let mut data = vec![0; normal_trb_data.transfer_length as usize];
         self.dma_bus
             .read_bulk(normal_trb_data.data_pointer, &mut data);
+        pcap::out_submission(
+            self.pcap_meta,
+            transfer_trb.address,
+            &data,
+            normal_trb_data.transfer_length,
+        );
         self.real_ep.submit(data)?;
 
         self.submission_state = NormalSubmissionState::AwaitingRealTransfer(transfer_trb);
@@ -870,10 +921,24 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                     match &self.real_ep.next_completion().await? {
                         OutTrbProcessingResult::Disconnect => {
                             warn!("NormalSubmissionState::AwaitingRealTransfer OutTrbProcessingResult::Disconnect");
+
+                            pcap::out_error(
+                                self.pcap_meta,
+                                transfer_trb.address,
+                                &OutTrbProcessingResult::Disconnect,
+                                &[],
+                            );
                             TrbProcessingResult::Disconnect
                         }
                         OutTrbProcessingResult::Stall => {
                             info!("OutTrbProcessingResult::Stall and reporting CompletionCode::StallError");
+                            pcap::out_error(
+                                self.pcap_meta,
+                                transfer_trb.address,
+                                &OutTrbProcessingResult::Stall,
+                                &[],
+                            );
+
                             let event = EventTrb::new_transfer_event_trb(
                                 transfer_trb.address,
                                 0,
@@ -888,9 +953,26 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                         }
                         OutTrbProcessingResult::TransactionError => {
                             warn!("NormalSubmissionState::AwaitingRealTransfer OutTrbProcessingResult::TransactionError");
+                            pcap::out_error(
+                                self.pcap_meta,
+                                transfer_trb.address,
+                                &OutTrbProcessingResult::TransactionError,
+                                &[],
+                            );
+
                             TrbProcessingResult::TransactionError
                         }
                         OutTrbProcessingResult::Success => {
+                            pcap::out_completion(
+                                self.pcap_meta,
+                                transfer_trb.address,
+                                match &transfer_trb.variant {
+                                    TransferTrbVariant::Normal(normal_trb_data) => {
+                                        normal_trb_data.transfer_length
+                                    }
+                                    _ => unreachable!(),
+                                },
+                            );
                             self.handle_normal_trb_post_hardware(transfer_trb.clone())?;
                             TrbProcessingResult::Ok
                         }
@@ -927,6 +1009,7 @@ impl<RIEH: RealInEndpointHandle> Drop for InEndpointHandle<RIEH> {
 pub struct InEndpointHandle<RIEH: RealInEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
+    pcap_meta: EndpointPcapMeta,
     real_ep: RIEH,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
@@ -938,6 +1021,7 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
     pub fn new(
         slot_id: u8,
         endpoint_id: u8,
+        pcap_meta: EndpointPcapMeta,
         real_ep: RIEH,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
@@ -945,6 +1029,7 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
         Self {
             slot_id,
             endpoint_id,
+            pcap_meta,
             real_ep,
             dma_bus,
             event_sender,
@@ -1091,8 +1176,13 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
             variant: TransferTrbVariant::parse(trb.buffer),
         };
 
-        match transfer_trb.variant {
-            TransferTrbVariant::Normal(_) => {
+        match &transfer_trb.variant {
+            TransferTrbVariant::Normal(normal_trb_data) => {
+                pcap::in_submission(
+                    self.pcap_meta,
+                    transfer_trb.address,
+                    normal_trb_data.transfer_length,
+                );
                 self.handle_normal_trb_pre_hardware(transfer_trb)?;
             }
             TransferTrbVariant::EventData(_) => {
@@ -1139,10 +1229,21 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                     match self.real_ep.next_completion().await? {
                         InTrbProcessingResult::Disconnect => {
                             warn!("NormalSubmissionState::AwaitingRealTransfer InTrbProcessingResult::Disconnect");
+                            pcap::in_error(
+                                self.pcap_meta,
+                                transfer_trb.address,
+                                &InTrbProcessingResult::Disconnect,
+                            );
                             TrbProcessingResult::Disconnect
                         }
                         InTrbProcessingResult::Stall => {
                             info!("InTrbProcessingResult::Stall and reporting CompletionCode::StallError");
+                            pcap::in_error(
+                                self.pcap_meta,
+                                transfer_trb.address,
+                                &InTrbProcessingResult::Stall,
+                            );
+
                             let event = EventTrb::new_transfer_event_trb(
                                 transfer_trb.address,
                                 0,
@@ -1157,9 +1258,15 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                         }
                         InTrbProcessingResult::TransactionError => {
                             warn!("NormalSubmissionState::AwaitingRealTransfer InTrbProcessingResult::TransactionError");
+                            pcap::in_error(
+                                self.pcap_meta,
+                                transfer_trb.address,
+                                &InTrbProcessingResult::TransactionError,
+                            );
                             TrbProcessingResult::TransactionError
                         }
                         InTrbProcessingResult::Success(data) => {
+                            pcap::in_completion(self.pcap_meta, transfer_trb.address, &data);
                             self.handle_normal_trb_post_hardware(transfer_trb.clone(), data)?;
                             TrbProcessingResult::Ok
                         }

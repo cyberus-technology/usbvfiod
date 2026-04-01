@@ -19,7 +19,6 @@ use crate::device::xhci::{
         ControlRequestProcessingResult, InTrbProcessingResult, RealControlEndpointHandle,
         RealInEndpointHandle, RealOutEndpointHandle,
     },
-    trb::{NormalTrbData, TransferTrb, TransferTrbVariant},
     usbrequest::UsbRequest,
 };
 
@@ -83,13 +82,11 @@ impl NusbDeviceWrapper {
 }
 
 const fn endpoint_id_to_address(endpoint_id: u8) -> u8 {
-    let endpoint_number = endpoint_id / 2;
-    let is_out_endpoint = endpoint_id.is_multiple_of(2);
-
-    match is_out_endpoint {
-        true => endpoint_number,
-        false => 0x80 | endpoint_number,
-    }
+    // `endpoint_id / 2` yields the USB endpoint number, while the low bit of the
+    // xHCI endpoint id distinguishes OUT (even) from IN (odd). Rotating right by
+    // one moves that direction bit into the USB IN position (0x80) and leaves the
+    // endpoint number in the low bits.
+    endpoint_id.rotate_right(1)
 }
 
 #[derive(Debug)]
@@ -584,14 +581,14 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt>(
             let requested_length = requested_length - buffer.len();
 
             // do reading until end aka short or null package
-            let read_length = match pkt_reader.read_to_end(&mut buffer).await {
+            let _read_length = match pkt_reader.read_to_end(&mut buffer).await {
                 Ok(read_length) => read_length,
-                Err(e) if matches!(ErrorKind::OutOfMemory, e) => {
+                Err(e) if matches!(ErrorKind::OutOfMemory, _e) => {
                     // reader buffer was too small, how to handle this?
                     // does a max length for td exist? -> maybe the 16MB being the edtla limit
-                    panic!("normal in buffer OOM: {}", e);
+                    panic!("normal in buffer OOM: {e}");
                 }
-                Err(e) => panic!("in endpoint reader error: {}", e),
+                Err(e) => panic!("in endpoint reader error: {e}"),
             };
 
             // take only the requested amount from the buffer

@@ -1,0 +1,457 @@
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
+
+use crate::device::xhci::usbrequest::UsbRequest;
+use tracing::warn;
+
+const LINKTYPE_USB_LINUX: u32 = 189;
+const PCAP_MAGIC: u32 = 0xa1b2c3d4;
+const PCAP_MAJOR: u16 = 2;
+const PCAP_MINOR: u16 = 4;
+const SNAPLEN: u32 = 65_535;
+
+/// USB event type stored as an ASCII code in the packet header.
+#[derive(Clone, Copy)]
+pub enum UsbEventType {
+    Submission,
+    Completion,
+    Error,
+}
+
+impl UsbEventType {
+    const fn code(self) -> u8 {
+        match self {
+            Self::Submission => b'S',
+            Self::Completion => b'C',
+            Self::Error => b'E',
+        }
+    }
+}
+
+/// USB transfer type stored in the linktype header.
+#[derive(Clone, Copy, Debug)]
+pub enum UsbTransferType {
+    // TODO: implement isochronous transfer logging
+    // Isochronous,
+    Control,
+    Bulk,
+    Interrupt,
+}
+
+impl UsbTransferType {
+    const fn code(self) -> u8 {
+        match self {
+            // TODO: implement isochronous transfer logging
+            // Self::Isochronous => 0,
+            Self::Interrupt => 1,
+            Self::Control => 2,
+            Self::Bulk => 3,
+        }
+    }
+}
+
+/// USB direction for metadata that is not encoded in the endpoint id.
+#[derive(Clone, Copy, Debug)]
+pub enum UsbDirection {
+    HostToDevice,
+    DeviceToHost,
+}
+
+const fn endpoint_address(
+    transfer_type: UsbTransferType,
+    control_direction: Option<UsbDirection>,
+    xhci_endpoint_id: u8,
+) -> u8 {
+    if matches!(transfer_type, UsbTransferType::Control) {
+        match control_direction.expect("control direction is required") {
+            UsbDirection::HostToDevice => 0,
+            UsbDirection::DeviceToHost => 0x80,
+        }
+    } else {
+        // Match the USB endpoint address mapping used by the nusb adapter.
+        xhci_endpoint_id.rotate_right(1)
+    }
+}
+
+/// Packet timestamp in seconds and microseconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timestamp {
+    pub seconds: u32,
+    pub microseconds: u32,
+}
+
+impl From<SystemTime> for Timestamp {
+    fn from(value: SystemTime) -> Self {
+        let duration = value
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        Self {
+            seconds: duration.as_secs() as u32,
+            microseconds: duration.subsec_micros(),
+        }
+    }
+}
+
+/// Linux USB per-packet header for PCAP linktype 189.
+///
+/// `header_bytes` writes the fields in little-endian order.
+pub struct UsbPacketLinktypeHeader {
+    pub id: u64,
+    pub event_type: u8,
+    pub transfer_type: u8,
+    pub endpoint_address: u8,
+    pub device_address: u8,
+    pub bus_number: u16,
+    pub setup_flag: u8,
+    pub data_flag: u8,
+    pub status: i32,
+    pub data_length: u32,
+    pub delivered_data_length: u32,
+    pub setup: [u8; 8],
+}
+
+impl UsbPacketLinktypeHeader {
+    pub fn header_bytes(&self, event_timestamp: Timestamp) -> [u8; 48] {
+        let mut header = [0u8; 48];
+        header[0..8].copy_from_slice(&self.id.to_le_bytes());
+        header[8] = self.event_type;
+        header[9] = self.transfer_type;
+        header[10] = self.endpoint_address;
+        header[11] = self.device_address;
+        header[12..14].copy_from_slice(&self.bus_number.to_le_bytes());
+        header[14] = self.setup_flag;
+        header[15] = self.data_flag;
+        header[16..24].copy_from_slice(&(event_timestamp.seconds as i64).to_le_bytes());
+        header[24..28].copy_from_slice(&(event_timestamp.microseconds as i32).to_le_bytes());
+        header[28..32].copy_from_slice(&self.status.to_le_bytes());
+        header[32..36].copy_from_slice(&self.data_length.to_le_bytes());
+        header[36..40].copy_from_slice(&self.delivered_data_length.to_le_bytes());
+        header[40..48].copy_from_slice(&self.setup);
+        header
+    }
+}
+
+/// Builds the fixed PCAP file header.
+pub fn pcap_global_header_bytes() -> [u8; 24] {
+    let mut header = [0u8; 24];
+    header[0..4].copy_from_slice(&PCAP_MAGIC.to_le_bytes());
+    header[4..6].copy_from_slice(&PCAP_MAJOR.to_le_bytes());
+    header[6..8].copy_from_slice(&PCAP_MINOR.to_le_bytes());
+    header[8..12].copy_from_slice(&0u32.to_le_bytes());
+    header[12..16].copy_from_slice(&0u32.to_le_bytes());
+    header[16..20].copy_from_slice(&SNAPLEN.to_le_bytes());
+    header[20..24].copy_from_slice(&LINKTYPE_USB_LINUX.to_le_bytes());
+    header
+}
+
+/// Builds one PCAP record from the record header, linktype header, and payload.
+pub fn pcap_record_bytes(
+    capture_timestamp: Timestamp,
+    event_timestamp: Timestamp,
+    meta: &UsbPacketLinktypeHeader,
+    payload: &[u8],
+) -> Vec<u8> {
+    let link_header = meta.header_bytes(event_timestamp);
+    let original_len = link_header.len() + payload.len();
+    let captured_len = original_len.min(SNAPLEN as usize);
+    let mut record = Vec::with_capacity(16 + captured_len);
+    record.extend_from_slice(&capture_timestamp.seconds.to_le_bytes());
+    record.extend_from_slice(&capture_timestamp.microseconds.to_le_bytes());
+    record.extend_from_slice(&(captured_len as u32).to_le_bytes());
+    record.extend_from_slice(&(original_len as u32).to_le_bytes());
+
+    if captured_len <= link_header.len() {
+        record.extend_from_slice(&link_header[..captured_len]);
+        return record;
+    }
+
+    record.extend_from_slice(&link_header);
+    let remaining = captured_len - link_header.len();
+    record.extend_from_slice(&payload[..remaining]);
+    record
+}
+
+/// Lazily opens the PCAP file and writes the global header once.
+///
+/// I/O failures disable PCAP logging and emit a warning.
+pub struct PcapManager {
+    path: Option<PathBuf>,
+    writer: Option<BufWriter<File>>,
+    warned: bool,
+}
+
+impl PcapManager {
+    pub const fn new(path: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            writer: None,
+            warned: false,
+        }
+    }
+
+    fn ensure_writer(&mut self) -> Option<&mut BufWriter<File>> {
+        let file_path = self.path.clone()?;
+
+        if self.writer.is_some() {
+            return self.writer.as_mut();
+        }
+
+        if let Some(parent) = file_path.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                if !self.warned {
+                    warn!(
+                        "Disabling USB PCAP logging after failing to create {}: {}",
+                        parent.display(),
+                        error
+                    );
+                    self.warned = true;
+                }
+                self.path = None;
+                return None;
+            }
+        }
+
+        let mut writer = match File::create(&file_path).map(BufWriter::new) {
+            Ok(writer) => writer,
+            Err(error) => {
+                if !self.warned {
+                    warn!(
+                        "Disabling USB PCAP logging after failing to open {}: {}",
+                        file_path.display(),
+                        error
+                    );
+                    self.warned = true;
+                }
+                self.path = None;
+                return None;
+            }
+        };
+
+        if let Err(error) = writer.write_all(&pcap_global_header_bytes()) {
+            if !self.warned {
+                warn!(
+                    "Disabling USB PCAP logging after failing to write header to {}: {}",
+                    file_path.display(),
+                    error
+                );
+                self.warned = true;
+            }
+            self.path = None;
+            return None;
+        }
+
+        self.writer = Some(writer);
+        self.writer.as_mut()
+    }
+
+    pub fn write_record(&mut self, record: &[u8]) {
+        let writer = match self.ensure_writer() {
+            Some(writer) => writer,
+            None => return,
+        };
+
+        if let Err(error) = writer.write_all(record).and_then(|_| writer.flush()) {
+            if !self.warned {
+                warn!("Failed to write USB PCAP record: {}", error);
+                self.warned = true;
+            }
+            self.path = None;
+            self.writer = None;
+        }
+    }
+}
+
+static MANAGER: OnceLock<Mutex<PcapManager>> = OnceLock::new();
+
+/// Process-wide entry point for optional USB PCAP logging.
+pub struct UsbPcapManager;
+
+impl UsbPcapManager {
+    pub fn init(path: Option<PathBuf>) {
+        if path.is_some() {
+            let _ = MANAGER.set(Mutex::new(PcapManager::new(path)));
+        }
+    }
+
+    pub fn write_record(record: &[u8]) {
+        if let Some(manager) = MANAGER.get() {
+            manager.lock().unwrap().write_record(record);
+        }
+    }
+}
+
+/// Emit a PCAP record for a control transfer submission event.
+pub fn log_control_submission(
+    meta: super::meta::EndpointPcapMeta,
+    control_direction: UsbDirection,
+    request: &UsbRequest,
+    payload: &[u8],
+) {
+    log_submission(
+        meta,
+        Some(control_direction),
+        request.address,
+        u32::from(request.length),
+        Some(build_setup_bytes(request)),
+        payload,
+    );
+}
+
+/// Emit a PCAP record for a control transfer completion event
+pub fn log_control_completion(
+    meta: super::meta::EndpointPcapMeta,
+    control_direction: UsbDirection,
+    urb_id: u64,
+    status: i32,
+    actual_length: u32,
+    payload: &[u8],
+) {
+    log_completion(
+        meta,
+        Some(control_direction),
+        urb_id,
+        status,
+        actual_length,
+        payload,
+    );
+}
+
+/// Emit a PCAP record for an error-related event with optional setup data.
+pub fn log_error(
+    meta: super::meta::EndpointPcapMeta,
+    control_direction: Option<UsbDirection>,
+    urb_id: u64,
+    event: UsbEventType,
+    status: i32,
+    setup: Option<[u8; 8]>,
+    payload: &[u8],
+) {
+    let event_timestamp = Timestamp::from(SystemTime::now());
+    log_packet(
+        urb_id,
+        event,
+        meta,
+        control_direction,
+        event_timestamp,
+        status,
+        payload.len() as u32,
+        setup,
+        payload,
+    );
+}
+
+/// Emit a PCAP record for a transfer submission event.
+pub fn log_submission(
+    meta: super::meta::EndpointPcapMeta,
+    control_direction: Option<UsbDirection>,
+    urb_id: u64,
+    expected_length: u32,
+    setup: Option<[u8; 8]>,
+    payload: &[u8],
+) {
+    let event_timestamp = Timestamp::from(SystemTime::now());
+    log_packet(
+        urb_id,
+        UsbEventType::Submission,
+        meta,
+        control_direction,
+        event_timestamp,
+        0,
+        expected_length,
+        setup,
+        payload,
+    );
+}
+
+/// Emit a PCAP record for a transfer completion event.
+pub fn log_completion(
+    meta: super::meta::EndpointPcapMeta,
+    control_direction: Option<UsbDirection>,
+    urb_id: u64,
+    status: i32,
+    actual_length: u32,
+    payload: &[u8],
+) {
+    let event_timestamp = Timestamp::from(SystemTime::now());
+    log_packet(
+        urb_id,
+        UsbEventType::Completion,
+        meta,
+        control_direction,
+        event_timestamp,
+        status,
+        actual_length,
+        None,
+        payload,
+    );
+}
+
+pub const fn build_setup_bytes(request: &UsbRequest) -> [u8; 8] {
+    [
+        request.request_type,
+        request.request,
+        (request.value & 0x00ff) as u8,
+        (request.value >> 8) as u8,
+        (request.index & 0x00ff) as u8,
+        (request.index >> 8) as u8,
+        (request.length & 0x00ff) as u8,
+        (request.length >> 8) as u8,
+    ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_packet(
+    urb_id: u64,
+    event: UsbEventType,
+    meta: super::meta::EndpointPcapMeta,
+    control_direction: Option<UsbDirection>,
+    event_timestamp: Timestamp,
+    status: i32,
+    data_length: u32,
+    setup: Option<[u8; 8]>,
+    payload: &[u8],
+) {
+    let meta = UsbPacketLinktypeHeader {
+        id: urb_id,
+        event_type: event.code(),
+        transfer_type: meta.transfer_type.code(),
+        endpoint_address: endpoint_address(meta.transfer_type, control_direction, meta.endpoint_id),
+        device_address: meta.device_address,
+        bus_number: meta.bus_number,
+        setup_flag: setup_flag_value(meta.transfer_type, setup.is_some()),
+        data_flag: data_flag_value(payload.len()),
+        status,
+        data_length,
+        delivered_data_length: payload.len() as u32,
+        setup: if matches!(meta.transfer_type, UsbTransferType::Control) {
+            setup.unwrap_or([0; 8])
+        } else {
+            [0; 8]
+        },
+    };
+
+    let capture_timestamp = Timestamp::from(SystemTime::now());
+    let record = pcap_record_bytes(capture_timestamp, event_timestamp, &meta, payload);
+    UsbPcapManager::write_record(&record);
+}
+
+// zero only for control with setup data.
+const fn setup_flag_value(transfer_type: UsbTransferType, has_setup: bool) -> u8 {
+    if matches!(transfer_type, UsbTransferType::Control) && has_setup {
+        b'\0'
+    } else {
+        b'-'
+    }
+}
+
+// non-zero when there is no payload data.
+const fn data_flag_value(payload_len: usize) -> u8 {
+    if payload_len == 0 {
+        1
+    } else {
+        0
+    }
+}
