@@ -2,7 +2,7 @@ pub mod meta;
 pub mod packet;
 
 pub use meta::EndpointPcapMeta;
-pub use packet::{Timestamp, UsbDirection, UsbEventType, UsbPcapManager, UsbTransferType};
+pub use packet::{Timestamp, UsbDirection, UsbEventType, UsbPcapManager};
 
 use crate::device::xhci::{
     real_endpoint_handle::{

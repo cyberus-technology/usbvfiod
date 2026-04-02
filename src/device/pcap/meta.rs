@@ -4,7 +4,6 @@ use crate::device::xhci::real_endpoint_handle::{
 };
 
 const LINUX_ENODEV: i32 = 19;
-const LINUX_EINVAL: i32 = 22;
 const LINUX_EPIPE: i32 = 32;
 const LINUX_EPROTO: i32 = 71;
 
