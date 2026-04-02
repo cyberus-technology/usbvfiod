@@ -9,6 +9,7 @@ use tracing::{debug, info};
 use crate::{
     device::{
         bus::BusDeviceRef,
+        pcap::EndpointPcapMeta,
         xhci::{
             endpoint::{EndpointSender, EndpointWorker},
             endpoint_handle::{
@@ -118,32 +119,97 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             let endpoint_sender = match device {
                 Some(device) => match endpoint_type {
                     EndpointType::Control => {
+                        let pcap_meta = EndpointPcapMeta::control(
+                            Self::pcap_usb_type(device.as_ref()),
+                            request.slot_id,
+                            request.endpoint_id,
+                        );
                         let real_endpoint = device.realdevice_ref().control_endpoint_handle();
-                        self.launch_helper(ControlEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
+                        self.launch_helper(
+                            ControlEndpointHandle::new,
+                            request.slot_id,
+                            request.endpoint_id,
+                            pcap_meta,
+                            real_endpoint,
+                            request.endpoint_context,
+                            device.detach_token(),
+                        )
                     }
                     EndpointType::BulkIn => {
+                        let pcap_meta = EndpointPcapMeta::bulk_in(
+                            Self::pcap_usb_type(device.as_ref()),
+                            request.slot_id,
+                            request.endpoint_id,
+                        );
                         let real_endpoint = device
                             .realdevice_ref()
                             .bulk_in_endpoint_handle(request.endpoint_id);
-                        self.launch_helper(InEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
+                        self.launch_helper(
+                            InEndpointHandle::new,
+                            request.slot_id,
+                            request.endpoint_id,
+                            pcap_meta,
+                            real_endpoint,
+                            request.endpoint_context,
+                            device.detach_token(),
+                        )
                     }
                     EndpointType::BulkOut => {
+                        let pcap_meta = EndpointPcapMeta::bulk_out(
+                            Self::pcap_usb_type(device.as_ref()),
+                            request.slot_id,
+                            request.endpoint_id,
+                        );
                         let real_endpoint = device
                             .realdevice_ref()
                             .bulk_out_endpoint_handle(request.endpoint_id);
-                        self.launch_helper(OutEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
+                        self.launch_helper(
+                            OutEndpointHandle::new,
+                            request.slot_id,
+                            request.endpoint_id,
+                            pcap_meta,
+                            real_endpoint,
+                            request.endpoint_context,
+                            device.detach_token(),
+                        )
                     }
                     EndpointType::InterruptIn => {
+                        let pcap_meta = EndpointPcapMeta::interrupt_in(
+                            Self::pcap_usb_type(device.as_ref()),
+                            request.slot_id,
+                            request.endpoint_id,
+                        );
                         let real_endpoint = device
                             .realdevice_ref()
                             .interrupt_in_endpoint_handle(request.endpoint_id);
-                        self.launch_helper(InEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
+                        self.launch_helper(
+                            InEndpointHandle::new,
+                            request.slot_id,
+                            request.endpoint_id,
+                            pcap_meta,
+                            real_endpoint,
+                            request.endpoint_context,
+                            device.detach_token(),
+                        )
                     }
                     EndpointType::InterruptOut => {
+                        let pcap_meta = EndpointPcapMeta::interrupt_out(
+                            Self::pcap_usb_type(device.as_ref()),
+                            request.slot_id,
+                            request.endpoint_id,
+                        );
                         let real_endpoint = device
                             .realdevice_ref()
                             .interrupt_out_endpoint_handle(request.endpoint_id);
-                        self.launch_helper(OutEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
+                        self.launch_helper(
+                            OutEndpointHandle::new,
+                            request.slot_id,
+                            request.endpoint_id,
+                            pcap_meta,
+                            real_endpoint,
+                            request.endpoint_context,
+                            device.detach_token(),
+                        )
                     }
                     EndpointType::Unsupported => unreachable!(
                         "the slot should early-reject configure endpoint commands with unsupported endpoint types"
@@ -178,22 +244,34 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             .ok_or_else(|| anyhow!("channel should never close"))
     }
 
+    fn pcap_usb_type(device: &CRD) -> u16 {
+        match device.realdevice_ref().speed() {
+            Some(speed) if speed.is_usb2_speed() => 2,
+            Some(_) => 3,
+            None => 0,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn launch_helper<RealEndpoint, Endpoint, EndpointConstructor>(
         &self,
         constructor: EndpointConstructor,
         slot_id: u8,
         endpoint_id: u8,
+        pcap_meta: EndpointPcapMeta,
         real_endpoint: RealEndpoint,
         endpoint_context: EndpointContext,
         detach_token: CancellationToken,
     ) -> EndpointSender
     where
         Endpoint: EndpointHandle,
-        EndpointConstructor: FnOnce(u8, u8, RealEndpoint, BusDeviceRef, EventSender) -> Endpoint,
+        EndpointConstructor:
+            FnOnce(u8, u8, EndpointPcapMeta, RealEndpoint, BusDeviceRef, EventSender) -> Endpoint,
     {
         let endpoint_handle = constructor(
             slot_id,
             endpoint_id,
+            pcap_meta,
             real_endpoint,
             self.dma_bus.clone(),
             self.event_sender.clone(),
