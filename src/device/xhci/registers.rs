@@ -3,11 +3,16 @@ use std::sync::{
     Arc,
 };
 
+use anyhow::anyhow;
 use tokio::sync::Notify;
+use tracing::trace;
 
-use crate::device::pci::constants::xhci::{
-    operational::{portsc, usbsts},
-    MAX_SLOTS,
+use crate::device::{
+    pci::constants::xhci::{
+        operational::{portsc, usbsts},
+        MAX_SLOTS,
+    },
+    xhci::{interrupter::EventSender, port::UsbVersion, trb::EventTrb},
 };
 
 /// A simple PORTSC register implementation supporting RW1C bits.
@@ -19,22 +24,30 @@ use crate::device::pci::constants::xhci::{
 #[derive(Debug)]
 pub struct PortscRegister {
     value: AtomicU64,
+    event_sender: EventSender,
+    usb_version: UsbVersion,
+    port_id: u8,
 }
 
 const BITMASK_RW1C: u64 = 0x00260000;
 
-impl Default for PortscRegister {
-    fn default() -> Self {
+impl PortscRegister {
+    pub const fn new(event_sender: EventSender, usb_version: UsbVersion, port_id: u8) -> Self {
         Self {
             value: AtomicU64::new(portsc::PP | portsc::value::PLS_RXDETECT),
+            event_sender,
+            usb_version,
+            port_id,
         }
     }
-}
 
-impl PortscRegister {
     pub fn set(&self, value: u64) {
         self.value
             .store(value, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub const fn usb_version(&self) -> UsbVersion {
+        self.usb_version
     }
 
     /// Read the current register value.
@@ -49,16 +62,47 @@ impl PortscRegister {
     /// This function should be called when an MMIO write happens.
     /// RW1C bits are updates according to RW1C semantics, all
     /// other bits are treated as read-only.
-    pub fn write(&self, new_value: u64) {
-        let _ = self.value.fetch_update(
+    pub fn write(&self, new_value: u64) -> anyhow::Result<()> {
+        match self.value.fetch_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |reg| {
                 let bits_to_clear = new_value & BITMASK_RW1C;
-                let new_value = reg & !bits_to_clear;
-                Some(new_value)
+                let mut new_reg = reg & !bits_to_clear;
+
+                if new_value & portsc::PR != 0 {
+                    // SAFETY: MMIO writes implicitly depend on device existence and thus a known USB version.
+                    let _ = Self::port_reset(&mut new_reg, &self.usb_version);
+                }
+
+                Some(new_reg)
             },
-        );
+        ) {
+            Ok(_) => {
+                let event = EventTrb::new_port_status_change_event_trb(self.port_id);
+                self.event_sender.send(event)?;
+                Ok(())
+            }
+            Err(_) => Err(anyhow!("atomic fetch_update while writing portsc")),
+        }
+    }
+
+    fn port_reset(register: &mut u64, usb_version: &UsbVersion) -> anyhow::Result<()> {
+        match usb_version {
+            UsbVersion::USB2 => {
+                trace!("driver attempted to write portsc::PR on USB 2");
+                let portsc_update_mask = portsc::PRC | portsc::PED | portsc::PLS;
+                Self::update_with_mask(
+                    register,
+                    portsc::value::PLS_U0 | portsc::PED | portsc::PRC,
+                    portsc_update_mask,
+                );
+            }
+            UsbVersion::USB3 => {
+                Self::update_with_mask(register, portsc::PRC, portsc::PRC);
+            }
+        }
+        Ok(())
     }
 
     /// Update the masked bits with the given value.
@@ -67,20 +111,10 @@ impl PortscRegister {
     /// driver access. It shall only be called as part of internal controller
     /// logic.
     /// Set bits in `value` not set in `mask` are silently dropped.
-    pub fn update_with_mask(&self, value: u64, mask: u64) {
-        let _previous_value = self.value.fetch_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |register| {
-                let register_clear = register & !mask;
-                let value_checked = value & mask;
-                let new_register = value_checked | register_clear;
-                Some(new_register)
-            },
-        );
-
-        //self.value &= !mask;
-        //self.value |= value & mask;
+    pub const fn update_with_mask(register: &mut u64, value: u64, mask: u64) {
+        let register_clear = *register & !mask;
+        let value_checked = value & mask;
+        *register = value_checked | register_clear;
     }
 }
 
@@ -209,36 +243,46 @@ impl ErstbaRegister {
 
 #[cfg(test)]
 mod tests {
+    use crate::device::xhci::interrupter::Interrupter;
+    use crate::dynamic_bus::DynamicBus;
+    use crate::{init_runtime, runtime};
+
     use super::*;
 
     #[test]
     fn portsc_read_write() {
-        let reg = PortscRegister::default();
+        // TODO this is conflicting with other tests using runtime (currently only this one)
+        init_runtime().expect("Failed to initialize async runtime");
+        let async_runtime = runtime();
+        let dma_bus = Arc::new(DynamicBus::new());
+        let interrupter = Interrupter::new(dma_bus, async_runtime);
+        let reg = PortscRegister::new(interrupter.create_event_sender(), UsbVersion::USB3, 1);
+
         reg.set(0x00260203);
         assert_eq!(reg.read(), 0x00260203);
 
-        reg.write(0x0);
+        reg.write(0x0).unwrap();
         assert_eq!(
             reg.read(),
             0x00260203,
             "writing 0 should affect neither the read-only nor the RW1C bits."
         );
 
-        reg.write(0x00200000);
+        reg.write(0x00200000).unwrap();
         assert_eq!(
             reg.read(),
             0x00060203,
             "writing 1 to bit 21 should clear the bit."
         );
 
-        reg.write(0x00040000);
+        reg.write(0x00040000).unwrap();
         assert_eq!(
             reg.read(),
             0x00020203,
             "writing 1 to bit 18 should clear the bit."
         );
 
-        reg.write(0x00020000);
+        reg.write(0x00020000).unwrap();
         assert_eq!(
             reg.read(),
             0x00000203,

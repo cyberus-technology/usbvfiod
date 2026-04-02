@@ -1,12 +1,12 @@
 use std::{array, mem, sync::Arc};
 
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use tokio::{
     runtime,
     sync::{mpsc, oneshot},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 use usbvfiod::hotplug_protocol::response::Response;
 
 use crate::{
@@ -31,8 +31,14 @@ pub struct PortArray<CRD: CompleteRealDevice> {
 
 impl<CRD: CompleteRealDevice> PortArray<CRD> {
     pub fn new(event_sender: EventSender, async_runtime: runtime::Handle) -> Self {
-        let portsc: Arc<OneIndexed<PortscRegister, { MAX_PORTS as usize }>> =
-            Arc::new(array::from_fn(|_| PortscRegister::default()).into());
+        let portsc: Arc<OneIndexed<PortscRegister, { MAX_PORTS as usize }>> = Arc::new(
+            array::from_fn(|index| {
+                // SAFETY: port_id is capped at 255 according to spec
+                let port_id = index as u8 + 1;
+                PortscRegister::new(event_sender.clone(), Self::port_version(port_id), port_id)
+            })
+            .into(),
+        );
 
         let (msg_sender, msg_recv) = mpsc::unbounded_channel();
 
@@ -50,30 +56,9 @@ impl<CRD: CompleteRealDevice> PortArray<CRD> {
         Self { portsc, msg_sender }
     }
 
-    pub fn write_portsc(&self, port_id: usize, value: u64) {
-        self.portsc[port_id].write(value);
-
-        if value & portsc::PR != 0 {
-            match PortWorker::<CRD>::port_version(port_id as u64) {
-                UsbVersion::USB2 => {
-                    trace!("driver attempted to write portsc::PR on USB 2");
-                    let portsc_update_mask = portsc::PRC | portsc::PED | portsc::PLS;
-                    self.portsc[port_id].update_with_mask(
-                        portsc::value::PLS_U0 | portsc::PED | portsc::PRC,
-                        portsc_update_mask,
-                    );
-
-                    let event = EventTrb::new_port_status_change_event_trb(port_id as u8);
-                    let _ = self
-                        .msg_sender
-                        .send(PortMessage::Event(event))
-                        .context("event channel closed");
-                }
-                UsbVersion::USB3 => {
-                    self.portsc[port_id].update_with_mask(portsc::PRC, portsc::PRC);
-                }
-            }
-        }
+    pub fn write_portsc(&self, port_id: usize, value: u64) -> anyhow::Result<()> {
+        self.portsc[port_id].write(value)?;
+        Ok(())
     }
 
     pub fn read_portsc(&self, port_id: usize) -> u64 {
@@ -89,6 +74,14 @@ impl<CRD: CompleteRealDevice> PortArray<CRD> {
     pub fn create_device_retriever(&self) -> DeviceRetriever<CRD> {
         DeviceRetriever {
             msg_send: self.msg_sender.clone(),
+        }
+    }
+
+    fn port_version(port_id: u8) -> UsbVersion {
+        match port_id as u64 {
+            1..=NUM_USB3_PORTS => UsbVersion::USB3,
+            id if id > NUM_USB3_PORTS && id <= MAX_PORTS => UsbVersion::USB2,
+            id => panic!("asked for port version of non-existent port id {id}"),
         }
     }
 }
@@ -111,7 +104,6 @@ pub enum PortMessage<CRD: CompleteRealDevice> {
     ListAttached(oneshot::Sender<Vec<CRD::ID>>),
     // port id
     GetDevice(usize, oneshot::Sender<Option<Arc<CRD>>>),
-    Event(EventTrb),
 }
 
 impl<CRD: CompleteRealDevice> PortWorker<CRD> {
@@ -142,9 +134,6 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
                         .and_then(|opt| opt.as_ref().map(|dev| dev.clone()));
                     responder.send_anyhow(device)?;
                 }
-                PortMessage::Event(event) => {
-                    self.event_sender.send(event)?;
-                }
             };
         }
     }
@@ -171,7 +160,7 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
         let available_port_id = match (1..=MAX_PORTS as usize)
                 .find(|&i| {
                     self.devices[i].is_none()
-                        && Self::port_version(i as u64) == version
+                        && self.portsc[i].usb_version() == version
                 }) // filter USB2/3
                 {
                     Some(port) => port,
@@ -186,15 +175,6 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
         ));
 
         self.devices[available_port_id] = Some(Arc::new(device));
-        self.portsc[available_port_id].set(
-            portsc::CCS
-                | portsc::PED
-                | portsc::PP
-                | portsc::CSC
-                | portsc::PEC
-                | portsc::PRC
-                | (speed as u64) << 10,
-        );
 
         match version {
             UsbVersion::USB3 => self.portsc[available_port_id].set(
@@ -223,14 +203,6 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
         self.event_sender.send(event)?;
 
         Ok(Response::SuccessfulOperation)
-    }
-
-    fn port_version(port_id: u64) -> UsbVersion {
-        match port_id {
-            1..=NUM_USB3_PORTS => UsbVersion::USB3,
-            id if id > NUM_USB3_PORTS && id <= MAX_PORTS => UsbVersion::USB2,
-            id => panic!("asked for port version of non-existent port id {id}"),
-        }
     }
 
     fn attached_devices(&self) -> Vec<CRD::ID> {
@@ -304,7 +276,7 @@ async fn detach_listener<CRD: CompleteRealDevice>(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UsbVersion {
+pub enum UsbVersion {
     USB2,
     USB3,
 }
@@ -393,45 +365,5 @@ impl<CRD: CompleteRealDevice> DeviceRetriever<CRD> {
         let device = recv.await?;
 
         Ok(device)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn portsc_read_write() {
-        let reg = PortscRegister::default();
-        reg.set(0x00260203);
-        assert_eq!(reg.read(), 0x00260203);
-
-        reg.write(0x0);
-        assert_eq!(
-            reg.read(),
-            0x00260203,
-            "writing 0 should affect neither the read-only nor the RW1C bits."
-        );
-
-        reg.write(0x00200000);
-        assert_eq!(
-            reg.read(),
-            0x00060203,
-            "writing 1 to bit 21 should clear the bit."
-        );
-
-        reg.write(0x00040000);
-        assert_eq!(
-            reg.read(),
-            0x00020203,
-            "writing 1 to bit 18 should clear the bit."
-        );
-
-        reg.write(0x00020000);
-        assert_eq!(
-            reg.read(),
-            0x00000203,
-            "writing 1 to bit 17 should clear the bit."
-        );
     }
 }
