@@ -17,7 +17,7 @@ use crate::{
             hotplug_endpoint_handle::HotplugEndpointHandleImpl,
             interrupter::EventSender,
             port::DeviceRetriever,
-            real_device::{CompleteRealDevice, RealDevice},
+            real_device::{CompleteRealDevice, Identifier, RealDevice},
             slot_manager::{EndpointContext, EndpointType},
         },
     },
@@ -118,28 +118,38 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             let endpoint_sender = match device {
                 Some(device) => match endpoint_type {
                     EndpointType::Control => {
+                        let (bus_number, device_address) =
+                            device.identifier().bus_device_numbers();
                         let real_endpoint = device.realdevice_ref().control_endpoint_handle();
                         self.launch_helper(ControlEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
                     }
                     EndpointType::BulkIn => {
+                        let (bus_number, device_address) =
+                            device.identifier().bus_device_numbers();
                         let real_endpoint = device
                             .realdevice_ref()
                             .bulk_in_endpoint_handle(request.endpoint_id);
                         self.launch_helper(InEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
                     }
                     EndpointType::BulkOut => {
+                        let (bus_number, device_address) =
+                            device.identifier().bus_device_numbers();
                         let real_endpoint = device
                             .realdevice_ref()
                             .bulk_out_endpoint_handle(request.endpoint_id);
                         self.launch_helper(OutEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
                     }
                     EndpointType::InterruptIn => {
+                        let (bus_number, device_address) =
+                            device.identifier().bus_device_numbers();
                         let real_endpoint = device
                             .realdevice_ref()
                             .interrupt_in_endpoint_handle(request.endpoint_id);
                         self.launch_helper(InEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
                     }
                     EndpointType::InterruptOut => {
+                        let (bus_number, device_address) =
+                            device.identifier().bus_device_numbers();
                         let real_endpoint = device
                             .realdevice_ref()
                             .interrupt_out_endpoint_handle(request.endpoint_id);
