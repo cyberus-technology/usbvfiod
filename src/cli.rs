@@ -49,6 +49,11 @@ pub struct Cli {
     /// for hotplug commands.
     #[arg(long, value_name = "PATH")]
     pub hotplug_socket_path: Option<PathBuf>,
+
+    /// Enable PCAP logging and write captured USB traffic to this file.
+    /// The file will be created when the first packet is logged.
+    #[arg(long, value_name = "PATH")]
+    pub pcap_path: Option<PathBuf>,
 }
 
 /// The location of the server socket for the vfio-user client connection.
