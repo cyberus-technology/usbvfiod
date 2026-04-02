@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 use async_runtime::init_runtime;
 use clap::Parser;
 use cli::Cli;
+use device::pcap::UsbPcapManager;
 use hotplug_server::run_hotplug_server;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -39,6 +40,8 @@ fn main() -> Result<()> {
 
     // Log messages from the log crate as well.
     tracing_log::LogTracer::init()?;
+
+    UsbPcapManager::init(args.pcap_path.clone());
 
     init_runtime().context("Failed to initialize async runtime")?;
     let runtime = runtime();
