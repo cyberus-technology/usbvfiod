@@ -239,7 +239,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     self.slot_id,
                 );
                 self.event_sender.send(event)?;
-                TrbProcessingResult::TransactionError
+                TrbProcessingResult::Disconnect
             }
             ControlRequestProcessingResult::Stall => {
                 let event = EventTrb::new_transfer_event_trb(
