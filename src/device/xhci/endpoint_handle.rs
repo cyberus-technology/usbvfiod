@@ -1,9 +1,10 @@
-use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin};
+use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin, time::SystemTime};
 
 use tracing::debug;
 
 use crate::device::{
     bus::BusDeviceRef,
+    pcap::{self, EndpointPcapMeta, Timestamp},
     xhci::{
         hotplug_endpoint_handle::BaseEndpointHandle,
         interrupter::EventSender,
@@ -62,6 +63,7 @@ impl BaseEndpointHandle for DummyEndpointHandle {
 pub struct ControlEndpointHandle<RCEH: RealControlEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
+    pcap_meta: EndpointPcapMeta,
     real_ep: RCEH,
     trb_parser: ControlRequestParser,
     dma_bus: BusDeviceRef,
@@ -73,6 +75,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
     pub fn new(
         slot_id: u8,
         endpoint_id: u8,
+        pcap_meta: EndpointPcapMeta,
         real_ep: RCEH,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
@@ -80,6 +83,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         Self {
             slot_id,
             endpoint_id,
+            pcap_meta,
             real_ep,
             trb_parser: ControlRequestParser::new(dma_bus.clone()),
             dma_bus,
@@ -112,6 +116,9 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                 Ok(request) => {
                     let request_copy = request.clone_without_data();
                     let is_out_request = request.request_type & 0x80 == 0;
+
+                    let event_timestamp = Timestamp::from(SystemTime::now());
+                    pcap::control_submission(self.pcap_meta, &request, event_timestamp);
 
                     self.real_ep.submit_control_request(request)?;
 
@@ -152,6 +159,13 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     match processing_result {
                         ControlRequestProcessingResult::SuccessfulControlIn(data) => {
                             debug!("got data from control in: {data:?}");
+                            let event_timestamp = Timestamp::from(SystemTime::now());
+                            pcap::control_completion_in(
+                                self.pcap_meta,
+                                usb_request.address,
+                                &data,
+                                event_timestamp,
+                            );
                             if let Some(data_pointer) = usb_request.data_pointer {
                                 debug!("writing data to {data_pointer}");
                                 self.dma_bus.write_bulk(data_pointer, &data);
@@ -182,6 +196,13 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                             unreachable!()
                         }
                         ControlRequestProcessingResult::SuccessfulControlOut => {
+                            let event_timestamp = Timestamp::from(SystemTime::now());
+                            pcap::control_completion_out(
+                                self.pcap_meta,
+                                usb_request.address,
+                                u32::from(usb_request.length),
+                                event_timestamp,
+                            );
                             let event = EventTrb::new_transfer_event_trb(
                                 usb_request.address,
                                 0,
@@ -360,6 +381,7 @@ impl ControlRequestParser {
 pub struct OutEndpointHandle<ROEH: RealOutEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
+    pcap_meta: EndpointPcapMeta,
     real_ep: ROEH,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
@@ -370,6 +392,7 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
     pub fn new(
         slot_id: u8,
         endpoint_id: u8,
+        pcap_meta: EndpointPcapMeta,
         real_ep: ROEH,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
@@ -377,6 +400,7 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         Self {
             slot_id,
             endpoint_id,
+            pcap_meta,
             real_ep,
             dma_bus,
             event_sender,
@@ -408,6 +432,14 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
             TransferTrbVariant::Normal(normal_data) => {
                 let mut data = vec![0; normal_data.transfer_length as usize];
                 self.dma_bus.read_bulk(normal_data.data_pointer, &mut data);
+                let event_timestamp = Timestamp::from(SystemTime::now());
+                pcap::out_submission(
+                    self.pcap_meta,
+                    trb.address,
+                    &data,
+                    normal_data.transfer_length,
+                    event_timestamp,
+                );
                 self.real_ep.submit(data)?;
                 self.submission_state = NormalSubmissionState::AwaitingRealTransfer(TransferTrb {
                     address: trb.address,
@@ -460,6 +492,13 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                                     if let TransferTrbVariant::Normal(ref normal_data) =
                                         transfer_trb.variant
                                     {
+                                        let event_timestamp = Timestamp::from(SystemTime::now());
+                                        pcap::out_completion(
+                                            self.pcap_meta,
+                                            transfer_trb.address,
+                                            normal_data.transfer_length,
+                                            event_timestamp,
+                                        );
                                         match normal_data.interrupt_on_completion {
                                             true => Some(CompletionCode::Success),
                                             false => None,
@@ -510,6 +549,7 @@ impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for OutEndpointHandle<ROEH>
 pub struct InEndpointHandle<RIEH: RealInEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
+    pcap_meta: EndpointPcapMeta,
     real_ep: RIEH,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
@@ -520,6 +560,7 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
     pub fn new(
         slot_id: u8,
         endpoint_id: u8,
+        pcap_meta: EndpointPcapMeta,
         real_ep: RIEH,
         dma_bus: BusDeviceRef,
         event_sender: EventSender,
@@ -527,6 +568,7 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
         Self {
             slot_id,
             endpoint_id,
+            pcap_meta,
             real_ep,
             dma_bus,
             event_sender,
@@ -548,6 +590,13 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         let transfer_trb = TransferTrbVariant::parse(trb.buffer);
         match &transfer_trb {
             TransferTrbVariant::Normal(normal_data) => {
+                let event_timestamp = Timestamp::from(SystemTime::now());
+                pcap::in_submission(
+                    self.pcap_meta,
+                    trb.address,
+                    normal_data.transfer_length,
+                    event_timestamp,
+                );
                 self.real_ep.submit(normal_data.transfer_length as usize)?;
                 self.submission_state = NormalSubmissionState::AwaitingRealTransfer(TransferTrb {
                     address: trb.address,
@@ -599,6 +648,13 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                             TrbProcessingResult::TransactionError,
                         ),
                         InTrbProcessingResult::Success(data) => {
+                            let event_timestamp = Timestamp::from(SystemTime::now());
+                            pcap::in_completion(
+                                self.pcap_meta,
+                                transfer_trb.address,
+                                &data,
+                                event_timestamp,
+                            );
                             let completion_code = if let TransferTrbVariant::Normal(
                                 ref normal_data,
                             ) = transfer_trb.variant
