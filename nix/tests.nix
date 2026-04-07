@@ -158,7 +158,7 @@ let
       Commands are executed over ssh.
       Heavily inspired by nixos-tests (https://nixos.org/manual/nixos/stable/index.html#ssec-machine-objects) and their implementation.
       """
-      def __init__(self, vm_host: Machine) -> None:
+      def __init__(self, vm_host: BaseMachine) -> None:
         self.vm_host = vm_host
 
       def succeed(self, *commands: str, timeout: int | None = None) -> str:
