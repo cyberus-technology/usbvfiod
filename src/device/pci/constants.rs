@@ -244,9 +244,13 @@ pub mod xhci {
 
         /// Extended Capabilities
         pub const SUPPORTED_PROTOCOLS: u64 = 0x20;
+        pub const SUPPORTED_PROTOCOLS_STRING: u64 = 0x24;
         pub const SUPPORTED_PROTOCOLS_CONFIG: u64 = 0x28;
+        pub const SUPPORTED_PROTOCOLS_CONFIG_RESERVED: u64 = 0x2c;
         pub const SUPPORTED_PROTOCOLS_USB2: u64 = 0x30;
+        pub const SUPPORTED_PROTOCOLS_USB2_STRING: u64 = 0x34;
         pub const SUPPORTED_PROTOCOLS_USB2_CONFIG: u64 = 0x38;
+        pub const SUPPORTED_PROTOCOLS_USB2_CONFIG_RESERVED: u64 = 0x3c;
 
         /// Operational Register Offsets
         pub const USBCMD: u64 = super::OP_BASE;
@@ -294,6 +298,8 @@ pub mod xhci {
         pub const HCSPARAMS2: u64 = super::MAX_ERST_SIZE_EXP << 4;
         pub const HCCPARAMS1: u64 = super::offset::SUPPORTED_PROTOCOLS << 14;
 
+        pub const USB_STRING: u64 = 0x20425355;
+
         pub mod supported_protocols {
             const ID: u64 = 2;
             const MAJOR: u64 = 0x03;
@@ -326,6 +332,9 @@ pub mod xhci {
             pub const CRR: u64 = 0x8;
         }
 
+        /// See xhci specification chapter 5.4.8
+        ///
+        /// Bitmask of the specific field in the portsc register.
         pub mod portsc {
             pub const CCS: u64 = 0x1;
             pub const PED: u64 = 0x2;
@@ -349,6 +358,14 @@ pub mod xhci {
             pub const WOE: u64 = 0x8000000;
             pub const DR: u64 = 0x40000000;
             pub const WPR: u64 = 0x80000000;
+
+            /// Some values including their offset of some portsc fields when
+            /// the field is larger than one bit.
+            pub mod value {
+                pub const PLS_U0: u64 = 0x0;
+                pub const PLS_RXDETECT: u64 = 0xa0;
+                pub const PLS_POLLING: u64 = 0xe0;
+            }
         }
 
         pub mod usbsts {

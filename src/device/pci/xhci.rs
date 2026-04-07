@@ -159,7 +159,9 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
                 let port_index = get_portsc_index(addr).unwrap();
                 // port ids start at 1, so we have to convert the MMIO address offset to the id
                 let port_id = port_index + 1;
-                self.port_array.write_portsc(port_id, value);
+                self.port_array
+                    .write_portsc(port_id, value)
+                    .expect("event_sender should be alive");
             }
             addr => {
                 todo!("unknown write {}", addr);
@@ -185,9 +187,13 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
 
             // xHC Extended Capability ("Supported Protocols Capability")
             offset::SUPPORTED_PROTOCOLS => capability::supported_protocols::CAP_INFO,
+            offset::SUPPORTED_PROTOCOLS_STRING => capability::USB_STRING,
             offset::SUPPORTED_PROTOCOLS_CONFIG => capability::supported_protocols::CONFIG,
+            offset::SUPPORTED_PROTOCOLS_CONFIG_RESERVED => 0,
             offset::SUPPORTED_PROTOCOLS_USB2 => capability::supported_protocols_usb2::CAP_INFO,
+            offset::SUPPORTED_PROTOCOLS_USB2_STRING => capability::USB_STRING,
             offset::SUPPORTED_PROTOCOLS_USB2_CONFIG => capability::supported_protocols_usb2::CONFIG,
+            offset::SUPPORTED_PROTOCOLS_USB2_CONFIG_RESERVED => 0,
 
             // xHC Operational Registers
             offset::USBCMD => 0,
@@ -215,6 +221,7 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
             offset::DOORBELL_CONTROLLER => 0, // kernel reads the doorbell after write
             // Device Doorbell Registers (DOORBELL_DEVICE)
             offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE_END => 0,
+            offset::MFINDEX => 0x0,
 
             // Port Status and Control Register (PORTSC)
             addr if get_portsc_index(addr).is_some() => {
