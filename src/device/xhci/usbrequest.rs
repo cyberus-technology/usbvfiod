@@ -28,7 +28,7 @@ pub struct UsbRequest {
 impl UsbRequest {
     // so that the control endpoint handler can make a copy
     // (to store the request between submit_trb and next_complete)
-    pub const fn clone_without_data(&self) -> Self {
+    pub const fn _clone_without_data(&self) -> Self {
         Self {
             address: self.address,
             request_type: self.request_type,
