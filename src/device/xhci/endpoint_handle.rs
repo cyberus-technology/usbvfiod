@@ -3,6 +3,7 @@ use std::{fmt::Debug, future::Future, pin::Pin};
 
 use tracing::debug;
 use tracing::trace;
+use tracing::warn;
 
 use crate::device::xhci::trb::{
     DataStageTrbData, EventDataTrbData, SetupStageTrbData, StatusStageTrbData,
@@ -403,6 +404,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         completion_code: CompletionCode,
         event_data: bool,
     ) -> anyhow::Result<()> {
+        trace!("interrupt_on_completion triggered for address {}", address);
         let event = EventTrb::new_transfer_event_trb(
             address,
             0,
@@ -718,6 +720,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
             let result = match &self.submission_state {
                 ControlSubmissionState::ParserConsumedTrb => TrbProcessingResult::Ok,
                 ControlSubmissionState::ParserError => {
+                    warn!("ControlSubmissionState::ParserError and reporting CompletionCode::TrbError");
                     let event = EventTrb::new_transfer_event_trb(
                         address,
                         0,
@@ -788,6 +791,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             ControlRequestProcessingResult::Disconnect => {
                 // send transaction error event to driver
                 // forward disconnect result, so that the hotplugendpointhandle can handle
+                warn!("ControlRequestProcessingResult::Disconnect and reporting CompletionCode::UsbTransactionError");
                 let event = EventTrb::new_transfer_event_trb(
                     request_address,
                     0,
@@ -800,6 +804,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 TrbProcessingResult::Disconnect
             }
             ControlRequestProcessingResult::Stall => {
+                warn!("ControlRequestProcessingResult::Stall and reporting CompletionCode::StallError");
                 let event = EventTrb::new_transfer_event_trb(
                     request_address,
                     0,
@@ -812,6 +817,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 TrbProcessingResult::Stall
             }
             ControlRequestProcessingResult::TransactionError => {
+                warn!("ControlRequestProcessingResult::TransactionError and reporting CompletionCode::UsbTransactionError");
                 let event = EventTrb::new_transfer_event_trb(
                     request_address,
                     0,
@@ -999,6 +1005,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
         Box::pin(async {
             let result = match self.submission_state {
                 NormalSubmissionState::UnsupportedTrbType(ref trb) => {
+                    warn!("NormalSubmissionState::UnsupportedTrbType and reporting CompletionCode::TrbError");
                     let transfer_event = EventTrb::new_transfer_event_trb(
                         trb.address,
                         0,
@@ -1139,6 +1146,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         Box::pin(async {
             let result = match self.submission_state {
                 NormalSubmissionState::UnsupportedTrbType(ref trb) => {
+                    warn!("NormalSubmissionState::UnsupportedTrbType and reporting CompletionCode::TrbError");
                     let transfer_event = EventTrb::new_transfer_event_trb(
                         trb.address,
                         0,
