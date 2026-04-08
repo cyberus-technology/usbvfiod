@@ -990,6 +990,9 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                     variant: transfer_trb,
                 });
             }
+            TransferTrbVariant::EventData(event_data_trb_data) => {
+                // reuse event data handle function from the control endpoint
+            }
             _ => self.submission_state = NormalSubmissionState::UnsupportedTrbType(trb),
         }
 
