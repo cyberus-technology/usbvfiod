@@ -143,6 +143,8 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
             let result = match self.submission_state {
                 ControlSubmissionState::ParserConsumedTrb => TrbProcessingResult::Ok,
                 ControlSubmissionState::ParserError(trb_address) => {
+                    let event_timestamp = Timestamp::from(SystemTime::now());
+                    pcap::trb_error(self.pcap_meta, trb_address, event_timestamp);
                     let event = EventTrb::new_transfer_event_trb(
                         trb_address,
                         0,
@@ -475,6 +477,8 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
         Box::pin(async {
             let result = match self.submission_state {
                 NormalSubmissionState::UnsupportedTrbType(ref trb) => {
+                    let event_timestamp = Timestamp::from(SystemTime::now());
+                    pcap::trb_error(self.pcap_meta, trb.address, event_timestamp);
                     let transfer_event = EventTrb::new_transfer_event_trb(
                         trb.address,
                         0,
@@ -660,6 +664,8 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         Box::pin(async {
             let result = match self.submission_state {
                 NormalSubmissionState::UnsupportedTrbType(ref trb) => {
+                    let event_timestamp = Timestamp::from(SystemTime::now());
+                    pcap::trb_error(self.pcap_meta, trb.address, event_timestamp);
                     let transfer_event = EventTrb::new_transfer_event_trb(
                         trb.address,
                         0,
