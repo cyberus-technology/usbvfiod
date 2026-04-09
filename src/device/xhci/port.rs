@@ -314,6 +314,10 @@ pub const fn get_portsc_index(addr: u64) -> Option<usize> {
     get_port_index_from_addr(addr, offset::PORTSC, MAX_PORTS, 0)
 }
 
+pub const fn get_portpmsc_index(addr: u64) -> Option<usize> {
+    get_port_index_from_addr(addr, offset::PORTSC, MAX_PORTS, 0x4)
+}
+
 pub const fn get_portli_index(addr: u64) -> Option<usize> {
     get_port_index_from_addr(addr, offset::PORTSC, MAX_PORTS, 0x8)
 }

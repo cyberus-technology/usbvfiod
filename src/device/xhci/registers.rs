@@ -124,6 +124,23 @@ impl PortscRegister {
     }
 }
 
+/// Port Power Management Status and Control
+///
+/// See xhci specification Chapter 5.4.9
+#[derive(Debug, Default, Clone)]
+pub struct PortpmscRegister {
+    value: Arc<AtomicU32>,
+}
+impl PortpmscRegister {
+    pub fn read(&self) -> u32 {
+        self.value.load(Ordering::Relaxed)
+    }
+
+    pub fn write(&self, value: u32) {
+        self.value.store(value, Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct ConfigureRegister {
     value: Arc<AtomicU32>,
