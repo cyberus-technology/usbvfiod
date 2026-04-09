@@ -155,3 +155,15 @@ pub fn out_error(
         payload,
     );
 }
+
+pub fn trb_error(meta: EndpointPcapMeta, urb_id: u64, event_timestamp: Timestamp) {
+    packet::log_error(
+        meta,
+        urb_id,
+        UsbEventType::Error,
+        event_timestamp,
+        meta::trb_error_status(),
+        None,
+        &[],
+    );
+}

@@ -143,6 +143,8 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
             let result = match self.submission_state {
                 ControlSubmissionState::ParserConsumedTrb => TrbProcessingResult::Ok,
                 ControlSubmissionState::ParserError(trb_address) => {
+                    let event_timestamp = Timestamp::from(SystemTime::now());
+                    pcap::trb_error(self.pcap_meta, trb_address, event_timestamp);
                     let event = EventTrb::new_transfer_event_trb(
                         trb_address,
                         0,

@@ -4,10 +4,11 @@ use crate::device::xhci::real_endpoint_handle::{
 };
 
 const LINUX_ENODEV: i32 = 19;
+const LINUX_EINVAL: i32 = 22;
 const LINUX_EPIPE: i32 = 32;
 const LINUX_EPROTO: i32 = 71;
 
-const fn errno_status(errno: i32) -> i32 {
+pub const fn errno_status(errno: i32) -> i32 {
     -errno
 }
 
@@ -83,6 +84,10 @@ pub const fn control_error_status(error: &ControlRequestProcessingResult) -> i32
         ControlRequestProcessingResult::SuccessfulControlIn(_)
         | ControlRequestProcessingResult::SuccessfulControlOut => 0,
     }
+}
+
+pub const fn trb_error_status() -> i32 {
+    errno_status(LINUX_EINVAL)
 }
 
 pub const fn in_error_status(error: &InTrbProcessingResult) -> i32 {
