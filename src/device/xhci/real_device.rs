@@ -50,15 +50,9 @@ pub trait RealDevice: Debug + Send + Sync + 'static {
     fn interrupt_out_endpoint_handle(&self, endpoint_id: u8) -> Self::RIOEH;
 }
 
-pub trait Identifier: Debug + Copy + Eq + Send + Sync + 'static {
-    fn bus_device_numbers(self) -> (u8, u8);
-}
+pub trait Identifier: Debug + Copy + Eq + Send + Sync + 'static {}
 
-impl Identifier for (u8, u8) {
-    fn bus_device_numbers(self) -> (u8, u8) {
-        self
-    }
-}
+impl Identifier for (u8, u8) {}
 
 // A RealDevice trait coupled with an identifier and cancellation token for detach notification.
 //

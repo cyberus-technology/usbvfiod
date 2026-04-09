@@ -18,7 +18,7 @@ use crate::{
             hotplug_endpoint_handle::HotplugEndpointHandleImpl,
             interrupter::EventSender,
             port::DeviceRetriever,
-            real_device::{CompleteRealDevice, Identifier, RealDevice},
+            real_device::{CompleteRealDevice, RealDevice},
             slot_manager::{EndpointContext, EndpointType},
         },
     },
@@ -119,11 +119,9 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             let endpoint_sender = match device {
                 Some(device) => match endpoint_type {
                     EndpointType::Control => {
-                        let (bus_number, device_address) =
-                            device.identifier().bus_device_numbers();
                         let pcap_meta = EndpointPcapMeta::control(
-                            u16::from(bus_number),
-                            device_address,
+                            Self::pcap_usb_type(device.as_ref()),
+                            request.slot_id,
                             request.endpoint_id,
                         );
                         let real_endpoint = device.realdevice_ref().control_endpoint_handle();
@@ -138,11 +136,9 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                         )
                     }
                     EndpointType::BulkIn => {
-                        let (bus_number, device_address) =
-                            device.identifier().bus_device_numbers();
                         let pcap_meta = EndpointPcapMeta::bulk_in(
-                            u16::from(bus_number),
-                            device_address,
+                            Self::pcap_usb_type(device.as_ref()),
+                            request.slot_id,
                             request.endpoint_id,
                         );
                         let real_endpoint = device
@@ -159,11 +155,9 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                         )
                     }
                     EndpointType::BulkOut => {
-                        let (bus_number, device_address) =
-                            device.identifier().bus_device_numbers();
                         let pcap_meta = EndpointPcapMeta::bulk_out(
-                            u16::from(bus_number),
-                            device_address,
+                            Self::pcap_usb_type(device.as_ref()),
+                            request.slot_id,
                             request.endpoint_id,
                         );
                         let real_endpoint = device
@@ -180,11 +174,9 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                         )
                     }
                     EndpointType::InterruptIn => {
-                        let (bus_number, device_address) =
-                            device.identifier().bus_device_numbers();
                         let pcap_meta = EndpointPcapMeta::interrupt_in(
-                            u16::from(bus_number),
-                            device_address,
+                            Self::pcap_usb_type(device.as_ref()),
+                            request.slot_id,
                             request.endpoint_id,
                         );
                         let real_endpoint = device
@@ -201,11 +193,9 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                         )
                     }
                     EndpointType::InterruptOut => {
-                        let (bus_number, device_address) =
-                            device.identifier().bus_device_numbers();
                         let pcap_meta = EndpointPcapMeta::interrupt_out(
-                            u16::from(bus_number),
-                            device_address,
+                            Self::pcap_usb_type(device.as_ref()),
+                            request.slot_id,
                             request.endpoint_id,
                         );
                         let real_endpoint = device
@@ -252,6 +242,14 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             .recv()
             .await
             .ok_or_else(|| anyhow!("channel should never close"))
+    }
+
+    fn pcap_usb_type(device: &CRD) -> u16 {
+        match device.realdevice_ref().speed() {
+            Some(speed) if speed.is_usb2_speed() => 2,
+            Some(_) => 3,
+            None => 0,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
