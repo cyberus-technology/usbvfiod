@@ -124,9 +124,11 @@ impl PortscRegister {
     }
 }
 
-/// Port Power Management Status and Control
+/// Port Power Management Status and Control (chapter 5.4.9)
 ///
-/// See xhci specification Chapter 5.4.9
+/// Limitations:
+/// 1. no separation between RW and RWS
+/// 1. no checks for RsvdP at: 17 <= bits <= 31
 #[derive(Debug, Default, Clone)]
 pub struct PortpmscRegister {
     value: Arc<AtomicU32>,

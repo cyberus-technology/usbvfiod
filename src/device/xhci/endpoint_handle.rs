@@ -1091,7 +1091,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
 
         match &transfer_trb {
             TransferTrbVariant::Normal(normal_trb_data) => {
-                self.handle_normal_trb_pre_hardware(normal_trb_data);
+                self.handle_normal_trb_pre_hardware(normal_trb_data)?;
             }
             TransferTrbVariant::EventData(event_data_trb_data) => {
                 self.handle_event_data_trb(trb.address, event_data_trb_data)?;
@@ -1134,9 +1134,17 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                 }
                 NormalSubmissionState::AwaitingRealTransfer => {
                     match &self.real_ep.next_completion().await? {
-                        OutTrbProcessingResult::Disconnect => TrbProcessingResult::Disconnect,
-                        OutTrbProcessingResult::Stall => TrbProcessingResult::Stall,
+                        OutTrbProcessingResult::Disconnect => {
+                            warn!("MARKER DC");
+                            TrbProcessingResult::Disconnect
+                        }
+                        OutTrbProcessingResult::Stall => {
+                            warn!("MARKER stall");
+                            TrbProcessingResult::Stall
+                            // TODO handle this for usb 3
+                        }
                         OutTrbProcessingResult::TransactionError => {
+                            warn!("MARKER transactionerror");
                             TrbProcessingResult::TransactionError
                         }
                         OutTrbProcessingResult::Success => {
@@ -1249,13 +1257,11 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
                     Ordering::Greater => {
                         warn!("received more than requested");
                         completion_code = CompletionCode::Success;
-                        // decive responded with more than requested
+                        // device responded with more than requested
                         // idk where the overhead goes but we track the requested amount
                         normal_trb_data.transfer_length as usize
                     }
                 };
-
-                trace!("dma_length: {dma_length}");
 
                 self.edtla += dma_length as u64;
                 self.dma_bus
@@ -1343,15 +1349,12 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         self.current_trb_data = Some(transfer_trb.clone());
 
         match &transfer_trb {
-            TransferTrbVariant::Normal(normal_data) => {
-                self.real_ep.submit(normal_data.transfer_length as usize)?;
-                self.submission_state = NormalSubmissionState::AwaitingRealTransfer;
-                self.previous_completion_code = CompletionCode::Success;
+            TransferTrbVariant::Normal(normal_trb_data) => {
+                self.handle_normal_trb_pre_hardware(normal_trb_data)?;
             }
             TransferTrbVariant::EventData(event_data_trb_data) => {
                 self.handle_event_data_trb(trb.address, event_data_trb_data)?;
             }
-
             _ => self.submission_state = NormalSubmissionState::UnsupportedTrbType(trb),
         }
 
@@ -1390,10 +1393,19 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                     TrbProcessingResult::TrbError
                 }
                 NormalSubmissionState::AwaitingRealTransfer => {
+                    warn!("MARKER NormalSubmissionState::AwaitingRealTransfer");
                     match self.real_ep.next_completion().await? {
-                        InTrbProcessingResult::Disconnect => TrbProcessingResult::Disconnect,
-                        InTrbProcessingResult::Stall => TrbProcessingResult::Stall,
+                        InTrbProcessingResult::Disconnect => {
+                            warn!("MARKER DISCON");
+                            TrbProcessingResult::Disconnect
+                        }
+                        InTrbProcessingResult::Stall => {
+                            // TODO handle this for usb 3
+                            warn!("MARKER stall");
+                            TrbProcessingResult::Stall
+                        }
                         InTrbProcessingResult::TransactionError => {
+                            warn!("MARKER transactionerror");
                             TrbProcessingResult::TransactionError
                         }
                         InTrbProcessingResult::Success(data) => {

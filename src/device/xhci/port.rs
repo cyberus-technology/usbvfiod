@@ -15,7 +15,7 @@ use crate::{
         xhci::{
             interrupter::EventSender,
             real_device::{CompleteRealDevice, RealDevice, Speed},
-            registers::PortscRegister,
+            registers::{PortpmscRegister, PortscRegister},
             trb::EventTrb,
         },
     },
@@ -26,6 +26,7 @@ use crate::{
 #[derive(Debug)]
 pub struct PortArray<CRD: CompleteRealDevice> {
     portsc: Arc<OneIndexed<PortscRegister, { MAX_PORTS as usize }>>,
+    portpmsc: Arc<OneIndexed<PortpmscRegister, { MAX_PORTS as usize }>>,
     pub msg_sender: mpsc::UnboundedSender<PortMessage<CRD>>,
 }
 
@@ -40,6 +41,9 @@ impl<CRD: CompleteRealDevice> PortArray<CRD> {
             .into(),
         );
 
+        let portpmsc: Arc<OneIndexed<PortpmscRegister, { MAX_PORTS as usize }>> =
+            Arc::new(array::from_fn(|_| PortpmscRegister::default()).into());
+
         let (msg_sender, msg_recv) = mpsc::unbounded_channel();
 
         let worker = PortWorker {
@@ -53,7 +57,11 @@ impl<CRD: CompleteRealDevice> PortArray<CRD> {
 
         async_runtime.spawn(worker.run());
 
-        Self { portsc, msg_sender }
+        Self {
+            portsc,
+            portpmsc,
+            msg_sender,
+        }
     }
 
     pub fn write_portsc(&self, port_id: usize, value: u64) -> anyhow::Result<()> {
@@ -62,6 +70,14 @@ impl<CRD: CompleteRealDevice> PortArray<CRD> {
 
     pub fn read_portsc(&self, port_id: usize) -> u64 {
         self.portsc[port_id].read()
+    }
+
+    pub fn write_portpmsc(&self, port_id: usize, value: u32) {
+        self.portpmsc[port_id].write(value);
+    }
+
+    pub fn read_portpmsc(&self, port_id: usize) -> u32 {
+        self.portpmsc[port_id].read()
     }
 
     pub fn create_hotplug_control(&self) -> HotplugControl<CRD> {
