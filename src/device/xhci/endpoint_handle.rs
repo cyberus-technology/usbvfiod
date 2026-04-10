@@ -1140,6 +1140,18 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                         }
                         OutTrbProcessingResult::Stall => {
                             warn!("MARKER stall");
+
+                            warn!("OutTrbProcessingResult::Stall and reporting CompletionCode::StallError");
+                            let event = EventTrb::new_transfer_event_trb(
+                                self.current_trb_address.unwrap(),
+                                0,
+                                CompletionCode::StallError,
+                                false,
+                                self.endpoint_id,
+                                self.slot_id,
+                            );
+                            self.event_sender.send(event)?;
+
                             TrbProcessingResult::Stall
                             // TODO handle this for usb 3
                         }
@@ -1400,8 +1412,20 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                             TrbProcessingResult::Disconnect
                         }
                         InTrbProcessingResult::Stall => {
-                            // TODO handle this for usb 3
+                            // TODO handle this for usb 3; currently nothing happens
                             warn!("MARKER stall");
+
+                            warn!("InTrbProcessingResult::Stall and reporting CompletionCode::StallError");
+                            let event = EventTrb::new_transfer_event_trb(
+                                self.current_trb_address.unwrap(),
+                                0,
+                                CompletionCode::StallError,
+                                false,
+                                self.endpoint_id,
+                                self.slot_id,
+                            );
+                            self.event_sender.send(event)?;
+
                             TrbProcessingResult::Stall
                         }
                         InTrbProcessingResult::TransactionError => {
