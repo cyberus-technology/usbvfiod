@@ -140,6 +140,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                             self.state = WorkerState::StoppedWithContinuableTrb;
                             completion.send_anyhow(CompletionCode::Success)?;
                         }
+                        EndpointMessage::Doorbell => {}
                         msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                     }
                 },
