@@ -113,25 +113,25 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                         HotplugTrbProcessingResult::Ok => {
                             self.transfer_ring.advance();
                             self.state = WorkerState::LookForTrb;
-                        },
+                        }
                         HotplugTrbProcessingResult::Stall => {
                             self.context.set_state(endpoint_state::HALTED);
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
                             self.state = WorkerState::Halted;
-                        },
+                        }
                         HotplugTrbProcessingResult::TransactionError => {
                             self.context.set_state(endpoint_state::HALTED);
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
                             self.state = WorkerState::Halted;
-                        },
+                        }
                         HotplugTrbProcessingResult::TrbError => {
                             self.context.set_state(endpoint_state::ERROR);
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
                             self.state = WorkerState::Error;
-                        },
+                        }
                     },
                     // cannot use self.next_msg() because the &mut it takes clashes with the self.real_endpoint above
                     msg = self.recv.recv() => match msg.ok_or_else(|| anyhow!(""))? {
@@ -139,7 +139,8 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                             self.context.set_state(endpoint_state::STOPPED);
                             self.state = WorkerState::StoppedWithContinuableTrb;
                             completion.send_anyhow(CompletionCode::Success)?;
-                            },
+                        }
+                        EndpointMessage::Doorbell => {}
                         msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                     }
                 },
