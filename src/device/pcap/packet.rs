@@ -280,13 +280,11 @@ impl UsbPcapManager {
 pub fn log_control_submission(
     meta: super::meta::EndpointPcapMeta,
     request: &UsbRequest,
-    event_timestamp: Timestamp,
     payload: &[u8],
 ) {
     log_submission(
         meta,
         request.address,
-        event_timestamp,
         u32::from(request.length),
         Some(build_setup_bytes(request)),
         payload,
@@ -297,19 +295,11 @@ pub fn log_control_submission(
 pub fn log_control_completion(
     meta: super::meta::EndpointPcapMeta,
     urb_id: u64,
-    event_timestamp: Timestamp,
     status: i32,
     actual_length: u32,
     payload: &[u8],
 ) {
-    log_completion(
-        meta,
-        urb_id,
-        event_timestamp,
-        status,
-        actual_length,
-        payload,
-    );
+    log_completion(meta, urb_id, status, actual_length, payload);
 }
 
 /// Emit a PCAP record for an error-related event with optional setup data.
@@ -317,11 +307,11 @@ pub fn log_error(
     meta: super::meta::EndpointPcapMeta,
     urb_id: u64,
     event: UsbEventType,
-    event_timestamp: Timestamp,
     status: i32,
     setup: Option<[u8; 8]>,
     payload: &[u8],
 ) {
+    let event_timestamp = Timestamp::from(SystemTime::now());
     log_packet(
         urb_id,
         event,
@@ -338,11 +328,11 @@ pub fn log_error(
 pub fn log_submission(
     meta: super::meta::EndpointPcapMeta,
     urb_id: u64,
-    event_timestamp: Timestamp,
     expected_length: u32,
     setup: Option<[u8; 8]>,
     payload: &[u8],
 ) {
+    let event_timestamp = Timestamp::from(SystemTime::now());
     log_packet(
         urb_id,
         UsbEventType::Submission,
@@ -359,11 +349,11 @@ pub fn log_submission(
 pub fn log_completion(
     meta: super::meta::EndpointPcapMeta,
     urb_id: u64,
-    event_timestamp: Timestamp,
     status: i32,
     actual_length: u32,
     payload: &[u8],
 ) {
+    let event_timestamp = Timestamp::from(SystemTime::now());
     log_packet(
         urb_id,
         UsbEventType::Completion,
