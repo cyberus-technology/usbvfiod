@@ -117,10 +117,17 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             debug!("endpoint context specifies endpoint type {endpoint_type:?}");
 
             let endpoint_sender = match device {
-                Some(device) => match endpoint_type {
+                Some(device) => {
+                    let pcap_usb_type = match device.realdevice_ref().speed() {
+                        Some(speed) if speed.is_usb2_speed() => 2,
+                        Some(_) => 3,
+                        None => 0,
+                    };
+
+                    match endpoint_type {
                     EndpointType::Control => {
                         let pcap_meta = EndpointPcapMeta::control(
-                            Self::pcap_usb_type(device.as_ref()),
+                            pcap_usb_type,
                             request.slot_id,
                             request.endpoint_id,
                         );
@@ -137,7 +144,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                     }
                     EndpointType::BulkIn => {
                         let pcap_meta = EndpointPcapMeta::bulk_in(
-                            Self::pcap_usb_type(device.as_ref()),
+                            pcap_usb_type,
                             request.slot_id,
                             request.endpoint_id,
                         );
@@ -156,7 +163,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                     }
                     EndpointType::BulkOut => {
                         let pcap_meta = EndpointPcapMeta::bulk_out(
-                            Self::pcap_usb_type(device.as_ref()),
+                            pcap_usb_type,
                             request.slot_id,
                             request.endpoint_id,
                         );
@@ -175,7 +182,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                     }
                     EndpointType::InterruptIn => {
                         let pcap_meta = EndpointPcapMeta::interrupt_in(
-                            Self::pcap_usb_type(device.as_ref()),
+                            pcap_usb_type,
                             request.slot_id,
                             request.endpoint_id,
                         );
@@ -194,7 +201,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                     }
                     EndpointType::InterruptOut => {
                         let pcap_meta = EndpointPcapMeta::interrupt_out(
-                            Self::pcap_usb_type(device.as_ref()),
+                            pcap_usb_type,
                             request.slot_id,
                             request.endpoint_id,
                         );
@@ -214,14 +221,17 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                     EndpointType::Unsupported => unreachable!(
                         "the slot should early-reject configure endpoint commands with unsupported endpoint types"
                     ),
-                },
+                    }
+                }
                 // unlikely edge case: The device was very recently detached, we are now handling an address device/configure endpoint command
                 // the endpoint does not depend on the real device, so we need the address device/configure endpoint to succeed (while also not
                 // creating an invalid state)
                 None => {
                     debug!("Could not get real device, using dummy endpoint handle");
                     let hotplug_endpoint_handle = HotplugEndpointHandleImpl::dummy(
-                        request.slot_id, request.endpoint_id, self.event_sender.clone()
+                        request.slot_id,
+                        request.endpoint_id,
+                        self.event_sender.clone(),
                     );
 
                     EndpointWorker::launch(
@@ -242,14 +252,6 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             .recv()
             .await
             .ok_or_else(|| anyhow!("channel should never close"))
-    }
-
-    fn pcap_usb_type(device: &CRD) -> u16 {
-        match device.realdevice_ref().speed() {
-            Some(speed) if speed.is_usb2_speed() => 2,
-            Some(_) => 3,
-            None => 0,
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
