@@ -1,10 +1,10 @@
-use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin, time::SystemTime};
+use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin};
 
 use tracing::debug;
 
 use crate::device::{
     bus::BusDeviceRef,
-    pcap::{self, EndpointPcapMeta, Timestamp},
+    pcap::{self, EndpointPcapMeta},
     xhci::{
         hotplug_endpoint_handle::BaseEndpointHandle,
         interrupter::EventSender,
@@ -117,8 +117,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     let request_copy = request.clone_without_data();
                     let is_out_request = request.request_type & 0x80 == 0;
 
-                    let event_timestamp = Timestamp::from(SystemTime::now());
-                    pcap::control_submission(self.pcap_meta, &request, event_timestamp);
+                    pcap::control_submission(self.pcap_meta, &request);
 
                     self.real_ep.submit_control_request(request)?;
 
@@ -143,8 +142,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
             let result = match self.submission_state {
                 ControlSubmissionState::ParserConsumedTrb => TrbProcessingResult::Ok,
                 ControlSubmissionState::ParserError(trb_address) => {
-                    let event_timestamp = Timestamp::from(SystemTime::now());
-                    pcap::trb_error(self.pcap_meta, trb_address, event_timestamp);
+                    pcap::trb_error(self.pcap_meta, trb_address);
                     let event = EventTrb::new_transfer_event_trb(
                         trb_address,
                         0,
@@ -161,13 +159,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     match processing_result {
                         ControlRequestProcessingResult::SuccessfulControlIn(data) => {
                             debug!("got data from control in: {data:?}");
-                            let event_timestamp = Timestamp::from(SystemTime::now());
-                            pcap::control_completion_in(
-                                self.pcap_meta,
-                                usb_request.address,
-                                &data,
-                                event_timestamp,
-                            );
+                            pcap::control_completion_in(self.pcap_meta, usb_request.address, &data);
                             if let Some(data_pointer) = usb_request.data_pointer {
                                 debug!("writing data to {data_pointer}");
                                 self.dma_bus.write_bulk(data_pointer, &data);
@@ -187,13 +179,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         }
                         ControlRequestProcessingResult::SuccessfulControlOut => unreachable!(),
                         processing_error => {
-                            let event_timestamp = Timestamp::from(SystemTime::now());
-                            pcap::control_in_error(
-                                self.pcap_meta,
-                                usb_request,
-                                &processing_error,
-                                event_timestamp,
-                            );
+                            pcap::control_in_error(self.pcap_meta, usb_request, &processing_error);
                             self.handle_processing_error(processing_error, usb_request.address)?
                         }
                     }
@@ -205,12 +191,10 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                             unreachable!()
                         }
                         ControlRequestProcessingResult::SuccessfulControlOut => {
-                            let event_timestamp = Timestamp::from(SystemTime::now());
                             pcap::control_completion_out(
                                 self.pcap_meta,
                                 usb_request.address,
                                 u32::from(usb_request.length),
-                                event_timestamp,
                             );
                             let event = EventTrb::new_transfer_event_trb(
                                 usb_request.address,
@@ -225,13 +209,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                             TrbProcessingResult::Ok
                         }
                         processing_error => {
-                            let event_timestamp = Timestamp::from(SystemTime::now());
-                            pcap::control_out_error(
-                                self.pcap_meta,
-                                usb_request,
-                                &processing_error,
-                                event_timestamp,
-                            );
+                            pcap::control_out_error(self.pcap_meta, usb_request, &processing_error);
                             self.handle_processing_error(processing_error, usb_request.address)?
                         }
                     }
@@ -448,13 +426,11 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
             TransferTrbVariant::Normal(normal_data) => {
                 let mut data = vec![0; normal_data.transfer_length as usize];
                 self.dma_bus.read_bulk(normal_data.data_pointer, &mut data);
-                let event_timestamp = Timestamp::from(SystemTime::now());
                 pcap::out_submission(
                     self.pcap_meta,
                     trb.address,
                     &data,
                     normal_data.transfer_length,
-                    event_timestamp,
                 );
                 self.real_ep.submit(data)?;
                 self.submission_state = NormalSubmissionState::AwaitingRealTransfer(TransferTrb {
@@ -493,13 +469,11 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                     let (completion_code, processing_result) =
                         match self.real_ep.next_completion().await? {
                             OutTrbProcessingResult::Disconnect => {
-                                let event_timestamp = Timestamp::from(SystemTime::now());
                                 pcap::out_error(
                                     self.pcap_meta,
                                     transfer_trb.address,
                                     &OutTrbProcessingResult::Disconnect,
                                     &[],
-                                    event_timestamp,
                                 );
                                 (
                                     Some(CompletionCode::UsbTransactionError),
@@ -507,24 +481,20 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                                 )
                             }
                             OutTrbProcessingResult::Stall => {
-                                let event_timestamp = Timestamp::from(SystemTime::now());
                                 pcap::out_error(
                                     self.pcap_meta,
                                     transfer_trb.address,
                                     &OutTrbProcessingResult::Stall,
                                     &[],
-                                    event_timestamp,
                                 );
                                 (Some(CompletionCode::StallError), TrbProcessingResult::Stall)
                             }
                             OutTrbProcessingResult::TransactionError => {
-                                let event_timestamp = Timestamp::from(SystemTime::now());
                                 pcap::out_error(
                                     self.pcap_meta,
                                     transfer_trb.address,
                                     &OutTrbProcessingResult::TransactionError,
                                     &[],
-                                    event_timestamp,
                                 );
                                 (
                                     Some(CompletionCode::UsbTransactionError),
@@ -536,12 +506,10 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                                     if let TransferTrbVariant::Normal(ref normal_data) =
                                         transfer_trb.variant
                                     {
-                                        let event_timestamp = Timestamp::from(SystemTime::now());
                                         pcap::out_completion(
                                             self.pcap_meta,
                                             transfer_trb.address,
                                             normal_data.transfer_length,
-                                            event_timestamp,
                                         );
                                         match normal_data.interrupt_on_completion {
                                             true => Some(CompletionCode::Success),
@@ -634,13 +602,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
         let transfer_trb = TransferTrbVariant::parse(trb.buffer);
         match &transfer_trb {
             TransferTrbVariant::Normal(normal_data) => {
-                let event_timestamp = Timestamp::from(SystemTime::now());
-                pcap::in_submission(
-                    self.pcap_meta,
-                    trb.address,
-                    normal_data.transfer_length,
-                    event_timestamp,
-                );
+                pcap::in_submission(self.pcap_meta, trb.address, normal_data.transfer_length);
                 self.real_ep.submit(normal_data.transfer_length as usize)?;
                 self.submission_state = NormalSubmissionState::AwaitingRealTransfer(TransferTrb {
                     address: trb.address,
@@ -681,12 +643,10 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                         .await?
                     {
                         InTrbProcessingResult::Disconnect => {
-                            let event_timestamp = Timestamp::from(SystemTime::now());
                             pcap::in_error(
                                 self.pcap_meta,
                                 transfer_trb.address,
                                 &InTrbProcessingResult::Disconnect,
-                                event_timestamp,
                             );
                             (
                                 Some(CompletionCode::UsbTransactionError),
@@ -694,22 +654,18 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                             )
                         }
                         InTrbProcessingResult::Stall => {
-                            let event_timestamp = Timestamp::from(SystemTime::now());
                             pcap::in_error(
                                 self.pcap_meta,
                                 transfer_trb.address,
                                 &InTrbProcessingResult::Stall,
-                                event_timestamp,
                             );
                             (Some(CompletionCode::StallError), TrbProcessingResult::Stall)
                         }
                         InTrbProcessingResult::TransactionError => {
-                            let event_timestamp = Timestamp::from(SystemTime::now());
                             pcap::in_error(
                                 self.pcap_meta,
                                 transfer_trb.address,
                                 &InTrbProcessingResult::TransactionError,
-                                event_timestamp,
                             );
                             (
                                 Some(CompletionCode::UsbTransactionError),
@@ -717,13 +673,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                             )
                         }
                         InTrbProcessingResult::Success(data) => {
-                            let event_timestamp = Timestamp::from(SystemTime::now());
-                            pcap::in_completion(
-                                self.pcap_meta,
-                                transfer_trb.address,
-                                &data,
-                                event_timestamp,
-                            );
+                            pcap::in_completion(self.pcap_meta, transfer_trb.address, &data);
                             let completion_code = if let TransferTrbVariant::Normal(
                                 ref normal_data,
                             ) = transfer_trb.variant
