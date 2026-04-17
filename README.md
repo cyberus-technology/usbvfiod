@@ -9,7 +9,7 @@ virtual machines using the [vfio-user
 protocol](https://www.qemu.org/docs/master/interop/vfio-user.html). Other
 VMMs might also work, but are currently not the main target.
 
-This project is still under active development. We are planning to work on this
+This project is under active development. We are planning to work on this
 project in the following order:
 
 1. **Validating our Assumptions** (Done)
@@ -24,14 +24,18 @@ project in the following order:
      endpoints.
 1. **Hotplug Devices** (Done)
    - We enable attach and detach of exposed devices during runtime.
-1. **Stability & Error Recovery** (🚧 **Ongoing** 🚧)
+1. **Stability & Error Recovery** (Done)
    - We seek out points where we currently panic but should not have to panic.
+1. **Windows Guest Support** (🚧 **Ongoing** 🚧)
+   - Enable all features required for the Windows xHCI driver to interact with
+     devices through the controller.
 1. **Everything Beyond**
    - Many topics remain open. We stay flexible regarding upcoming features.
+   - Missing features include isochronous endpoint support, non-Linux Host
+     support, and support for other VMMs than Cloud Hypervisor.
 
-If you want to use this code, please check back later or [get in
-touch](https://cyberus-technology.de/en/contact), if you need
-professional support.
+If you want to use this code in production and need professional support,
+please [get in touch](https://cyberus-technology.de/en/contact).
 
 ## Documentation
 
