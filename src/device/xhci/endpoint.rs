@@ -98,7 +98,10 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender);
                     }
-                    msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                    msg => warn!(
+                        "invalid endpoint action: {msg:?} this EP {:?} in state {:?}",
+                        self.real_endpoint, self.state
+                    ),
                 },
                 WorkerState::LookForTrb => {
                     if let Some(trb) = self.transfer_ring.next_trb() {
@@ -158,13 +161,19 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                         // the Completion Code set to Context State Error.
                         completion.send_anyhow(CompletionCode::ContextStateError)?;
                     }
-                    msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                    msg => warn!(
+                        "invalid endpoint action: {msg:?} this EP {:?} in state {:?}",
+                        self.real_endpoint, self.state
+                    ),
                 },
                 WorkerState::Error => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
                     }
-                    msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                    msg => warn!(
+                        "invalid endpoint action: {msg:?} this EP {:?} in state {:?}",
+                        self.real_endpoint, self.state
+                    ),
                 },
                 WorkerState::StoppedWithContinuableTrb => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
@@ -178,7 +187,10 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender);
                     }
-                    msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                    msg => warn!(
+                        "invalid endpoint action: {msg:?} this EP {:?} in state {:?}",
+                        self.real_endpoint, self.state
+                    ),
                 },
                 WorkerState::Stopped => match self.next_msg().await? {
                     EndpointMessage::Doorbell => {
@@ -191,7 +203,10 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender);
                     }
-                    msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                    msg => warn!(
+                        "invalid endpoint action: {msg:?} this EP {:?} in state {:?}",
+                        self.real_endpoint, self.state
+                    ),
                 },
                 WorkerState::SettingTrDequeuePointer(ptr, cs, completion) => {
                     // we might be transitioning from Error/Halted;
