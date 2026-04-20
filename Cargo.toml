@@ -25,7 +25,7 @@ clap = { version = "4.5.35", features = [
   "usage",
 ], default-features = false }
 memmap2 = "0.9.5"
-nusb = { version = "0.2.0", default-features = false }
+nusb = { version = "0.2.0", default-features = false, features = ["tokio"] }
 thiserror = { version = "2.0.12" }
 tokio = { version = "1.48.0", features = ["full"] }
 tokio-util = "0.7.17"
