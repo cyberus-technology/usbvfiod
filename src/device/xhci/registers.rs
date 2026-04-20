@@ -124,6 +124,25 @@ impl PortscRegister {
     }
 }
 
+/// Port Power Management Status and Control (chapter 5.4.9)
+///
+/// Limitations:
+/// 1. no separation between RW and RWS
+/// 1. no checks for RsvdP at: 17 <= bits <= 31
+#[derive(Debug, Default, Clone)]
+pub struct PortpmscRegister {
+    value: Arc<AtomicU32>,
+}
+impl PortpmscRegister {
+    pub fn read(&self) -> u32 {
+        self.value.load(Ordering::Relaxed)
+    }
+
+    pub fn write(&self, value: u32) {
+        self.value.store(value, Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct ConfigureRegister {
     value: Arc<AtomicU32>,
