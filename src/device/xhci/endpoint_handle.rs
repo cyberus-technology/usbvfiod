@@ -2,9 +2,9 @@ use core::panic;
 use std::cmp::Ordering;
 use std::{fmt::Debug, future::Future, pin::Pin};
 
-use tracing::debug;
 use tracing::trace;
 use tracing::warn;
+use tracing::{debug, error};
 
 use crate::device::xhci::trb::NormalTrbData;
 use crate::device::xhci::trb::{
@@ -155,7 +155,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         };
 
         if setup_stage_trb_data.request_type & 0x80 != 0 {
-            trace!("SetupStage TRB with ControlIn");
+            trace!("SetupStage TRB with ControlIn pre hardware");
 
             self.direction = ControlTransferDirection::In(request.clone());
 
@@ -165,7 +165,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
 
             Ok(true)
         } else {
-            trace!("SetupStage TRB with ControlOut");
+            trace!("SetupStage TRB with ControlOut pre hardware");
             request.data = Some(vec![]);
 
             self.direction = ControlTransferDirection::Out(request);
@@ -191,7 +191,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         match &mut self.direction {
             // collect hardware data
             ControlTransferDirection::In(request) => {
-                debug!("control in data {:?}", hardware_data);
+                trace!("SetupStage TRB with ControlIn post hardware");
+                trace!("ControlIn in data {:?}", hardware_data);
 
                 let address = self.current_trb_address.unwrap();
                 let setup_stage_trb_data = match &self.current_trb_data {
@@ -295,7 +296,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
     ) -> anyhow::Result<()> {
         match &mut self.direction {
             ControlTransferDirection::In(_) => {
-                trace!("StatusStage TRB with ControlIn");
+                trace!("StatusStage TRB with ControlIn pre hardware");
 
                 if status_stage_trb_data.interrupt_on_completion {
                     self.interrupt_on_completion(address, CompletionCode::Success, false)?;
@@ -308,7 +309,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 self.submission_state = ControlSubmissionState::ParserConsumedTrb;
             }
             ControlTransferDirection::Out(control_out) => {
-                trace!("StatusStage TRB with ControlOut");
+                trace!("StatusStage TRB with ControlOut pre hardware");
 
                 self.real_ep.submit_control_request(control_out.clone())?;
 
@@ -326,11 +327,11 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
     fn handle_status_stage_trb_post_hardware(&mut self, address: u64) -> anyhow::Result<()> {
         match &mut self.direction {
             ControlTransferDirection::In(_) => {
-                trace!("StatusStage TRB with ControlIn");
-                panic!("TODO should not land here")
+                trace!("StatusStage TRB with ControlIn post hardware");
+                unreachable!("no hardware request should happen at this point");
             }
             ControlTransferDirection::Out(_) => {
-                trace!("StatusStage TRB with ControlOut");
+                trace!("StatusStage TRB with ControlOut post hardware");
 
                 // use data from device -> insert into state to use in data stage
                 let status_stage_trb_data = match &self.current_trb_data {
@@ -624,7 +625,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 TrbProcessingResult::Stall
             }
             ControlRequestProcessingResult::TransactionError => {
-                warn!("ControlRequestProcessingResult::TransactionError and reporting CompletionCode::UsbTransactionError");
+                warn!("ControlRequestProcessingResult::TransactionError and reporting something");
                 let event = EventTrb::new_transfer_event_trb(
                     request_address,
                     0,
@@ -723,7 +724,10 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         match self.current_trb_data.clone().unwrap() {
             TransferTrbVariant::Normal(normal_trb_data) => {
                 self.edtla += normal_trb_data.transfer_length as u64;
-
+                error!(
+                    "writing normal trb of length {}",
+                    normal_trb_data.transfer_length
+                );
                 if normal_trb_data.interrupt_on_completion {
                     self.interrupt_on_completion(
                         self.current_trb_address.unwrap(),
@@ -745,6 +749,7 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         event_data_trb_data: &EventDataTrbData,
     ) -> anyhow::Result<()> {
         trace!("EventData TRB");
+        debug!("data field: {:#x}", event_data_trb_data.event_data);
 
         // edlta is supposed to be a 24 bit value, it being larger is a spec violation we silently drop
         let masked_edtla = (MASK_24BIT & self.edtla) as u32;

@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use tokio::sync::Notify;
-use tracing::trace;
+use tracing::{debug, trace};
 
 use crate::device::{
     pci::constants::xhci::{
@@ -107,6 +107,7 @@ impl PortscRegister {
             }
             UsbVersion::USB3 => {
                 Self::update_with_mask(register, portsc::PRC, portsc::PRC);
+                debug!("PR bit on a USB 3 port");
             }
         }
     }
