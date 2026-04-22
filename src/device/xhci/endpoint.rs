@@ -3,7 +3,7 @@ use tokio::{
     runtime, select,
     sync::{mpsc, oneshot},
 };
-use tracing::{trace, warn};
+use tracing::{error, trace, warn};
 
 use crate::{
     device::{
@@ -91,11 +91,13 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 WorkerState::WaitForDoorbell => match self.next_msg().await? {
                     EndpointMessage::Doorbell => self.state = WorkerState::LookForTrb,
                     EndpointMessage::Stop(sender) => {
+                        error!("WorkerState::WaitForDoorbell EndpointMessage::Stop");
                         self.context.set_state(endpoint_state::STOPPED);
                         self.state = WorkerState::Stopped;
                         sender.send_anyhow(CompletionCode::Success)?;
                     }
                     EndpointMessage::Terminate(sender) => {
+                        error!("WorkerState::WaitForDoorbell EndpointMessage::Terminate");
                         self.state = WorkerState::Terminating(sender);
                     }
                     msg => warn!(
@@ -114,22 +116,26 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 WorkerState::WaitForTrbCompletion => select! {
                     result = self.real_endpoint.next_completion() => match result? {
                         HotplugTrbProcessingResult::Ok => {
+                            trace!("WorkerState::WaitForTrbCompletion HotplugTrbProcessingResult::Ok");
                             self.transfer_ring.advance();
                             self.state = WorkerState::LookForTrb;
                         }
                         HotplugTrbProcessingResult::Stall => {
                             self.context.set_state(endpoint_state::HALTED);
+                            error!("WorkerState::WaitForTrbCompletion HotplugTrbProcessingResult::Stall");
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
                             self.state = WorkerState::Halted;
                         }
                         HotplugTrbProcessingResult::TransactionError => {
+                            error!("WorkerState::WaitForTrbCompletion HotplugTrbProcessingResult::TransactionError");
                             self.context.set_state(endpoint_state::HALTED);
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
                             self.state = WorkerState::Halted;
                         }
                         HotplugTrbProcessingResult::TrbError => {
+                            error!("WorkerState::WaitForTrbCompletion HotplugTrbProcessingResult::TrbError");
                             self.context.set_state(endpoint_state::ERROR);
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
@@ -139,6 +145,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     // cannot use self.next_msg() because the &mut it takes clashes with the self.real_endpoint above
                     msg = self.recv.recv() => match msg.ok_or_else(|| anyhow!(""))? {
                         EndpointMessage::Stop(completion) => {
+                            error!("WorkerState::WaitForTrbCompletion EndpointMessage::Stop");
                             self.context.set_state(endpoint_state::STOPPED);
                             self.state = WorkerState::StoppedWithContinuableTrb;
                             completion.send_anyhow(CompletionCode::Success)?;
@@ -149,12 +156,14 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 },
                 WorkerState::Halted => match self.next_msg().await? {
                     EndpointMessage::Reset(completion) => {
+                        error!("WorkerState::Halted EndpointMessage::Reset");
                         self.real_endpoint.clear_halt().await?;
                         self.context.set_state(endpoint_state::STOPPED);
                         self.state = WorkerState::Stopped;
                         completion.send_anyhow(CompletionCode::Success)?;
                     }
                     EndpointMessage::Stop(completion) => {
+                        error!("WorkerState::Halted EndpointMessage::Stop");
                         // XHCI spec 4.8.3:
                         // A Stop Endpoint Command received while an endpoint is in the Halted
                         // state shall have no effect and shall generate a Command Completion Event with
@@ -168,6 +177,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 },
                 WorkerState::Error => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
+                        error!("WorkerState::Error EndpointMessage::SetTrDequeuePointer");
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
                     }
                     msg => warn!(
@@ -177,14 +187,17 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 },
                 WorkerState::StoppedWithContinuableTrb => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
+                        error!("WorkerState::StoppedWithContinuableTrb EndpointMessage::SetTrDequeuePointer");
                         self.real_endpoint.cancel().await?;
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
                     }
                     EndpointMessage::Doorbell => {
+                        error!("WorkerState::StoppedWithContinuableTrb EndpointMessage::Doorbell");
                         self.context.set_state(endpoint_state::RUNNING);
                         self.state = WorkerState::WaitForTrbCompletion;
                     }
                     EndpointMessage::Terminate(sender) => {
+                        error!("WorkerState::StoppedWithContinuableTrb EndpointMessage::Terminate");
                         self.state = WorkerState::Terminating(sender);
                     }
                     msg => warn!(
@@ -194,13 +207,16 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 },
                 WorkerState::Stopped => match self.next_msg().await? {
                     EndpointMessage::Doorbell => {
+                        error!("WorkerState::Stopped EndpointMessage::Doorbell");
                         self.context.set_state(endpoint_state::RUNNING);
                         self.state = WorkerState::LookForTrb;
                     }
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
+                        error!("WorkerState::Stopped EndpointMessage::SetTrDequeuePointer");
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
                     }
                     EndpointMessage::Terminate(sender) => {
+                        error!("WorkerState::Stopped EndpointMessage::Terminate");
                         self.state = WorkerState::Terminating(sender);
                     }
                     msg => warn!(
