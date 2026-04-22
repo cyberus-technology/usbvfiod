@@ -2,9 +2,9 @@ use core::panic;
 use std::cmp::Ordering;
 use std::{fmt::Debug, future::Future, pin::Pin};
 
-use tracing::debug;
 use tracing::trace;
 use tracing::warn;
+use tracing::{debug, error};
 
 use crate::device::xhci::trb::NormalTrbData;
 use crate::device::xhci::trb::{
@@ -727,7 +727,10 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         match self.current_trb_data.clone().unwrap() {
             TransferTrbVariant::Normal(normal_trb_data) => {
                 self.edtla += normal_trb_data.transfer_length as u64;
-
+                error!(
+                    "writing normal trb of length {}",
+                    normal_trb_data.transfer_length
+                );
                 if normal_trb_data.interrupt_on_completion {
                     self.interrupt_on_completion(
                         self.current_trb_address.unwrap(),
@@ -749,6 +752,7 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         event_data_trb_data: &EventDataTrbData,
     ) -> anyhow::Result<()> {
         trace!("EventData TRB");
+        debug!("data field: {:#x}", event_data_trb_data.event_data);
 
         // edlta is supposed to be a 24 bit value, it being larger is a spec violation we silently drop
         let masked_edtla = (MASK_24BIT & self.edtla) as u32;
@@ -822,6 +826,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                 self.handle_normal_trb_pre_hardware(normal_trb_data)?;
             }
             TransferTrbVariant::EventData(event_data_trb_data) => {
+                // TODO missing pcap
                 self.handle_event_data_trb(trb.address, event_data_trb_data)?;
             }
             _ => self.submission_state = NormalSubmissionState::UnsupportedTrbType(trb),
