@@ -56,6 +56,7 @@ let
             environment.systemPackages = with pkgs; [
               pciutils
               usbutils
+              e2fsprogs
             ];
 
             # network configuration for interactive debugging
