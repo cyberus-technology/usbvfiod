@@ -107,6 +107,7 @@ impl PortscRegister {
             }
             UsbVersion::USB3 => {
                 Self::update_with_mask(register, portsc::PRC, portsc::PRC);
+                todo!("PR bit on a USB 3 port");
             }
         }
     }

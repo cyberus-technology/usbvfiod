@@ -151,7 +151,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         };
 
         if setup_stage_trb_data.request_type & 0x80 != 0 {
-            trace!("SetupStage TRB with ControlIn");
+            trace!("SetupStage TRB with ControlIn pre hardware");
 
             self.direction = ControlTransferDirection::In(request.clone());
 
@@ -161,7 +161,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
 
             Ok(true)
         } else {
-            trace!("SetupStage TRB with ControlOut");
+            trace!("SetupStage TRB with ControlOut pre hardware");
             request.data = Some(vec![]);
 
             self.direction = ControlTransferDirection::Out(request);
@@ -187,7 +187,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         match &mut self.direction {
             // collect hardware data
             ControlTransferDirection::In(request) => {
-                debug!("control in data {:?}", hardware_data);
+                trace!("SetupStage TRB with ControlIn post hardware");
+                trace!("ControlIn in data {:?}", hardware_data);
 
                 let address = self.current_trb_address.unwrap();
                 let setup_stage_trb_data = match &self.current_trb_data {
@@ -291,7 +292,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
     ) -> anyhow::Result<()> {
         match &mut self.direction {
             ControlTransferDirection::In(_) => {
-                trace!("StatusStage TRB with ControlIn");
+                trace!("StatusStage TRB with ControlIn pre hardware");
 
                 if status_stage_trb_data.interrupt_on_completion {
                     self.interrupt_on_completion(address, CompletionCode::Success, false)?;
@@ -304,7 +305,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 self.submission_state = ControlSubmissionState::ParserConsumedTrb;
             }
             ControlTransferDirection::Out(control_out) => {
-                trace!("StatusStage TRB with ControlOut");
+                trace!("StatusStage TRB with ControlOut pre hardware");
 
                 self.real_ep.submit_control_request(control_out.clone())?;
 
@@ -322,11 +323,11 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
     fn handle_status_stage_trb_post_hardware(&mut self, address: u64) -> anyhow::Result<()> {
         match &mut self.direction {
             ControlTransferDirection::In(_) => {
-                trace!("StatusStage TRB with ControlIn");
-                panic!("TODO should not land here")
+                trace!("StatusStage TRB with ControlIn post hardware");
+                unreachable!("no hardware request should happen at this point");
             }
             ControlTransferDirection::Out(_) => {
-                trace!("StatusStage TRB with ControlOut");
+                trace!("StatusStage TRB with ControlOut post hardware");
 
                 // use data from device -> insert into state to use in data stage
                 let status_stage_trb_data = match &self.current_trb_data {
@@ -603,7 +604,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 TrbProcessingResult::Stall
             }
             ControlRequestProcessingResult::TransactionError => {
-                warn!("ControlRequestProcessingResult::TransactionError and reporting CompletionCode::UsbTransactionError");
+                warn!("ControlRequestProcessingResult::TransactionError and reporting something");
                 let event = EventTrb::new_transfer_event_trb(
                     request_address,
                     0,
