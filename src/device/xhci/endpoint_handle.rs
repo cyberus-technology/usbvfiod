@@ -366,6 +366,9 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
 
         // edlta is supposed to be a 24 bit value, it being larger is a spec violation we silently drop
         let masked_edtla = (MASK_24BIT & self.edtla) as u32;
+        if MASK_24BIT < self.edtla {
+            panic!("edlta");
+        }
 
         let event = EventTrb::new_transfer_event_trb(
             event_data_trb_data.event_data,
@@ -753,6 +756,9 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
 
         // edlta is supposed to be a 24 bit value, it being larger is a spec violation we silently drop
         let masked_edtla = (MASK_24BIT & self.edtla) as u32;
+        if MASK_24BIT < self.edtla {
+            panic!("edlta");
+        }
 
         let event = EventTrb::new_transfer_event_trb(
             event_data_trb_data.event_data,
@@ -1059,6 +1065,9 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
 
         // edlta is supposed to be a 24 bit value, it being larger is a spec violation we silently drop
         let masked_edtla = MASK_24BIT & self.edtla;
+        if MASK_24BIT < self.edtla {
+            panic!("edlta");
+        }
 
         let event = EventTrb::new_transfer_event_trb(
             event_data_trb_data.event_data,
