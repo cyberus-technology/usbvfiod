@@ -1,7 +1,7 @@
 //! Implements a XHCI command ring and a worker task that services the ring.
 
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     Arc,
 };
 
@@ -34,7 +34,7 @@ struct CommandWorker {
     state: WorkerState,
     receiver: mpsc::UnboundedReceiver<WorkerMessage>,
     commandring_running: Arc<AtomicBool>,
-    controller_running: Arc<AtomicBool>,
+    usbcmd: Arc<AtomicU32>,
     event_sender: EventSender,
     ring: LinkedRing,
     slot_handle: SlotWorkerHandle,
@@ -71,7 +71,7 @@ impl CommandRing {
         async_runtime: &runtime::Handle,
         event_sender: EventSender,
         slot_handle: SlotWorkerHandle,
-        controller_running: Arc<AtomicBool>,
+        usbcmd: Arc<AtomicU32>,
     ) -> Self {
         let (sender_to_worker, receiver) = mpsc::unbounded_channel();
         let running = Arc::new(AtomicBool::new(false));
@@ -81,7 +81,7 @@ impl CommandRing {
             state: WorkerState::Stopped,
             receiver,
             commandring_running: running.clone(),
-            controller_running,
+            usbcmd,
             event_sender,
             ring,
             slot_handle,
@@ -171,7 +171,8 @@ impl CommandWorker {
                         self.ring.set_dequeue_pointer(dp, cs);
                     }
                     WorkerMessage::Doorbell => {
-                        if self.controller_running.load(Ordering::Relaxed) {
+                        let controller_running = (self.usbcmd.load(Ordering::Relaxed) & 0x1) == 1;
+                        if controller_running {
                             self.commandring_running.store(true, Ordering::Relaxed);
                             self.state = WorkerState::LookingForNewCommand;
                         } else {
@@ -206,7 +207,8 @@ impl CommandWorker {
                             msg => warn!("Unexpected message: msg={msg:?}, state={:?}", self.state),
                         }
                     }
-                    if !self.controller_running.load(Ordering::Relaxed) {
+                    let controller_running = (self.usbcmd.load(Ordering::Relaxed) & 0x1) == 1;
+                    if !controller_running {
                         trace!("Detected controller is not running; moving command ring to stopped state");
                         self.state = WorkerState::Stopped;
                         continue;
