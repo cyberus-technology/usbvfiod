@@ -332,6 +332,13 @@ pub mod xhci {
             pub const CRR: u64 = 0x8;
         }
 
+        /// See xhci specification chapter 5.4.1
+        pub mod usbcmd {
+            pub const RS: u64 = 0x1;
+            pub const HCRST: u64 = 0x2;
+            pub const INTE: u64 = 0x4;
+        }
+
         /// See xhci specification chapter 5.4.8
         ///
         /// Bitmask of the specific field in the portsc register.
