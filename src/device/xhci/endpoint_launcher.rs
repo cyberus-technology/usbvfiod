@@ -48,6 +48,14 @@ pub struct LaunchRequester {
     msg_send: mpsc::UnboundedSender<LaunchRequest>,
 }
 
+#[derive(Debug, Clone)]
+struct LaunchArgs {
+    slot_id: u8,
+    endpoint_id: u8,
+    endpoint_context: EndpointContext,
+    detach_token: CancellationToken,
+}
+
 impl LaunchRequester {
     pub async fn request_launch(
         &self,
@@ -123,6 +131,12 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                         Some(_) => 3,
                         None => 0,
                     };
+                    let launch_args = LaunchArgs {
+                        slot_id: request.slot_id,
+                        endpoint_id: request.endpoint_id,
+                        endpoint_context: request.endpoint_context,
+                        detach_token: device.detach_token(),
+                    };
 
                     match endpoint_type {
                     EndpointType::Control => {
@@ -134,12 +148,9 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                         let real_endpoint = device.realdevice_ref().control_endpoint_handle();
                         self.launch_helper(
                             ControlEndpointHandle::new,
-                            request.slot_id,
-                            request.endpoint_id,
+                            launch_args,
                             pcap_meta,
                             real_endpoint,
-                            request.endpoint_context,
-                            device.detach_token(),
                         )
                     }
                     EndpointType::BulkIn => {
@@ -153,12 +164,9 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                             .bulk_in_endpoint_handle(request.endpoint_id);
                         self.launch_helper(
                             InEndpointHandle::new,
-                            request.slot_id,
-                            request.endpoint_id,
+                            launch_args,
                             pcap_meta,
                             real_endpoint,
-                            request.endpoint_context,
-                            device.detach_token(),
                         )
                     }
                     EndpointType::BulkOut => {
@@ -172,12 +180,9 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                             .bulk_out_endpoint_handle(request.endpoint_id);
                         self.launch_helper(
                             OutEndpointHandle::new,
-                            request.slot_id,
-                            request.endpoint_id,
+                            launch_args,
                             pcap_meta,
                             real_endpoint,
-                            request.endpoint_context,
-                            device.detach_token(),
                         )
                     }
                     EndpointType::InterruptIn => {
@@ -191,12 +196,9 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                             .interrupt_in_endpoint_handle(request.endpoint_id);
                         self.launch_helper(
                             InEndpointHandle::new,
-                            request.slot_id,
-                            request.endpoint_id,
+                            launch_args,
                             pcap_meta,
                             real_endpoint,
-                            request.endpoint_context,
-                            device.detach_token(),
                         )
                     }
                     EndpointType::InterruptOut => {
@@ -210,12 +212,9 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                             .interrupt_out_endpoint_handle(request.endpoint_id);
                         self.launch_helper(
                             OutEndpointHandle::new,
-                            request.slot_id,
-                            request.endpoint_id,
+                            launch_args,
                             pcap_meta,
                             real_endpoint,
-                            request.endpoint_context,
-                            device.detach_token(),
                         )
                     }
                     EndpointType::Unsupported => unreachable!(
@@ -254,16 +253,12 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             .ok_or_else(|| anyhow!("channel should never close"))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn launch_helper<RealEndpoint, Endpoint, EndpointConstructor>(
         &self,
         constructor: EndpointConstructor,
-        slot_id: u8,
-        endpoint_id: u8,
+        launch_args: LaunchArgs,
         pcap_meta: EndpointPcapMeta,
         real_endpoint: RealEndpoint,
-        endpoint_context: EndpointContext,
-        detach_token: CancellationToken,
     ) -> EndpointSender
     where
         Endpoint: EndpointHandle,
@@ -271,19 +266,19 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             FnOnce(u8, u8, EndpointPcapMeta, RealEndpoint, BusDeviceRef, EventSender) -> Endpoint,
     {
         let endpoint_handle = constructor(
-            slot_id,
-            endpoint_id,
+            launch_args.slot_id,
+            launch_args.endpoint_id,
             pcap_meta,
             real_endpoint,
             self.dma_bus.clone(),
             self.event_sender.clone(),
         );
         let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
-            slot_id,
-            endpoint_id,
+            launch_args.slot_id,
+            launch_args.endpoint_id,
             endpoint_handle,
             self.event_sender.clone(),
-            detach_token,
+            launch_args.detach_token,
             &self.async_runtime,
         );
 
@@ -291,7 +286,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             &self.async_runtime,
             self.dma_bus.clone(),
             hotplug_endpoint_handle,
-            endpoint_context,
+            launch_args.endpoint_context,
         )
     }
 }
