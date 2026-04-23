@@ -182,41 +182,53 @@ impl DcbaapRegister {
 
 #[derive(Debug)]
 pub struct UsbcmdRegister {
-    running: Arc<AtomicBool>,
+    value: Arc<AtomicU32>,
 }
 
 impl UsbcmdRegister {
     pub fn new() -> Self {
-        let running = Arc::new(AtomicBool::new(false));
-
-        Self { running }
+        Self {
+            value: Arc::new(AtomicU32::new(0)),
+        }
     }
 
-    pub fn write(&self, value: u64) {
-        self.running.store(value & 0x1 != 0, Ordering::Relaxed);
+    pub fn read(&self) -> u32 {
+        self.value.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn running_bit(&self) -> Arc<AtomicBool> {
-        self.running.clone()
+    pub fn write(&self, value: u32) {
+        // this mask is incomplete due to:
+        // - bit 7 being defined as RW or RO depending on the HCCPARAMS1 LHRC bit
+        // - bit 14
+        // - bit 15
+        const BITMASK_RW: u32 = 0b100101111100001111;
+
+        // an acutal controller reset is impossible to do
+        const BITMASK_CANT_IMPLEMENT: u32 = 0b10;
+
+        let value = value & BITMASK_RW & !BITMASK_CANT_IMPLEMENT;
+
+        self.value.store(value, Ordering::Relaxed);
+    }
+
+    pub fn value_reference(&self) -> Arc<AtomicU32> {
+        self.value.clone()
     }
 }
 
 #[derive(Debug)]
 pub struct UsbstsRegister {
-    running: Arc<AtomicBool>,
+    usbcmd: Arc<AtomicU32>,
 }
 
 impl UsbstsRegister {
-    pub const fn new(running: Arc<AtomicBool>) -> Self {
-        Self { running }
+    pub const fn new(usbcmd: Arc<AtomicU32>) -> Self {
+        Self { usbcmd }
     }
 
     pub fn read(&self) -> u64 {
-        let hch = if self.running.load(Ordering::Relaxed) {
-            0
-        } else {
-            usbsts::HCH
-        };
+        let is_running = (self.usbcmd.load(Ordering::Relaxed) & 0x1) == 1;
+        let hch = if is_running { 0 } else { usbsts::HCH };
         hch | usbsts::EINT | usbsts::PCD
     }
 }
