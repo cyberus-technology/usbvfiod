@@ -43,7 +43,7 @@ pub struct XhciController<CRD: CompleteRealDevice> {
 impl<CRD: CompleteRealDevice> XhciController<CRD> {
     pub fn new(dma_bus: BusDeviceRef, async_runtime: runtime::Handle) -> Self {
         let usbcmd = UsbcmdRegister::new();
-        let usbsts = UsbstsRegister::new(usbcmd.running_bit());
+        let usbsts = UsbstsRegister::new(usbcmd.value_reference());
         let interrupter = Interrupter::new(dma_bus.clone(), &async_runtime);
         let port_array = PortArray::new(interrupter.create_event_sender(), async_runtime.clone());
         let ep_launch_requester = EndpointLauncher::start(
@@ -58,7 +58,7 @@ impl<CRD: CompleteRealDevice> XhciController<CRD> {
             &async_runtime,
             interrupter.create_event_sender(),
             slot_manager.create_slot_worker_handle(),
-            usbcmd.running_bit(),
+            usbcmd.value_reference(),
         );
 
         Self {
@@ -114,7 +114,8 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
 
         match req.addr {
             // xHC Operational Registers
-            offset::USBCMD => self.usbcmd.write(value),
+            // SAFETY: The USBCMD is defined as 32 bit
+            offset::USBCMD => self.usbcmd.write(value as u32),
             offset::DNCTL => assert_eq!(value, 2, "debug notifications not supported"),
             offset::CRCR => self
                 .command_ring
@@ -196,7 +197,7 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
             offset::SUPPORTED_PROTOCOLS_USB2_CONFIG_RESERVED => 0,
 
             // xHC Operational Registers
-            offset::USBCMD => 0,
+            offset::USBCMD => self.usbcmd.read() as u64,
             offset::USBSTS => self.usbsts.read(),
             offset::DNCTL => 2,
             offset::CRCR => self.command_ring.status(),
