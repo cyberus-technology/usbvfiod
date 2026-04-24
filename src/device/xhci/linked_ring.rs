@@ -3,7 +3,9 @@ use tracing::trace;
 use crate::device::{
     bus::BusDeviceRef,
     pci::constants::xhci::rings::TRB_SIZE,
-    xhci::trb::{zeroed_trb_buffer, LinkTrb, RawTrb, RawTrbBuffer},
+    xhci::trb::{
+        zeroed_trb_buffer, LinkTrb, RawTrb, RawTrbBuffer, TransferTrb, TransferTrbVariant,
+    },
 };
 
 /// Transfer Rings: Unidirectional means of communication, allowing the
@@ -44,6 +46,27 @@ impl LinkedRing {
         // TRB
         let first_trb_buffer = self.next_trb_raw()?;
 
+        match TransferTrbVariant::parse(first_trb_buffer) {
+            TransferTrbVariant::Normal(data) => {
+                trace!("next_trb: {:?}", data);
+            }
+            TransferTrbVariant::SetupStage(data) => {
+                trace!("next_trb: {:?}", data);
+            }
+            TransferTrbVariant::DataStage(data) => {
+                trace!("next_trb: {:?}", data);
+            }
+            TransferTrbVariant::StatusStage(data) => {
+                trace!("next_trb: {:?}", data);
+            }
+            TransferTrbVariant::EventData(data) => {
+                trace!("next_trb: {:?}", data);
+            }
+            a => {
+                trace!("next_trb wildcard: {:?}", a);
+            }
+        }
+
         let final_buffer = if let Some(link_trb) = LinkTrb::parse(first_trb_buffer) {
             // encountered Link TRB
             // update dequeue pointer.
@@ -51,6 +74,12 @@ impl LinkedRing {
             if link_trb.toggle_cycle {
                 self.cycle_state = !self.cycle_state;
             }
+            trace!(
+                "encountered Link TRB; set dequeue from {:x} to {:x}; toggle_cycle_bit: {}",
+                self.dequeue_pointer,
+                link_trb.ring_segment_pointer,
+                link_trb.toggle_cycle
+            );
 
             // lookup first TRB in the new memory segment
             let second_trb_buffer = self.next_trb_raw()?;
@@ -83,7 +112,8 @@ impl LinkedRing {
             .read_bulk(self.dequeue_pointer, &mut trb_buffer);
 
         trace!(
-            "interpreting TRB at dequeue pointer; cycle state = {}, TRB = {:?}",
+            "interpreting TRB at dequeue pointer {:x}; cycle state = {}, TRB = {:?}",
+            self.dequeue_pointer,
             self.cycle_state as u8,
             trb_buffer
         );
