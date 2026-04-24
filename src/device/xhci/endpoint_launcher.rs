@@ -9,6 +9,7 @@ use tracing::{debug, info};
 use crate::{
     device::{
         bus::BusDeviceRef,
+        pcap::EndpointPcapMeta,
         xhci::{
             endpoint::{EndpointSender, EndpointWorker},
             endpoint_handle::{
@@ -45,6 +46,14 @@ pub struct LaunchRequest {
 #[derive(Debug, Clone)]
 pub struct LaunchRequester {
     msg_send: mpsc::UnboundedSender<LaunchRequest>,
+}
+
+#[derive(Debug, Clone)]
+struct LaunchArgs {
+    slot_id: u8,
+    endpoint_id: u8,
+    endpoint_context: EndpointContext,
+    detach_token: CancellationToken,
 }
 
 impl LaunchRequester {
@@ -116,46 +125,112 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             debug!("endpoint context specifies endpoint type {endpoint_type:?}");
 
             let endpoint_sender = match device {
-                Some(device) => match endpoint_type {
+                Some(device) => {
+                    let pcap_usb_type = match device.realdevice_ref().speed() {
+                        Some(speed) if speed.is_usb2_speed() => 2,
+                        Some(_) => 3,
+                        None => 0,
+                    };
+                    let launch_args = LaunchArgs {
+                        slot_id: request.slot_id,
+                        endpoint_id: request.endpoint_id,
+                        endpoint_context: request.endpoint_context,
+                        detach_token: device.detach_token(),
+                    };
+
+                    match endpoint_type {
                     EndpointType::Control => {
+                        let pcap_meta = EndpointPcapMeta::control(
+                            pcap_usb_type,
+                            request.slot_id,
+                            request.endpoint_id,
+                        );
                         let real_endpoint = device.realdevice_ref().control_endpoint_handle();
-                        self.launch_helper(ControlEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
+                        self.launch_helper(
+                            ControlEndpointHandle::new,
+                            launch_args,
+                            pcap_meta,
+                            real_endpoint,
+                        )
                     }
                     EndpointType::BulkIn => {
+                        let pcap_meta = EndpointPcapMeta::bulk_in(
+                            pcap_usb_type,
+                            request.slot_id,
+                            request.endpoint_id,
+                        );
                         let real_endpoint = device
                             .realdevice_ref()
                             .bulk_in_endpoint_handle(request.endpoint_id);
-                        self.launch_helper(InEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
+                        self.launch_helper(
+                            InEndpointHandle::new,
+                            launch_args,
+                            pcap_meta,
+                            real_endpoint,
+                        )
                     }
                     EndpointType::BulkOut => {
+                        let pcap_meta = EndpointPcapMeta::bulk_out(
+                            pcap_usb_type,
+                            request.slot_id,
+                            request.endpoint_id,
+                        );
                         let real_endpoint = device
                             .realdevice_ref()
                             .bulk_out_endpoint_handle(request.endpoint_id);
-                        self.launch_helper(OutEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
+                        self.launch_helper(
+                            OutEndpointHandle::new,
+                            launch_args,
+                            pcap_meta,
+                            real_endpoint,
+                        )
                     }
                     EndpointType::InterruptIn => {
+                        let pcap_meta = EndpointPcapMeta::interrupt_in(
+                            pcap_usb_type,
+                            request.slot_id,
+                            request.endpoint_id,
+                        );
                         let real_endpoint = device
                             .realdevice_ref()
                             .interrupt_in_endpoint_handle(request.endpoint_id);
-                        self.launch_helper(InEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
+                        self.launch_helper(
+                            InEndpointHandle::new,
+                            launch_args,
+                            pcap_meta,
+                            real_endpoint,
+                        )
                     }
                     EndpointType::InterruptOut => {
+                        let pcap_meta = EndpointPcapMeta::interrupt_out(
+                            pcap_usb_type,
+                            request.slot_id,
+                            request.endpoint_id,
+                        );
                         let real_endpoint = device
                             .realdevice_ref()
                             .interrupt_out_endpoint_handle(request.endpoint_id);
-                        self.launch_helper(OutEndpointHandle::new, request.slot_id, request.endpoint_id, real_endpoint, request.endpoint_context, device.detach_token())
+                        self.launch_helper(
+                            OutEndpointHandle::new,
+                            launch_args,
+                            pcap_meta,
+                            real_endpoint,
+                        )
                     }
                     EndpointType::Unsupported => unreachable!(
                         "the slot should early-reject configure endpoint commands with unsupported endpoint types"
                     ),
-                },
+                    }
+                }
                 // unlikely edge case: The device was very recently detached, we are now handling an address device/configure endpoint command
                 // the endpoint does not depend on the real device, so we need the address device/configure endpoint to succeed (while also not
                 // creating an invalid state)
                 None => {
                     debug!("Could not get real device, using dummy endpoint handle");
                     let hotplug_endpoint_handle = HotplugEndpointHandleImpl::dummy(
-                        request.slot_id, request.endpoint_id, self.event_sender.clone()
+                        request.slot_id,
+                        request.endpoint_id,
+                        self.event_sender.clone(),
                     );
 
                     EndpointWorker::launch(
@@ -181,29 +256,29 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
     fn launch_helper<RealEndpoint, Endpoint, EndpointConstructor>(
         &self,
         constructor: EndpointConstructor,
-        slot_id: u8,
-        endpoint_id: u8,
+        launch_args: LaunchArgs,
+        pcap_meta: EndpointPcapMeta,
         real_endpoint: RealEndpoint,
-        endpoint_context: EndpointContext,
-        detach_token: CancellationToken,
     ) -> EndpointSender
     where
         Endpoint: EndpointHandle,
-        EndpointConstructor: FnOnce(u8, u8, RealEndpoint, BusDeviceRef, EventSender) -> Endpoint,
+        EndpointConstructor:
+            FnOnce(u8, u8, EndpointPcapMeta, RealEndpoint, BusDeviceRef, EventSender) -> Endpoint,
     {
         let endpoint_handle = constructor(
-            slot_id,
-            endpoint_id,
+            launch_args.slot_id,
+            launch_args.endpoint_id,
+            pcap_meta,
             real_endpoint,
             self.dma_bus.clone(),
             self.event_sender.clone(),
         );
         let hotplug_endpoint_handle = HotplugEndpointHandleImpl::new(
-            slot_id,
-            endpoint_id,
+            launch_args.slot_id,
+            launch_args.endpoint_id,
             endpoint_handle,
             self.event_sender.clone(),
-            detach_token,
+            launch_args.detach_token,
             &self.async_runtime,
         );
 
@@ -211,7 +286,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
             &self.async_runtime,
             self.dma_bus.clone(),
             hotplug_endpoint_handle,
-            endpoint_context,
+            launch_args.endpoint_context,
         )
     }
 }

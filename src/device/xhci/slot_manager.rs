@@ -648,7 +648,7 @@ impl Slot {
 /// An endpoint context has a size of 32 bytes, lies in guest memory, and
 /// contains information about an endpoint, most importantly for us the dequeue
 /// pointer and cycle state of the associated transfer ring.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EndpointContext {
     /// The address of the endpoint context in guest memory.
     address: u64,
