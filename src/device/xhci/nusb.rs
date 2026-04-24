@@ -229,6 +229,8 @@ async fn control_endpoint_worker(
     mut request_receiver: mpsc::UnboundedReceiver<UsbRequest>,
     response_submitter: mpsc::UnboundedSender<ControlRequestProcessingResult>,
 ) -> anyhow::Result<()> {
+    // seconds * N
+    const NUSB_TIMEOUT: u64 = 1000 * 2;
     loop {
         if let Some(request) = request_receiver.recv().await {
             let (recipient, control_type) = extract_recipient_and_type(request.request_type);
@@ -246,7 +248,7 @@ async fn control_endpoint_worker(
                         data: &data,
                     };
                     match device
-                        .control_out(control, Duration::from_millis(2000))
+                        .control_out(control, Duration::from_millis(NUSB_TIMEOUT))
                         .await
                     {
                         Ok(_) => ControlRequestProcessingResult::SuccessfulControlOut,
@@ -263,7 +265,7 @@ async fn control_endpoint_worker(
                         length: request.length,
                     };
                     match device
-                        .control_in(control, Duration::from_millis(2000))
+                        .control_in(control, Duration::from_millis(NUSB_TIMEOUT))
                         .await
                     {
                         Ok(data) => ControlRequestProcessingResult::SuccessfulControlIn(data),
