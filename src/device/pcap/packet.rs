@@ -61,10 +61,11 @@ pub enum UsbDirection {
 }
 
 impl UsbDirection {
-    const fn endpoint_address(self, endpoint: u8) -> u8 {
+    const fn endpoint_address(self, xhci_endpoint_id: u8) -> u8 {
+        let endpoint_number = xhci_endpoint_id / 2;
         match self {
-            Self::HostToDevice => endpoint & 0x7f,
-            Self::DeviceToHost => endpoint | 0x80,
+            Self::HostToDevice => endpoint_number,
+            Self::DeviceToHost => endpoint_number | 0x80,
         }
     }
 }
