@@ -10,7 +10,7 @@ use nusb::{
 };
 use tokio::{runtime, select, sync::mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::device::xhci::{
     hotplug_endpoint_handle::BaseEndpointHandle,
@@ -279,7 +279,8 @@ async fn control_endpoint_worker(
     }
 }
 
-const fn map_error(error: TransferError) -> ControlRequestProcessingResult {
+fn map_error(error: TransferError) -> ControlRequestProcessingResult {
+    error!("ERROR hit nusb error: {error}");
     match error {
         TransferError::Cancelled => ControlRequestProcessingResult::TransactionError,
         TransferError::Stall => ControlRequestProcessingResult::Stall,
