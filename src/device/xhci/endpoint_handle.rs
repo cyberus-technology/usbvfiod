@@ -1,5 +1,7 @@
 use core::panic;
 use std::cmp::Ordering;
+use std::collections::VecDeque;
+use std::io::Write;
 use std::{fmt::Debug, future::Future, pin::Pin};
 
 use tracing::trace;
@@ -658,6 +660,7 @@ enum NormalSubmissionState {
     UnsupportedTrbType(RawTrb),
     AwaitingRealTransfer,
     ConsumedEventDataTrb,
+    ConsumedNormalDataTrb,
 }
 
 #[derive(Debug)]
@@ -850,6 +853,9 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                     );
                     TrbProcessingResult::Ok
                 }
+                NormalSubmissionState::ConsumedNormalDataTrb => {
+                    unreachable!("Out endpoints do not use a buffer.");
+                }
                 NormalSubmissionState::UnsupportedTrbType(ref trb) => {
                     warn!("NormalSubmissionState::UnsupportedTrbType and reporting CompletionCode::TrbError");
                     let transfer_event = EventTrb::new_transfer_event_trb(
@@ -958,6 +964,7 @@ pub struct InEndpointHandle<RIEH: RealInEndpointHandle> {
     previous_completion_code: CompletionCode, // used when for event_data_trb handling
     current_trb_address: Option<u64>,         // to have proper address for events to point to
     current_trb_data: Option<TransferTrbVariant>, // for IOC the trb address will be needed and unavailable in post_hardware (when called with next_completion)
+    buffer: VecDeque<u8>, // with windows a normal trb chain requested block sizes 411, 4096 and 2144 so the beginning was thrown away while it was needed at the end
 }
 
 impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
@@ -982,6 +989,7 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
             previous_completion_code: CompletionCode::UndefinedError,
             current_trb_address: None,
             current_trb_data: None,
+            buffer: VecDeque::new(),
         }
     }
 
@@ -995,8 +1003,59 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
             self.edtla = 0;
         }
 
-        self.real_ep
-            .submit(normal_trb_data.transfer_length as usize)?;
+        // if buffer has content we might not need to request as much or at all
+        if self.buffer.len() > 0 {
+            // do not request anything if we already have all in the buffer
+            if normal_trb_data.transfer_length as usize == self.buffer.len() {
+                // use buffer instead of hardware request and avoid next_completion() fully
+
+                trace!("doing no request because the buffer already has enough data");
+
+                let mut returned_data: Vec<u8> = Vec::new();
+                // if less than requested the buffer is not used and emptied
+                for n in 0..self.buffer.len() {
+                    // SAFETY: no safety
+                    returned_data.push(self.buffer.pop_front().unwrap());
+                }
+                self.dma_bus
+                    .write_bulk(normal_trb_data.data_pointer, &returned_data);
+
+                if normal_trb_data.interrupt_on_completion {
+                    self.interrupt_on_completion(
+                        self.current_trb_address.unwrap(),
+                        CompletionCode::Success,
+                        false,
+                    )?;
+                }
+
+                trace!("buffer after buffer only dma: {}", self.buffer.len());
+
+                // TODO add data to move the lower pcap stuff back to the state machine match with the rest
+                self.submission_state = NormalSubmissionState::ConsumedNormalDataTrb;
+                self.previous_completion_code = CompletionCode::Success;
+
+                pcap::in_completion(
+                    self.pcap_meta,
+                    self.current_trb_address.unwrap(),
+                    &returned_data,
+                );
+
+                return Ok(());
+            }
+            // we might still have enough to make a smaller request
+            else {
+                let mut needed = normal_trb_data.transfer_length as usize - self.buffer.len();
+                if (needed % 512 > 0) {
+                    needed = ((needed / 512) + 1) * 512;
+                }
+                self.real_ep.submit(needed)?;
+            }
+        }
+        // no buffer -> full request
+        else {
+            self.real_ep
+                .submit(normal_trb_data.transfer_length as usize)?;
+        }
 
         self.submission_state = NormalSubmissionState::AwaitingRealTransfer;
         self.previous_completion_code = CompletionCode::Success;
@@ -1009,6 +1068,7 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
 
         let completion_code: CompletionCode;
 
+        // TODO calculation for buffer usage and storage is heavily incomplete and does not yet work
         match self.current_trb_data.clone().unwrap() {
             TransferTrbVariant::Normal(normal_trb_data) => {
                 let dma_length: usize = match hardware_data
@@ -1019,7 +1079,7 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
                         debug!("received less than requested");
                         completion_code = CompletionCode::ShortPacket;
                         // short packet
-                        hardware_data.len()
+                        hardware_data.len() + self.buffer.len()
                     }
                     Ordering::Equal => {
                         debug!("received exactly as requested");
@@ -1031,14 +1091,25 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
                         warn!("received more than requested");
                         completion_code = CompletionCode::Success;
                         // device responded with more than requested
-                        // idk where the overhead goes but we track the requested amount
+                        // idk where thehandle_normal_trb_pre_hardware overhead goes but we track the requested amount
                         normal_trb_data.transfer_length as usize
                     }
                 };
 
+                let mut hardware = VecDeque::from(hardware_data.clone());
+                self.buffer.append(&mut hardware);
+
                 self.edtla += dma_length as u64;
+
+                let mut returned_data: Vec<u8> = Vec::new();
+                // if less than requested the buffer is not used and emptied
+                for n in 0..dma_length {
+                    // SAFETY: no safety
+                    returned_data.push(self.buffer.pop_front().unwrap());
+                }
+
                 self.dma_bus
-                    .write_bulk(normal_trb_data.data_pointer, &hardware_data[..dma_length]);
+                    .write_bulk(normal_trb_data.data_pointer, &returned_data);
 
                 if normal_trb_data.interrupt_on_completion {
                     self.interrupt_on_completion(
@@ -1080,6 +1151,9 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
 
         self.event_sender.send(event)?;
         self.edtla = 0;
+
+        // TODO this might result in funky business
+        //self.buffer.clear();
 
         if event_data_trb_data.interrupt_on_completion {
             self.interrupt_on_completion(address, CompletionCode::Success, false)?;
@@ -1154,7 +1228,14 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                     );
                     TrbProcessingResult::Ok
                 }
-
+                NormalSubmissionState::ConsumedNormalDataTrb => {
+                    trace!(
+                        "Slot {} Endpoint {} used buffer to consume Normal Data Trb (no actual hardware request was done)",
+                        self.slot_id,
+                        self.endpoint_id
+                    );
+                    TrbProcessingResult::Ok
+                }
                 NormalSubmissionState::UnsupportedTrbType(ref trb) => {
                     warn!("NormalSubmissionState::UnsupportedTrbType and reporting CompletionCode::TrbError");
                     let transfer_event = EventTrb::new_transfer_event_trb(
