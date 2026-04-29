@@ -807,7 +807,7 @@ pub struct TransferTrb {
 /// Represents a TRB that the driver can place on a transfer ring.
 ///
 /// See XHCI specification Section 6.4.1 for detailed transfer TRB type descriptions.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferTrbVariant {
     Normal(NormalTrbData),
     SetupStage(SetupStageTrbData),
@@ -852,7 +852,7 @@ impl TransferTrbVariant {
 ///
 /// This struct contains only the commonly used fields from the Normal TRB.
 /// See XHCI specification Section 6.4.1.1 for the complete TRB layout.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalTrbData {
     pub data_pointer: u64,
     pub transfer_length: u32,
@@ -899,7 +899,7 @@ impl TrbData for NormalTrbData {
 /// Setup Stage TRB data structure.
 ///
 /// See XHCI specification Section 6.4.1.2.1 for detailed field descriptions.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetupStageTrbData {
     pub request_type: u8,
     pub request: u8,
@@ -947,7 +947,7 @@ impl TrbData for SetupStageTrbData {
 /// Data Stage TRB data structure.
 ///
 /// See XHCI specification Section 6.4.1.2.2 for detailed field descriptions.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataStageTrbData {
     pub data_pointer: u64,
     pub transfer_length: u16,
@@ -997,7 +997,7 @@ impl TrbData for DataStageTrbData {
 /// Status Stage TRB data structure.
 ///
 /// See XHCI specification Section 6.4.1.2.3 for detailed field descriptions.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusStageTrbData {
     pub chain: bool,
     pub interrupt_on_completion: bool,
@@ -1036,7 +1036,7 @@ impl TrbData for StatusStageTrbData {
 /// Event Data TRB data structure.
 ///
 /// See XHCI specification Section 6.4.4.2 for detailed field descriptions.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventDataTrbData {
     pub event_data: u64,
     pub chain: bool,
