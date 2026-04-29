@@ -154,7 +154,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                         )
                     }
                     EndpointType::BulkIn => {
-                        let pcap_meta = EndpointPcapMeta::bulk_in(
+                        let pcap_meta = EndpointPcapMeta::bulk(
                             pcap_usb_type,
                             request.slot_id,
                             request.endpoint_id,
@@ -170,7 +170,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                         )
                     }
                     EndpointType::BulkOut => {
-                        let pcap_meta = EndpointPcapMeta::bulk_out(
+                        let pcap_meta = EndpointPcapMeta::bulk(
                             pcap_usb_type,
                             request.slot_id,
                             request.endpoint_id,
@@ -186,7 +186,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                         )
                     }
                     EndpointType::InterruptIn => {
-                        let pcap_meta = EndpointPcapMeta::interrupt_in(
+                        let pcap_meta = EndpointPcapMeta::interrupt(
                             pcap_usb_type,
                             request.slot_id,
                             request.endpoint_id,
@@ -202,7 +202,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                         )
                     }
                     EndpointType::InterruptOut => {
-                        let pcap_meta = EndpointPcapMeta::interrupt_out(
+                        let pcap_meta = EndpointPcapMeta::interrupt(
                             pcap_usb_type,
                             request.slot_id,
                             request.endpoint_id,

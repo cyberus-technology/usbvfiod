@@ -53,20 +53,26 @@ impl UsbTransferType {
     }
 }
 
-/// USB direction used to set the endpoint address IN/OUT bit.
+/// USB direction for metadata that is not encoded in the endpoint id.
 #[derive(Clone, Copy, Debug)]
 pub enum UsbDirection {
     HostToDevice,
     DeviceToHost,
 }
 
-impl UsbDirection {
-    const fn endpoint_address(self, xhci_endpoint_id: u8) -> u8 {
-        let endpoint_number = xhci_endpoint_id / 2;
-        match self {
-            Self::HostToDevice => endpoint_number,
-            Self::DeviceToHost => endpoint_number | 0x80,
+const fn endpoint_address(
+    transfer_type: UsbTransferType,
+    control_direction: Option<UsbDirection>,
+    xhci_endpoint_id: u8,
+) -> u8 {
+    if matches!(transfer_type, UsbTransferType::Control) {
+        match control_direction.expect("control direction is required") {
+            UsbDirection::HostToDevice => 0,
+            UsbDirection::DeviceToHost => 0x80,
         }
+    } else {
+        // Match the USB endpoint address mapping used by the nusb adapter.
+        xhci_endpoint_id.rotate_right(1)
     }
 }
 
@@ -280,11 +286,13 @@ impl UsbPcapManager {
 /// Emit a PCAP record for a control transfer submission event.
 pub fn log_control_submission(
     meta: super::meta::EndpointPcapMeta,
+    control_direction: UsbDirection,
     request: &UsbRequest,
     payload: &[u8],
 ) {
     log_submission(
         meta,
+        Some(control_direction),
         request.address,
         u32::from(request.length),
         Some(build_setup_bytes(request)),
@@ -295,17 +303,26 @@ pub fn log_control_submission(
 /// Emit a PCAP record for a control transfer completion event
 pub fn log_control_completion(
     meta: super::meta::EndpointPcapMeta,
+    control_direction: UsbDirection,
     urb_id: u64,
     status: i32,
     actual_length: u32,
     payload: &[u8],
 ) {
-    log_completion(meta, urb_id, status, actual_length, payload);
+    log_completion(
+        meta,
+        Some(control_direction),
+        urb_id,
+        status,
+        actual_length,
+        payload,
+    );
 }
 
 /// Emit a PCAP record for an error-related event with optional setup data.
 pub fn log_error(
     meta: super::meta::EndpointPcapMeta,
+    control_direction: Option<UsbDirection>,
     urb_id: u64,
     event: UsbEventType,
     status: i32,
@@ -317,6 +334,7 @@ pub fn log_error(
         urb_id,
         event,
         meta,
+        control_direction,
         event_timestamp,
         status,
         payload.len() as u32,
@@ -328,6 +346,7 @@ pub fn log_error(
 /// Emit a PCAP record for a transfer submission event.
 pub fn log_submission(
     meta: super::meta::EndpointPcapMeta,
+    control_direction: Option<UsbDirection>,
     urb_id: u64,
     expected_length: u32,
     setup: Option<[u8; 8]>,
@@ -338,6 +357,7 @@ pub fn log_submission(
         urb_id,
         UsbEventType::Submission,
         meta,
+        control_direction,
         event_timestamp,
         0,
         expected_length,
@@ -349,6 +369,7 @@ pub fn log_submission(
 /// Emit a PCAP record for a transfer completion event.
 pub fn log_completion(
     meta: super::meta::EndpointPcapMeta,
+    control_direction: Option<UsbDirection>,
     urb_id: u64,
     status: i32,
     actual_length: u32,
@@ -359,6 +380,7 @@ pub fn log_completion(
         urb_id,
         UsbEventType::Completion,
         meta,
+        control_direction,
         event_timestamp,
         status,
         actual_length,
@@ -385,6 +407,7 @@ fn log_packet(
     urb_id: u64,
     event: UsbEventType,
     meta: super::meta::EndpointPcapMeta,
+    control_direction: Option<UsbDirection>,
     event_timestamp: Timestamp,
     status: i32,
     data_length: u32,
@@ -395,7 +418,7 @@ fn log_packet(
         id: urb_id,
         event_type: event.code(),
         transfer_type: meta.transfer_type.code(),
-        endpoint_address: meta.direction.endpoint_address(meta.endpoint_id),
+        endpoint_address: endpoint_address(meta.transfer_type, control_direction, meta.endpoint_id),
         device_address: meta.device_address,
         bus_number: meta.bus_number,
         setup_flag: setup_flag_value(meta.transfer_type, setup.is_some()),
