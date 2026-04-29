@@ -278,7 +278,7 @@ async fn control_endpoint_worker(
 }
 
 fn map_error(error: TransferError) -> ControlRequestProcessingResult {
-    error!("ERROR hit nusb error: {error}");
+    error!("ERROR hit nusb error: {:?}", error);
     match error {
         TransferError::Cancelled => ControlRequestProcessingResult::TransactionError,
         TransferError::Stall => ControlRequestProcessingResult::Stall,
@@ -390,7 +390,14 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
         Box::pin(async {
             let completion = self.endpoint().next_complete().await.into_result();
             let result = match completion {
-                Ok(buf) => InTrbProcessingResult::Success(buf.into_vec()),
+                Ok(buf) => {
+                    debug!(
+                        "you requested: {} and received {}",
+                        buf.requested_len(),
+                        buf.len()
+                    );
+                    InTrbProcessingResult::Success(buf.into_vec())
+                }
                 Err(err) => match err {
                     TransferError::Cancelled => InTrbProcessingResult::TransactionError,
                     TransferError::Stall => InTrbProcessingResult::Stall,

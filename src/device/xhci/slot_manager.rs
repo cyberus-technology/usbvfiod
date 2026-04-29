@@ -505,11 +505,18 @@ impl Slot {
         // configure endpoint with DC=1 transitions from Configured to Addressed
         let base_address = match self.state {
             SlotState::Enabled | SlotState::Default(_) => {
-                return Ok(CompletionCode::ContextStateError)
+                warn!("SlotState::Enabled | SlotState::Default");
+                return Ok(CompletionCode::ContextStateError);
             }
             SlotState::Addressed(base_address) => match deconfigure {
-                true => return Ok(CompletionCode::ContextStateError),
-                false => base_address,
+                true => {
+                    warn!("SlotState::Addressed true");
+                    return Ok(CompletionCode::ContextStateError);
+                }
+                false => {
+                    trace!("SlotState::Addressed false");
+                    base_address
+                }
             },
             SlotState::Configured(base_address) => base_address,
         };
