@@ -82,13 +82,11 @@ impl NusbDeviceWrapper {
 }
 
 const fn endpoint_id_to_address(endpoint_id: u8) -> u8 {
-    let endpoint_number = endpoint_id / 2;
-    let is_out_endpoint = endpoint_id.is_multiple_of(2);
-
-    match is_out_endpoint {
-        true => endpoint_number,
-        false => 0x80 | endpoint_number,
-    }
+    // `endpoint_id / 2` yields the USB endpoint number, while the low bit of the
+    // xHCI endpoint id distinguishes OUT (even) from IN (odd). Rotating right by
+    // one moves that direction bit into the USB IN position (0x80) and leaves the
+    // endpoint number in the low bits.
+    endpoint_id.rotate_right(1)
 }
 
 #[derive(Debug)]
