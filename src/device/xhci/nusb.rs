@@ -230,7 +230,7 @@ async fn control_endpoint_worker(
     response_submitter: mpsc::UnboundedSender<ControlRequestProcessingResult>,
 ) -> anyhow::Result<()> {
     // seconds * N
-    const NUSB_TIMEOUT: u64 = 1000 * 2;
+    const NUSB_TIMEOUT: u64 = 1000 * 10;
     loop {
         if let Some(request) = request_receiver.recv().await {
             let (recipient, control_type) = extract_recipient_and_type(request.request_type);
