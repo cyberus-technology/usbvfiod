@@ -1071,19 +1071,29 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
                     .cmp(&(normal_trb_data.transfer_length as usize))
                 {
                     Ordering::Less => {
-                        debug!("received less than requested");
+                        debug!(
+                            "received less than requested; diff (bytes): {}",
+                            normal_trb_data.transfer_length as usize - hardware_data.len()
+                        );
                         completion_code = CompletionCode::ShortPacket;
                         // short packet
                         hardware_data.len() + self.buffer.len()
                     }
                     Ordering::Equal => {
-                        debug!("received exactly as requested");
+                        debug!(
+                            "received exactly as requested; transfer: {}, hardware: {}",
+                            normal_trb_data.transfer_length as usize,
+                            hardware_data.len()
+                        );
                         completion_code = CompletionCode::Success;
                         // we good with either
                         hardware_data.len()
                     }
                     Ordering::Greater => {
-                        warn!("received more than requested");
+                        warn!(
+                            "received more than requested; diff (bytes): {}",
+                            hardware_data.len() - normal_trb_data.transfer_length as usize
+                        );
                         completion_code = CompletionCode::Success;
                         // device responded with more than requested
                         // idk where thehandle_normal_trb_pre_hardware overhead goes but we track the requested amount
@@ -1094,6 +1104,8 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
                 let mut hardware = VecDeque::from(hardware_data.clone());
                 self.buffer.append(&mut hardware);
 
+                debug!("dma_length: {}", dma_length);
+                debug!("buffer has {}", self.buffer.len());
                 self.edtla += dma_length as u64;
 
                 let mut returned_data: Vec<u8> = Vec::new();
@@ -1102,6 +1114,11 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
                     // SAFETY: no safety
                     returned_data.push(self.buffer.pop_front().unwrap());
                 }
+
+                debug!(
+                    "buffer should be 0 unless too much was received in this chain: {}",
+                    self.buffer.len()
+                );
 
                 self.dma_bus
                     .write_bulk(normal_trb_data.data_pointer, &returned_data);
