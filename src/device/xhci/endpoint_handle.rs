@@ -820,10 +820,19 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
 
         match &transfer_trb {
             TransferTrbVariant::Normal(normal_trb_data) => {
+                debug!(
+                    "Calling pcap out submission with {:?} and {:?}",
+                    normal_trb_data, trb
+                );
+
+                let mut data = vec![0; normal_trb_data.transfer_length as usize];
+                self.dma_bus
+                    .read_bulk(normal_trb_data.data_pointer, &mut data);
+
                 pcap::out_submission(
                     self.pcap_meta,
                     trb.address,
-                    &trb.buffer,
+                    &data,
                     normal_trb_data.transfer_length,
                 );
                 self.handle_normal_trb_pre_hardware(normal_trb_data)?;
@@ -916,6 +925,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                             TrbProcessingResult::TransactionError
                         }
                         OutTrbProcessingResult::Success => {
+                            self.handle_normal_trb_post_hardware()?;
                             pcap::out_completion(
                                 self.pcap_meta,
                                 self.current_trb_address.unwrap(),
@@ -924,7 +934,6 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                                     _ => unreachable!(""),
                                 },
                             );
-                            self.handle_normal_trb_post_hardware()?;
                             TrbProcessingResult::Ok
                         }
                     }
@@ -1010,6 +1019,8 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
                 // use buffer instead of hardware request and avoid next_completion() fully
 
                 trace!("doing no request because the buffer already has enough data");
+
+                self.edtla += self.buffer.len() as u64;
 
                 let mut returned_data: Vec<u8> = Vec::new();
                 // if less than requested the buffer is not used and emptied
@@ -1292,14 +1303,15 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                             TrbProcessingResult::TransactionError
                         }
                         InTrbProcessingResult::Success(data) => {
+                            // might need more action to handle short packets correctly
+                            self.handle_normal_trb_post_hardware(data.clone())?;
+
                             pcap::in_completion(
                                 self.pcap_meta,
                                 self.current_trb_address.unwrap(),
                                 &data,
                             );
 
-                            // might need more action to handle short packets correctly
-                            self.handle_normal_trb_post_hardware(data)?;
                             TrbProcessingResult::Ok
                         }
                     }
