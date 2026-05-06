@@ -16,7 +16,7 @@ use crate::device::{
     },
     xhci::{
         endpoint_launcher::EndpointLauncher,
-        port::{get_portli_index, get_portsc_index, HotplugControl, PortArray},
+        port::{get_portli_index, get_portpmsc_index, get_portsc_index, HotplugControl, PortArray},
         real_device::CompleteRealDevice,
         registers::{UsbcmdRegister, UsbstsRegister},
         slot_manager::SlotManager,
@@ -164,6 +164,16 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
                     .write_portsc(port_id, value)
                     .expect("event_sender should be alive");
             }
+
+            addr if get_portpmsc_index(addr).is_some() => {
+                // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
+                let port_index = get_portpmsc_index(addr).unwrap();
+                // port ids start at 1, so we have to convert the MMIO address offset to the id
+                let port_id = port_index + 1;
+                // SAFETY: The PORTPMSC is defined as 32 bit
+                self.port_array.write_portpmsc(port_id, value as u32);
+            }
+
             addr => {
                 todo!("unknown write {}", addr);
             }
@@ -232,6 +242,16 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
                 let port_id = port_index + 1;
                 self.port_array.read_portsc(port_id)
             }
+
+            // Port Power Management Status and Control (PORTPMSC)
+            addr if get_portpmsc_index(addr).is_some() => {
+                // SAFETY: unwrap() is safe because we already checked is_some() in the match guard above
+                let port_index = get_portpmsc_index(addr).unwrap();
+                // port ids start at 1, so we have to convert the MMIO address offset to the id
+                let port_id = port_index + 1;
+                self.port_array.read_portpmsc(port_id) as u64
+            }
+
             // Port Link Info Register (PORTLI_USB3)
             addr if get_portli_index(addr).is_some() => 0,
 
