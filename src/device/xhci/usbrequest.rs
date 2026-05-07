@@ -24,20 +24,3 @@ pub struct UsbRequest {
     pub data_pointer: Option<u64>,
     pub data: Option<Vec<u8>>,
 }
-
-impl UsbRequest {
-    // so that the control endpoint handler can make a copy
-    // (to store the request between submit_trb and next_complete)
-    pub const fn clone_without_data(&self) -> Self {
-        Self {
-            address: self.address,
-            request_type: self.request_type,
-            request: self.request,
-            value: self.value,
-            index: self.index,
-            length: self.length,
-            data_pointer: self.data_pointer,
-            data: None,
-        }
-    }
-}
