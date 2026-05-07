@@ -801,15 +801,6 @@ impl TrbData for ResetDeviceCommandTrbData {
 }
 
 /// Represents a TRB that the driver can place on a transfer ring.
-#[derive(Debug, PartialEq, Eq)]
-pub struct TransferTrb {
-    /// Guest memory address where the driver placed the TRB.
-    pub address: u64,
-    /// Information specific to the particular transfer TRB variant.
-    pub variant: TransferTrbVariant,
-}
-
-/// Represents a TRB that the driver can place on a transfer ring.
 ///
 /// See XHCI specification Section 6.4.1 for detailed transfer TRB type descriptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
