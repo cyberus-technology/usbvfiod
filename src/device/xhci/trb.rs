@@ -1088,7 +1088,7 @@ pub enum TrbParseError {
     UnsupportedOptionalCommand(u8, String),
     #[error("TRB type {0} does not refer to any command.")]
     UnknownTrbType(u8),
-    #[error("Detected a non-zero value in a RsvdZ field")]
+    #[error("Detected a non-zero value in a RsvdZ field.")]
     RsvdZViolation,
 }
 
