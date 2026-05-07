@@ -18,6 +18,8 @@ use crate::device::{
     },
 };
 
+pub const MASK_24BIT: u64 = 0xffffff;
+
 pub trait EndpointHandle: BaseEndpointHandle {
     type TrbCompletionFuture<'a>: Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a;
 
@@ -65,6 +67,7 @@ pub enum ControlTransferStage {
     Initial,
     ConsumedSetupStageTd,
     ConsumedDataStageTd,
+    ConsumedStatusStageTrb,
 }
 
 // The state machine provides the information partially as ControlSubmissionState::AwaitingControlIn.
@@ -188,6 +191,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     .as_mut()
                     .unwrap()
                     .resize(setup_stage_trb_data.length as usize, 0);
+                self.trb_parser.previous_completion_code = CompletionCode::Success;
+
                 if setup_stage_trb_data.interrupt_on_completion {
                     self.interrupt_on_completion(
                         transfer_trb.address,
@@ -219,6 +224,10 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             ControlTransferDirection::In(usb_request) => {
                 trace!("DataStage TRB with ControlIn");
 
+                // All transfers are done but to have the expected value in the
+                // created Events we keep count of pretend transfers.
+                self.trb_parser.edtla += data_stage_trb_data.transfer_length as u64;
+
                 let byte_slice: Vec<u8> = usb_request
                     .data
                     .as_mut()
@@ -237,6 +246,10 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             // Accumulate in the data buffer to later trigger one ControlOut hardware request.
             ControlTransferDirection::Out(control_out) => {
                 trace!("DataStage TRB with ControlOut");
+
+                // No transfer happened yet but to have to expected value in the
+                // created Events we keep count of pretend transfers.
+                self.trb_parser.edtla += data_stage_trb_data.transfer_length as u64;
 
                 let mut byte_slice = vec![0; data_stage_trb_data.transfer_length as usize];
                 self.dma_bus
@@ -280,8 +293,13 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     )?;
                 }
 
-                self.trb_parser.state = ControlTransferStage::Initial;
-
+                if status_stage_trb_data.chain {
+                    self.trb_parser.state = ControlTransferStage::ConsumedStatusStageTrb;
+                    // one more EventDataTrb until Control Transfer is done
+                } else {
+                    self.trb_parser.state = ControlTransferStage::Initial;
+                    self.trb_parser.edtla = 0;
+                }
                 self.submission_state = ControlSubmissionState::ParserConsumedTrb(transfer_trb);
             }
             ControlTransferDirection::Out(control_out) => {
@@ -310,6 +328,15 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             }
             ControlTransferDirection::Out(_) => {
                 trace!("StatusStage TRB with ControlOut");
+
+                if status_stage_trb_data.chain {
+                    self.trb_parser.state = ControlTransferStage::ConsumedStatusStageTrb;
+                    // one more EventDataTrb until Control Transfer is done
+                } else {
+                    self.trb_parser.state = ControlTransferStage::Initial;
+                    self.trb_parser.edtla = 0;
+                }
+
                 if status_stage_trb_data.interrupt_on_completion {
                     self.interrupt_on_completion(
                         transfer_trb.address,
@@ -320,6 +347,60 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 Ok(())
             }
         }
+    }
+
+    fn handle_event_data_trb(&mut self, transfer_trb: TransferTrb) -> anyhow::Result<()> {
+        trace!("EventData TRB");
+
+        let event_data_trb_data = match &transfer_trb.variant {
+            TransferTrbVariant::EventData(event_data_trb_data) => event_data_trb_data,
+            _ => unreachable!("checked variant before calling this handle"),
+        };
+
+        // the driver shall set IOC bit on event data trb
+        assert!(event_data_trb_data.interrupt_on_completion);
+
+        // edlta is supposed to be a 24 bit value, it being larger is a spec violation we silently drop
+        let masked_edtla = (MASK_24BIT & self.trb_parser.edtla) as u32;
+
+        let event = EventTrb::new_transfer_event_trb(
+            event_data_trb_data.event_data,
+            masked_edtla,
+            self.trb_parser.previous_completion_code,
+            true,
+            self.endpoint_id,
+            self.slot_id,
+        );
+
+        self.event_sender.send(event)?;
+        self.trb_parser.edtla = 0;
+
+        if event_data_trb_data.interrupt_on_completion {
+            self.interrupt_on_completion(transfer_trb.address, CompletionCode::Success, false)?;
+        }
+
+        if !event_data_trb_data.chain {
+            match self.trb_parser.state {
+                ControlTransferStage::ConsumedSetupStageTd => {
+                    self.trb_parser.state = ControlTransferStage::ConsumedDataStageTd;
+                    self.trb_parser.edtla = 0;
+                }
+                ControlTransferStage::ConsumedDataStageTd => {
+                    self.trb_parser.state = ControlTransferStage::Initial;
+                    self.trb_parser.edtla = 0;
+                }
+                ControlTransferStage::ConsumedStatusStageTrb => {
+                    self.trb_parser.state = ControlTransferStage::Initial;
+                    self.trb_parser.edtla = 0;
+                }
+                _ => {
+                    unreachable!("this should never be reached with spec compliancy");
+                }
+            }
+        }
+
+        self.submission_state = ControlSubmissionState::ParserConsumedTrb(transfer_trb);
+        Ok(())
     }
 
     fn interrupt_on_completion(
@@ -407,6 +488,9 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     self.control_transfer_state.state = ControlTransferStage::Initial;
                 }
             },
+            TransferTrbVariant::EventData(_) => {
+                self.handle_event_data_trb(transfer_trb)?;
+            }
             TransferTrbVariant::Unrecognized(_, parse_error) => {
                 error!("failed to parse trb on ControlEndpoint: {:?}", parse_error);
                 self.submission_state = ControlSubmissionState::ParserError(trb);
@@ -555,6 +639,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
 pub struct ControlTransferState {
     pub state: ControlTransferStage, // upcoming or current stage of a control transfer to be handled
     pub direction: ControlTransferDirection, // holding the UsbRequest -> all things data
+    pub edtla: u64, // transferred bytes counter necessary for event_data_trb handling
+    pub previous_completion_code: CompletionCode, // needed for event_data_trb handling
 }
 impl ControlTransferState {
     // previous_completion_code should never be used as is, thus the error as a default value
@@ -562,6 +648,8 @@ impl ControlTransferState {
         Self {
             state: ControlTransferStage::Initial,
             direction,
+            edtla: 0,
+            previous_completion_code: CompletionCode::UndefinedError,
         }
     }
 }
