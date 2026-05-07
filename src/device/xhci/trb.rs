@@ -796,7 +796,7 @@ impl TrbData for ResetDeviceCommandTrbData {
 }
 
 /// Represents a TRB that the driver can place on a transfer ring.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferTrb {
     /// Guest memory address where the driver placed the TRB.
     pub address: u64,
