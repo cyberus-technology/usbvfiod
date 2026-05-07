@@ -1,6 +1,7 @@
-use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin};
+use core::panic;
+use std::{fmt::Debug, future::Future, pin::Pin};
 
-use tracing::debug;
+use tracing::{debug, error, trace, warn};
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -59,16 +60,57 @@ impl BaseEndpointHandle for DummyEndpointHandle {
     }
 }
 
+fn interrupt_on_completion(
+    address: u64,
+    completion_code: CompletionCode,
+    event_data: bool,
+    endpoint_id: u8,
+    slot_id: u8,
+    event_sender: &EventSender,
+) -> anyhow::Result<()> {
+    trace!("interrupt_on_completion triggered for address {}", address);
+    let event = EventTrb::new_transfer_event_trb(
+        address,
+        0,
+        completion_code,
+        event_data,
+        endpoint_id,
+        slot_id,
+    );
+
+    event_sender.send(event)?;
+    Ok(())
+}
+
+// Track how far we are with parsing the Control Transfer (chain of TRB).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ControlTransferStage {
+    /// Nothing happened yet. Awaiting a Setup Stage Trb and silently dropping any other.
+    Initial,
+    /// Collected Information for the USB Control Request.
+    ConsumedSetupStageTd,
+    /// Finished all necessary dma operations.
+    ConsumedDataStageTd,
+}
+
+/// The state machine provides the information partially as ControlSubmissionState::AwaitingControlIn(TransferTrb).
+/// Track state between us and the guest for building the current control request.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ControlTransferDirection {
+    In(UsbRequest),
+    Out(UsbRequest),
+}
+
 #[derive(Debug)]
 pub struct ControlEndpointHandle<RCEH: RealControlEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
     pcap_meta: EndpointPcapMeta,
     real_ep: RCEH,
-    trb_parser: ControlRequestParser,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
     submission_state: ControlSubmissionState,
+    control_transfer_state: ControlTransferState,
 }
 
 impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
@@ -85,24 +127,281 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             endpoint_id,
             pcap_meta,
             real_ep,
-            trb_parser: ControlRequestParser::new(dma_bus.clone()),
             dma_bus,
             event_sender,
             submission_state: ControlSubmissionState::NoTrbSubmitted,
+            control_transfer_state: ControlTransferState::new(ControlTransferDirection::In(
+                UsbRequest {
+                    address: 0,
+                    request_type: 0,
+                    request: 0,
+                    value: 0,
+                    index: 0,
+                    length: 0,
+                    data_pointer: None,
+                    data: None,
+                },
+            )),
+        }
+    }
+
+    fn handle_setup_stage_trb_pre_hardware(
+        &mut self,
+        transfer_trb: TransferTrb,
+    ) -> anyhow::Result<()> {
+        let setup_stage_trb_data = match &transfer_trb.variant {
+            TransferTrbVariant::SetupStage(setup_stage_trb_data) => setup_stage_trb_data,
+            _ => unreachable!("checked variant before calling this handle"),
+        };
+
+        let mut usb_request = UsbRequest {
+            address: transfer_trb.address,
+            request_type: setup_stage_trb_data.request_type,
+            request: setup_stage_trb_data.request,
+            value: setup_stage_trb_data.value,
+            index: setup_stage_trb_data.index,
+            length: setup_stage_trb_data.length,
+            data_pointer: None,
+            data: Some(vec![]),
+        };
+
+        if setup_stage_trb_data.request_type & 0x80 != 0 {
+            trace!("SetupStage TRB with ControlIn");
+
+            self.control_transfer_state =
+                ControlTransferState::new(ControlTransferDirection::In(usb_request.clone()));
+
+            self.real_ep.submit_control_request(usb_request.clone())?;
+            pcap::control_submission(self.pcap_meta, &usb_request);
+
+            self.submission_state = ControlSubmissionState::AwaitingControlIn(transfer_trb);
+        } else {
+            trace!("SetupStage TRB with ControlOut");
+            usb_request.data = Some(vec![]);
+
+            self.control_transfer_state =
+                ControlTransferState::new(ControlTransferDirection::Out(usb_request));
+
+            // actual hardware request happens in status stage after consuming the data stage td
+
+            if setup_stage_trb_data.interrupt_on_completion {
+                interrupt_on_completion(
+                    transfer_trb.address,
+                    CompletionCode::Success,
+                    false,
+                    self.endpoint_id,
+                    self.slot_id,
+                    &self.event_sender,
+                )?;
+            }
+
+            self.control_transfer_state.state = ControlTransferStage::ConsumedSetupStageTd;
+            self.submission_state = ControlSubmissionState::ParserConsumedTrb(transfer_trb);
+        }
+
+        Ok(())
+    }
+
+    fn handle_setup_stage_trb_post_hardware(
+        &mut self,
+        transfer_trb: TransferTrb,
+        hardware_data: &mut Vec<u8>,
+    ) -> anyhow::Result<()> {
+        match &mut self.control_transfer_state.direction {
+            // collect hardware data
+            ControlTransferDirection::In(request) => {
+                debug!("control in data {:?}", hardware_data);
+
+                pcap::control_completion_in(self.pcap_meta, request.address, hardware_data);
+
+                let setup_stage_trb_data = match &transfer_trb.variant {
+                    TransferTrbVariant::SetupStage(setup_stage_trb_data) => setup_stage_trb_data,
+                    _ => unreachable!("checked variant before calling this handle"),
+                };
+
+                // SAFETY: is always set in the preceding setup stage pre hardware part
+                request.data.as_mut().unwrap().append(hardware_data);
+
+                request
+                    .data
+                    .as_mut()
+                    .unwrap()
+                    .resize(setup_stage_trb_data.length as usize, 0);
+                if setup_stage_trb_data.interrupt_on_completion {
+                    interrupt_on_completion(
+                        transfer_trb.address,
+                        CompletionCode::Success,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                        &self.event_sender,
+                    )?;
+                }
+
+                self.control_transfer_state.state = ControlTransferStage::ConsumedSetupStageTd;
+            }
+            ControlTransferDirection::Out(_) => {
+                unreachable!(
+                    "ControlOut SetupTrb have insufficient information to do the Hardware request"
+                )
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_data_stage_trb(&mut self, transfer_trb: TransferTrb) -> anyhow::Result<()> {
+        let data_stage_trb_data = match &transfer_trb.variant {
+            TransferTrbVariant::DataStage(data_stage_trb_data) => data_stage_trb_data,
+            _ => unreachable!("checked variant before calling this handle"),
+        };
+
+        match &mut self.control_transfer_state.direction {
+            // Slice the received data to handle each trb.
+            ControlTransferDirection::In(usb_request) => {
+                trace!("DataStage TRB with ControlIn");
+
+                let byte_slice: Vec<u8> = usb_request
+                    .data
+                    .as_mut()
+                    .unwrap()
+                    .drain(0..data_stage_trb_data.transfer_length.into())
+                    .collect();
+
+                trace!(
+                    "DataStage TRB len: {} slice: {:?}",
+                    byte_slice.len(),
+                    byte_slice
+                );
+                self.dma_bus
+                    .write_bulk(data_stage_trb_data.data_pointer, &byte_slice);
+            }
+            // Accumulate in the data buffer to later trigger one ControlOut hardware request.
+            ControlTransferDirection::Out(control_out) => {
+                trace!("DataStage TRB with ControlOut");
+
+                if data_stage_trb_data.immediate_data {
+                    // Only event data should follow when immediate data is used here
+                    // but there is currently no check for that.
+
+                    // SAFETY: is always set in the preceding setup stage
+                    control_out.data.as_mut().unwrap().append(
+                        &mut data_stage_trb_data.data_pointer.to_le_bytes()
+                            [..data_stage_trb_data.transfer_length as usize]
+                            .to_vec(),
+                    );
+                } else {
+                    let mut tmp = vec![0u8; data_stage_trb_data.transfer_length as usize];
+                    self.dma_bus
+                        .read_bulk(data_stage_trb_data.data_pointer, &mut tmp);
+
+                    // SAFETY: is always set in the preceding setup stage
+                    control_out.data.as_mut().unwrap().append(&mut tmp);
+                }
+            }
+        }
+
+        if data_stage_trb_data.interrupt_on_completion {
+            interrupt_on_completion(
+                transfer_trb.address,
+                CompletionCode::Success,
+                false,
+                self.endpoint_id,
+                self.slot_id,
+                &self.event_sender,
+            )?;
+        }
+
+        if !data_stage_trb_data.chain {
+            self.control_transfer_state.state = ControlTransferStage::ConsumedDataStageTd;
+        }
+        self.submission_state = ControlSubmissionState::ParserConsumedTrb(transfer_trb);
+        Ok(())
+    }
+
+    fn handle_status_stage_trb_pre_hardware(
+        &mut self,
+        transfer_trb: TransferTrb,
+    ) -> anyhow::Result<()> {
+        let status_stage_trb_data = match &transfer_trb.variant {
+            TransferTrbVariant::StatusStage(status_stage_trb_data) => status_stage_trb_data,
+            _ => unreachable!("checked variant before calling this handle"),
+        };
+
+        match &mut self.control_transfer_state.direction {
+            ControlTransferDirection::In(_) => {
+                trace!("StatusStage TRB with ControlIn");
+
+                if status_stage_trb_data.interrupt_on_completion {
+                    interrupt_on_completion(
+                        transfer_trb.address,
+                        CompletionCode::Success,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                        &self.event_sender,
+                    )?;
+                }
+
+                self.submission_state = ControlSubmissionState::ParserConsumedTrb(transfer_trb);
+            }
+            ControlTransferDirection::Out(usb_request_out) => {
+                trace!("StatusStage TRB with ControlOut");
+
+                self.real_ep
+                    .submit_control_request(usb_request_out.clone())?;
+                pcap::control_submission(self.pcap_meta, usb_request_out);
+
+                self.submission_state = ControlSubmissionState::AwaitingControlOut(transfer_trb);
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_status_stage_trb_post_hardware(
+        &mut self,
+        transfer_trb: TransferTrb,
+    ) -> anyhow::Result<()> {
+        let status_stage_trb_data = match &transfer_trb.variant {
+            TransferTrbVariant::StatusStage(status_stage_trb_data) => status_stage_trb_data,
+            _ => unreachable!("checked variant before calling this handle"),
+        };
+
+        match &mut self.control_transfer_state.direction {
+            ControlTransferDirection::In(_) => {
+                unreachable!("ControlIn requests do the Hardware request in the SetupStage")
+            }
+            ControlTransferDirection::Out(usb_request) => {
+                trace!("StatusStage TRB with ControlOut");
+                pcap::control_completion_out(
+                    self.pcap_meta,
+                    usb_request.address,
+                    u32::from(usb_request.length),
+                );
+                if status_stage_trb_data.interrupt_on_completion {
+                    interrupt_on_completion(
+                        transfer_trb.address,
+                        CompletionCode::Success,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                        &self.event_sender,
+                    )?;
+                }
+                Ok(())
+            }
         }
     }
 }
 
+/// Track communication between us and the host hardware.
 #[derive(Debug, Default)]
 enum ControlSubmissionState {
     #[default]
     NoTrbSubmitted,
-    ParserConsumedTrb,
-    // store address of trb that failed to parse.
-    // needs to be specified inside the transfer event indicating the error.
-    ParserError(u64),
-    AwaitingControlIn(UsbRequest),
-    AwaitingControlOut(UsbRequest),
+    ParserConsumedTrb(TransferTrb),
+    ParserError(RawTrb),
+    AwaitingControlIn(TransferTrb),
+    AwaitingControlOut(TransferTrb),
 }
 
 impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<RCEH> {
@@ -110,28 +409,67 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
         Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
-        let trb_address = trb.address;
-        if let ControlFlow::Break(res) = self.trb_parser.trb(trb) {
-            match res {
-                Ok(request) => {
-                    let request_copy = request.clone_without_data();
-                    let is_out_request = request.request_type & 0x80 == 0;
+        // a parse error is handled in the match below as unrecognized trb
+        let transfer_trb: TransferTrb = TransferTrb {
+            address: trb.address,
+            variant: TransferTrbVariant::parse(trb.buffer),
+        };
 
-                    pcap::control_submission(self.pcap_meta, &request);
-
-                    self.real_ep.submit_control_request(request)?;
-
-                    self.submission_state = match is_out_request {
-                        true => ControlSubmissionState::AwaitingControlOut(request_copy),
-                        false => ControlSubmissionState::AwaitingControlIn(request_copy),
-                    };
+        // passing the whole transfer trb to include the trb address and avoid multiple arguments but parsing twice always
+        match transfer_trb.variant {
+            TransferTrbVariant::SetupStage(_) => {
+                self.handle_setup_stage_trb_pre_hardware(transfer_trb)?;
+            }
+            TransferTrbVariant::DataStage(_) => match &self.control_transfer_state.state {
+                ControlTransferStage::ConsumedSetupStageTd => {
+                    self.handle_data_stage_trb(transfer_trb)?;
                 }
-                Err(_) => {
-                    self.submission_state = ControlSubmissionState::ParserError(trb_address);
+                other_state => {
+                    error!(
+                        "Data Stage Trb is not allowed in this state: {:?}",
+                        other_state
+                    );
+                    self.control_transfer_state.state = ControlTransferStage::Initial;
+                }
+            },
+            TransferTrbVariant::Normal(_) => {
+                match &self.control_transfer_state.state {
+                    ControlTransferStage::ConsumedSetupStageTd => {
+                        todo!("Normal Trb in a Control Chain");
+                        // This path is only Ok when not at the head of the DataStage TD.
+                    }
+                    other_state => {
+                        error!("Normal Trb is not allowed in this state: {:?}", other_state);
+                        self.control_transfer_state.state = ControlTransferStage::Initial;
+                    }
                 }
             }
-        } else {
-            self.submission_state = ControlSubmissionState::ParserConsumedTrb;
+            TransferTrbVariant::StatusStage(_) => match &self.control_transfer_state.state {
+                ControlTransferStage::ConsumedSetupStageTd => {
+                    self.handle_status_stage_trb_pre_hardware(transfer_trb)?;
+                }
+                ControlTransferStage::ConsumedDataStageTd => {
+                    self.handle_status_stage_trb_pre_hardware(transfer_trb)?;
+                }
+                other_state => {
+                    error!(
+                        "Status Stage Trb is not allowed in this state: {:?}",
+                        other_state
+                    );
+                    self.control_transfer_state.state = ControlTransferStage::Initial;
+                }
+            },
+            TransferTrbVariant::Unrecognized(_, parse_error) => {
+                error!("failed to parse trb on ControlEndpoint: {:?}", parse_error);
+                self.submission_state = ControlSubmissionState::ParserError(trb);
+            }
+            _ => {
+                // no action; skip until next setup stage
+                warn!(
+                    "Noop; unexpected trb in ControlTransfer: {:?}",
+                    transfer_trb
+                );
+            }
         }
 
         Ok(())
@@ -139,12 +477,16 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
-            let result = match self.submission_state {
-                ControlSubmissionState::ParserConsumedTrb => TrbProcessingResult::Ok,
-                ControlSubmissionState::ParserError(trb_address) => {
-                    pcap::trb_error(self.pcap_meta, trb_address);
+            let result = match &self.submission_state {
+                ControlSubmissionState::ParserConsumedTrb(transfer_trb) => {
+                    trace!("consumed trb at: {}", transfer_trb.address);
+                    TrbProcessingResult::Ok
+                }
+                ControlSubmissionState::ParserError(raw_trb) => {
+                    warn!("ControlSubmissionState::ParserError and reporting CompletionCode::TrbError");
+                    pcap::trb_error(self.pcap_meta, raw_trb.address); // TODO should this reference the setup trb address?
                     let event = EventTrb::new_transfer_event_trb(
-                        trb_address,
+                        raw_trb.address,
                         0,
                         CompletionCode::TrbError,
                         false,
@@ -154,63 +496,44 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                     self.event_sender.send(event)?;
                     TrbProcessingResult::TrbError
                 }
-                ControlSubmissionState::AwaitingControlIn(ref usb_request) => {
+                ControlSubmissionState::AwaitingControlIn(transfer_trb) => {
                     let processing_result = self.real_ep.next_completion().await?;
                     match processing_result {
-                        ControlRequestProcessingResult::SuccessfulControlIn(data) => {
-                            debug!("got data from control in: {data:?}");
-                            pcap::control_completion_in(self.pcap_meta, usb_request.address, &data);
-                            if let Some(data_pointer) = usb_request.data_pointer {
-                                debug!("writing data to {data_pointer}");
-                                self.dma_bus.write_bulk(data_pointer, &data);
-                            }
-
-                            let event = EventTrb::new_transfer_event_trb(
-                                usb_request.address,
-                                0,
-                                CompletionCode::Success,
-                                false,
-                                self.endpoint_id,
-                                self.slot_id,
-                            );
-                            self.event_sender.send(event)?;
-
+                        ControlRequestProcessingResult::SuccessfulControlIn(mut data) => {
+                            self.handle_setup_stage_trb_post_hardware(
+                                transfer_trb.clone(),
+                                &mut data,
+                            )?;
                             TrbProcessingResult::Ok
                         }
                         ControlRequestProcessingResult::SuccessfulControlOut => unreachable!(),
                         processing_error => {
+                            let usb_request = match &self.control_transfer_state.direction {
+                                ControlTransferDirection::In(usb_request) => usb_request,
+                                _ => panic!("TODO write a message or check if it is unreachable"),
+                            };
                             pcap::control_in_error(self.pcap_meta, usb_request, &processing_error);
-                            self.handle_processing_error(processing_error, usb_request.address)?
+                            self.handle_processing_error(processing_error, transfer_trb.address)?
                         }
                     }
                 }
-                ControlSubmissionState::AwaitingControlOut(ref usb_request) => {
+                ControlSubmissionState::AwaitingControlOut(transfer_trb) => {
                     let processing_result = self.real_ep.next_completion().await?;
                     match processing_result {
                         ControlRequestProcessingResult::SuccessfulControlIn(_) => {
                             unreachable!()
                         }
                         ControlRequestProcessingResult::SuccessfulControlOut => {
-                            pcap::control_completion_out(
-                                self.pcap_meta,
-                                usb_request.address,
-                                u32::from(usb_request.length),
-                            );
-                            let event = EventTrb::new_transfer_event_trb(
-                                usb_request.address,
-                                0,
-                                CompletionCode::Success,
-                                false,
-                                self.endpoint_id,
-                                self.slot_id,
-                            );
-                            self.event_sender.send(event)?;
-
+                            self.handle_status_stage_trb_post_hardware(transfer_trb.clone())?;
                             TrbProcessingResult::Ok
                         }
                         processing_error => {
+                            let usb_request = match &self.control_transfer_state.direction {
+                                ControlTransferDirection::Out(usb_request) => usb_request,
+                                _ => panic!("TODO write a message or check if it is unreachable"),
+                            };
                             pcap::control_out_error(self.pcap_meta, usb_request, &processing_error);
-                            self.handle_processing_error(processing_error, usb_request.address)?
+                            self.handle_processing_error(processing_error, transfer_trb.address)?
                         }
                     }
                 }
@@ -292,84 +615,16 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
 }
 
 #[derive(Debug)]
-struct ControlRequestParser {
-    state: ControlRequestParserState,
-    dma_bus: BusDeviceRef,
-    request_builder: UsbRequest,
+pub struct ControlTransferState {
+    pub state: ControlTransferStage, // upcoming or current stage of a control transfer to be handled
+    pub direction: ControlTransferDirection, // holding the UsbRequest -> all things data
 }
-
-impl ControlRequestParser {
-    fn new(dma_bus: BusDeviceRef) -> Self {
+impl ControlTransferState {
+    // previous_completion_code should never be used as is, thus the error as a default value
+    const fn new(direction: ControlTransferDirection) -> Self {
         Self {
-            state: ControlRequestParserState::Initial,
-            dma_bus,
-            request_builder: Default::default(),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum ControlRequestParserState {
-    Initial,
-    SetupStageConsumed,
-    DataStageConsumed,
-}
-
-impl ControlRequestParser {
-    fn trb(&mut self, trb: RawTrb) -> ControlFlow<Result<UsbRequest, ()>> {
-        let transfer_trb = TransferTrbVariant::parse(trb.buffer);
-
-        loop {
-            match &self.state {
-                ControlRequestParserState::Initial => match transfer_trb {
-                    TransferTrbVariant::SetupStage(setup_trb_data) => {
-                        let request = UsbRequest {
-                            address: 0,
-                            request_type: setup_trb_data.request_type,
-                            request: setup_trb_data.request,
-                            value: setup_trb_data.value,
-                            index: setup_trb_data.index,
-                            length: setup_trb_data.length,
-                            data_pointer: None,
-                            data: None,
-                        };
-                        self.request_builder = request;
-                        self.state = ControlRequestParserState::SetupStageConsumed;
-                        return ControlFlow::Continue(());
-                    }
-                    _ => return ControlFlow::Break(Err(())),
-                },
-                ControlRequestParserState::SetupStageConsumed => match transfer_trb {
-                    TransferTrbVariant::DataStage(data_trb_data) => {
-                        if data_trb_data.immediate_data {
-                            todo!("immediate data on data stage trb")
-                        }
-                        let mut data = vec![0; self.request_builder.length as usize];
-                        self.dma_bus
-                            .read_bulk(data_trb_data.data_pointer, &mut data);
-
-                        self.request_builder.data = Some(data);
-                        self.request_builder.data_pointer = Some(data_trb_data.data_pointer);
-                        self.state = ControlRequestParserState::DataStageConsumed;
-                        return ControlFlow::Continue(());
-                    }
-                    TransferTrbVariant::StatusStage(_) => {
-                        self.state = ControlRequestParserState::DataStageConsumed;
-                        continue;
-                    }
-                    _ => return ControlFlow::Break(Err(())),
-                },
-                ControlRequestParserState::DataStageConsumed => match transfer_trb {
-                    TransferTrbVariant::StatusStage(_) => {
-                        self.request_builder.address = trb.address;
-                        let request = mem::take(&mut self.request_builder);
-                        self.request_builder = UsbRequest::default();
-                        self.state = ControlRequestParserState::Initial;
-                        return ControlFlow::Break(Ok(request));
-                    }
-                    _ => return ControlFlow::Break(Err(())),
-                },
-            }
+            state: ControlTransferStage::Initial,
+            direction,
         }
     }
 }
