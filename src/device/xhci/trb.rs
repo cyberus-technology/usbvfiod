@@ -806,15 +806,6 @@ impl TrbData for ResetDeviceCommandTrbData {
 }
 
 /// Represents a TRB that the driver can place on a transfer ring.
-#[derive(Debug, PartialEq, Eq)]
-pub struct TransferTrb {
-    /// Guest memory address where the driver placed the TRB.
-    pub address: u64,
-    /// Information specific to the particular transfer TRB variant.
-    pub variant: TransferTrbVariant,
-}
-
-/// Represents a TRB that the driver can place on a transfer ring.
 ///
 /// See XHCI specification Section 6.4.1 for detailed transfer TRB type descriptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -882,7 +873,7 @@ pub struct NormalTrb {
 impl TrbData for NormalTrb {
     /// Parse data of a Normal TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
@@ -948,7 +939,7 @@ pub struct SetupStageTrb {
 impl TrbData for SetupStageTrb {
     /// Parse data of a Setup Stage TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
@@ -998,7 +989,7 @@ pub struct DataStageTrb {
 impl TrbData for DataStageTrb {
     /// Parse data of a Data Stage TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
@@ -1063,7 +1054,7 @@ pub struct StatusStageTrb {
 impl TrbData for StatusStageTrb {
     /// Parse data of a Status Stage TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
@@ -1102,7 +1093,7 @@ pub struct EventDataTrb {
 impl TrbData for EventDataTrb {
     /// Parse data of a Event Data TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
