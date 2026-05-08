@@ -2,16 +2,10 @@
 
 /// Represents a USB control request.
 ///
-/// For documentation of the fields other than `address`, see Section "9.3 USB
+/// See xhci specification chapter 6.4.1.2.
+///
+/// For additional documentation of the fields other than `address`, see Section "9.3 USB
 /// Device Requests" in the USB 2.0 specification.
-///
-/// A request without data is packaged in two TRBs (a Setup Stage and a
-/// Status Stage). `data` should then be `None`.
-///
-/// A request with data is packaged in three TRBs (a Setup Stage, a Data
-/// Stage and a Status Stage). `data` should then contain the pointer
-/// from the Data Stage).
-///
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct UsbRequest {
     /// The guest address of the Status Stage of this request.
