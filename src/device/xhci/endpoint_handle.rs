@@ -557,6 +557,12 @@ impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for OutEndpointHandle<ROEH>
     }
 }
 
+impl<RIEH: RealInEndpointHandle> Drop for InEndpointHandle<RIEH> {
+    fn drop(&mut self) {
+        trace!("called <RIEH: RealInEndpointHandle> Drop for InEndpointHandle<RIEH>");
+    }
+}
+
 #[derive(Debug)]
 pub struct InEndpointHandle<RIEH: RealInEndpointHandle> {
     slot_id: u8,
