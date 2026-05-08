@@ -220,6 +220,10 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             _ => unreachable!("checked variant before calling this handle"),
         };
 
+        if data_stage_trb_data.immediate_data {
+            todo!("We currently always expect a pointer in the data stage trb payload. The spec allows the driver to use the pointer field for data if the immediate data bit is set.");
+        }
+
         match &mut self.control_transfer_state.direction {
             // Slice the received data to handle each trb.
             ControlTransferDirection::In(usb_request) => {
