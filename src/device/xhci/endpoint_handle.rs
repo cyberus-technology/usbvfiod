@@ -658,13 +658,13 @@ impl ControlTransferState {
 }
 
 #[derive(Debug)]
-pub struct NormalTransferParser {
+pub struct NormalTransferState {
     edtla: u64,
     previous_completion_code: CompletionCode,
     //current_trb_address: Option<u64>,
     //current_trb_data: Option<TransferTrbVariant>,
 }
-impl NormalTransferParser {
+impl NormalTransferState {
     const fn new() -> Self {
         Self {
             edtla: 0,
@@ -690,7 +690,7 @@ pub struct OutEndpointHandle<ROEH: RealOutEndpointHandle> {
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
     submission_state: NormalSubmissionState,
-    trb_parser: NormalTransferParser,
+    normal_transfer_state: NormalTransferState,
 }
 
 impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
@@ -708,7 +708,7 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
             dma_bus,
             event_sender,
             submission_state: NormalSubmissionState::NoTrbSubmitted,
-            trb_parser: NormalTransferParser::new(),
+            normal_transfer_state: NormalTransferState::new(),
         }
     }
 
@@ -721,7 +721,7 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         };
 
         if !normal_trb_data.chain {
-            self.trb_parser = NormalTransferParser::new();
+            self.normal_transfer_state = NormalTransferState::new();
         }
 
         let mut data = vec![0; normal_trb_data.transfer_length as usize];
@@ -730,7 +730,7 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         self.real_ep.submit(data)?;
 
         self.submission_state = NormalSubmissionState::AwaitingRealTransfer(transfer_trb);
-        self.trb_parser.previous_completion_code = CompletionCode::Success;
+        self.normal_transfer_state.previous_completion_code = CompletionCode::Success;
 
         Ok(())
     }
@@ -743,13 +743,13 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
             _ => unreachable!("checked variant before calling this handle"),
         };
 
-        self.trb_parser.edtla += normal_trb_data.transfer_length as u64;
+        self.normal_transfer_state.edtla += normal_trb_data.transfer_length as u64;
 
         if normal_trb_data.interrupt_on_completion {
             self.interrupt_on_completion(transfer_trb.address, CompletionCode::Success, false)?;
         }
 
-        self.trb_parser.previous_completion_code = CompletionCode::Success;
+        self.normal_transfer_state.previous_completion_code = CompletionCode::Success;
         Ok(())
     }
 
@@ -762,19 +762,19 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
         };
 
         // edlta is supposed to be a 24 bit value, it being larger is a spec violation we silently drop
-        let masked_edtla = (MASK_24BIT & self.trb_parser.edtla) as u32;
+        let masked_edtla = (MASK_24BIT & self.normal_transfer_state.edtla) as u32;
 
         let event = EventTrb::new_transfer_event_trb(
             event_data_trb_data.event_data,
             masked_edtla,
-            self.trb_parser.previous_completion_code,
+            self.normal_transfer_state.previous_completion_code,
             true,
             self.endpoint_id,
             self.slot_id,
         );
 
         self.event_sender.send(event)?;
-        self.trb_parser.edtla = 0;
+        self.normal_transfer_state.edtla = 0;
 
         if event_data_trb_data.interrupt_on_completion {
             self.interrupt_on_completion(transfer_trb.address, CompletionCode::Success, false)?;
@@ -815,13 +815,12 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
             "submit_trb called twice without calling next_completion"
         );
 
-        let transfer_trb_variant = TransferTrbVariant::parse(trb.buffer);
         let transfer_trb: TransferTrb = TransferTrb {
             address: trb.address,
-            variant: transfer_trb_variant,
+            variant: TransferTrbVariant::parse(trb.buffer),
         };
 
-        match TransferTrbVariant::parse(trb.buffer) {
+        match transfer_trb.variant {
             TransferTrbVariant::Normal(_) => {
                 self.handle_normal_trb_pre_hardware(transfer_trb)?;
             }
@@ -922,7 +921,7 @@ pub struct InEndpointHandle<RIEH: RealInEndpointHandle> {
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
     submission_state: NormalSubmissionState,
-    trb_parser: NormalTransferParser,
+    normal_transfer_state: NormalTransferState,
 }
 
 impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
@@ -940,7 +939,7 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
             dma_bus,
             event_sender,
             submission_state: NormalSubmissionState::NoTrbSubmitted,
-            trb_parser: NormalTransferParser::new(),
+            normal_transfer_state: NormalTransferState::new(),
         }
     }
 
@@ -953,14 +952,14 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
         };
 
         if !normal_trb_data.chain {
-            self.trb_parser = NormalTransferParser::new();
+            self.normal_transfer_state = NormalTransferState::new();
         }
 
         self.real_ep
             .submit(normal_trb_data.transfer_length as usize)?;
 
         self.submission_state = NormalSubmissionState::AwaitingRealTransfer(transfer_trb);
-        self.trb_parser.previous_completion_code = CompletionCode::Success;
+        self.normal_transfer_state.previous_completion_code = CompletionCode::Success;
 
         Ok(())
     }
@@ -1002,7 +1001,7 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
             }
         };
 
-        self.trb_parser.edtla += dma_length as u64;
+        self.normal_transfer_state.edtla += dma_length as u64;
         self.dma_bus
             .write_bulk(normal_trb_data.data_pointer, &hardware_data[..dma_length]);
 
@@ -1010,7 +1009,7 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
             self.interrupt_on_completion(transfer_trb.address, CompletionCode::Success, false)?;
         }
 
-        self.trb_parser.previous_completion_code = completion_code;
+        self.normal_transfer_state.previous_completion_code = completion_code;
 
         Ok(())
     }
@@ -1024,19 +1023,19 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
         };
 
         // edlta is supposed to be a 24 bit value, it being larger is a spec violation we silently drop
-        let masked_edtla = MASK_24BIT & self.trb_parser.edtla;
+        let masked_edtla = MASK_24BIT & self.normal_transfer_state.edtla;
 
         let event = EventTrb::new_transfer_event_trb(
             event_data_trb_data.event_data,
             masked_edtla as u32,
-            self.trb_parser.previous_completion_code,
+            self.normal_transfer_state.previous_completion_code,
             true,
             self.endpoint_id,
             self.slot_id,
         );
 
         self.event_sender.send(event)?;
-        self.trb_parser.edtla = 0;
+        self.normal_transfer_state.edtla = 0;
 
         if event_data_trb_data.interrupt_on_completion {
             self.interrupt_on_completion(transfer_trb.address, CompletionCode::Success, false)?;
@@ -1077,13 +1076,12 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
             "submit_trb called twice without calling next_completion"
         );
 
-        let transfer_trb_variant = TransferTrbVariant::parse(trb.buffer);
         let transfer_trb: TransferTrb = TransferTrb {
             address: trb.address,
-            variant: transfer_trb_variant,
+            variant: TransferTrbVariant::parse(trb.buffer),
         };
 
-        match TransferTrbVariant::parse(trb.buffer) {
+        match transfer_trb.variant {
             TransferTrbVariant::Normal(_) => {
                 self.handle_normal_trb_pre_hardware(transfer_trb)?;
             }
