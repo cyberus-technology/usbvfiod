@@ -953,6 +953,7 @@ pub struct DataStageTrbData {
     pub transfer_length: u16,
     pub chain: bool,
     pub interrupt_on_completion: bool,
+    pub immediate_data: bool,
     pub direction: bool,
 }
 
@@ -982,6 +983,7 @@ impl TrbData for DataStageTrbData {
 
         let chain = trb_bytes[12] & 0x10 != 0;
         let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
+        let immediate_data = trb_bytes[12] & 0x40 != 0;
         let direction = trb_bytes[14] & 0x1 != 0;
 
         Ok(Self {
@@ -989,6 +991,7 @@ impl TrbData for DataStageTrbData {
             transfer_length,
             chain,
             interrupt_on_completion,
+            immediate_data,
             direction,
         })
     }
@@ -1239,6 +1242,7 @@ mod tests {
             transfer_length: 0x0010,
             chain: false,
             interrupt_on_completion: false,
+            immediate_data: false,
             direction: false,
         });
         assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);
