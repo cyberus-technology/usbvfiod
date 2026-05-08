@@ -160,8 +160,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 self.interrupt_on_completion(transfer_trb.address, CompletionCode::Success, false)?;
             }
 
-            self.trb_parser.edtla = 0;
             self.control_transfer_state.state = ControlTransferStage::ConsumedSetupStageTd;
+            self.control_transfer_state.edtla = 0;
             self.submission_state = ControlSubmissionState::ParserConsumedTrb(transfer_trb);
         }
 
@@ -191,7 +191,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     .as_mut()
                     .unwrap()
                     .resize(setup_stage_trb_data.length as usize, 0);
-                self.trb_parser.previous_completion_code = CompletionCode::Success;
+                self.control_transfer_state.previous_completion_code = CompletionCode::Success;
 
                 if setup_stage_trb_data.interrupt_on_completion {
                     self.interrupt_on_completion(
@@ -226,7 +226,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
 
                 // All transfers are done but to have the expected value in the
                 // created Events we keep count of pretend transfers.
-                self.trb_parser.edtla += data_stage_trb_data.transfer_length as u64;
+                self.control_transfer_state.edtla += data_stage_trb_data.transfer_length as u64;
 
                 let byte_slice: Vec<u8> = usb_request
                     .data
@@ -249,7 +249,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
 
                 // No transfer happened yet but to have to expected value in the
                 // created Events we keep count of pretend transfers.
-                self.trb_parser.edtla += data_stage_trb_data.transfer_length as u64;
+                self.control_transfer_state.edtla += data_stage_trb_data.transfer_length as u64;
 
                 let mut byte_slice = vec![0; data_stage_trb_data.transfer_length as usize];
                 self.dma_bus
@@ -294,11 +294,12 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 }
 
                 if status_stage_trb_data.chain {
-                    self.trb_parser.state = ControlTransferStage::ConsumedStatusStageTrb;
+                    self.control_transfer_state.state =
+                        ControlTransferStage::ConsumedStatusStageTrb;
                     // one more EventDataTrb until Control Transfer is done
                 } else {
-                    self.trb_parser.state = ControlTransferStage::Initial;
-                    self.trb_parser.edtla = 0;
+                    self.control_transfer_state.state = ControlTransferStage::Initial;
+                    self.control_transfer_state.edtla = 0;
                 }
                 self.submission_state = ControlSubmissionState::ParserConsumedTrb(transfer_trb);
             }
@@ -330,11 +331,12 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 trace!("StatusStage TRB with ControlOut");
 
                 if status_stage_trb_data.chain {
-                    self.trb_parser.state = ControlTransferStage::ConsumedStatusStageTrb;
+                    self.control_transfer_state.state =
+                        ControlTransferStage::ConsumedStatusStageTrb;
                     // one more EventDataTrb until Control Transfer is done
                 } else {
-                    self.trb_parser.state = ControlTransferStage::Initial;
-                    self.trb_parser.edtla = 0;
+                    self.control_transfer_state.state = ControlTransferStage::Initial;
+                    self.control_transfer_state.edtla = 0;
                 }
 
                 if status_stage_trb_data.interrupt_on_completion {
@@ -361,37 +363,37 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         assert!(event_data_trb_data.interrupt_on_completion);
 
         // edlta is supposed to be a 24 bit value, it being larger is a spec violation we silently drop
-        let masked_edtla = (MASK_24BIT & self.trb_parser.edtla) as u32;
+        let masked_edtla = (MASK_24BIT & self.control_transfer_state.edtla) as u32;
 
         let event = EventTrb::new_transfer_event_trb(
             event_data_trb_data.event_data,
             masked_edtla,
-            self.trb_parser.previous_completion_code,
+            self.control_transfer_state.previous_completion_code,
             true,
             self.endpoint_id,
             self.slot_id,
         );
 
         self.event_sender.send(event)?;
-        self.trb_parser.edtla = 0;
+        self.control_transfer_state.edtla = 0;
 
         if event_data_trb_data.interrupt_on_completion {
             self.interrupt_on_completion(transfer_trb.address, CompletionCode::Success, false)?;
         }
 
         if !event_data_trb_data.chain {
-            match self.trb_parser.state {
+            match self.control_transfer_state.state {
                 ControlTransferStage::ConsumedSetupStageTd => {
-                    self.trb_parser.state = ControlTransferStage::ConsumedDataStageTd;
-                    self.trb_parser.edtla = 0;
+                    self.control_transfer_state.state = ControlTransferStage::ConsumedDataStageTd;
+                    self.control_transfer_state.edtla = 0;
                 }
                 ControlTransferStage::ConsumedDataStageTd => {
-                    self.trb_parser.state = ControlTransferStage::Initial;
-                    self.trb_parser.edtla = 0;
+                    self.control_transfer_state.state = ControlTransferStage::Initial;
+                    self.control_transfer_state.edtla = 0;
                 }
                 ControlTransferStage::ConsumedStatusStageTrb => {
-                    self.trb_parser.state = ControlTransferStage::Initial;
-                    self.trb_parser.edtla = 0;
+                    self.control_transfer_state.state = ControlTransferStage::Initial;
+                    self.control_transfer_state.edtla = 0;
                 }
                 _ => {
                     unreachable!("this should never be reached with spec compliancy");
