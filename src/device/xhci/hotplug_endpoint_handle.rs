@@ -60,6 +60,7 @@ pub struct HotplugEndpointHandleImpl<EH: EndpointHandle> {
     endpoint_handle: Arc<Mutex<Option<EH>>>,
     event_sender: EventSender,
     notify_detach: CancellationToken,
+    notify_drop: CancellationToken,
     submission_state: HotplugSubmissionState,
 }
 
@@ -81,10 +82,12 @@ impl<EH: EndpointHandle> HotplugEndpointHandleImpl<EH> {
         async_runtime: &runtime::Handle,
     ) -> Self {
         let endpoint_handle = Arc::new(Mutex::new(Some(endpoint_handle)));
+        let notify_drop = CancellationToken::new();
 
         async_runtime.spawn(Self::detach_handler(
             endpoint_handle.clone(),
             notify_detach.clone(),
+            notify_drop.clone(),
         ));
 
         Self {
@@ -93,6 +96,7 @@ impl<EH: EndpointHandle> HotplugEndpointHandleImpl<EH> {
             endpoint_handle,
             event_sender,
             notify_detach,
+            notify_drop,
             submission_state: HotplugSubmissionState::NoTrbSubmitted,
         }
     }
@@ -102,10 +106,22 @@ impl<EH: EndpointHandle> HotplugEndpointHandleImpl<EH> {
     async fn detach_handler(
         endpoint_handle: Arc<Mutex<Option<EH>>>,
         notify_detach: CancellationToken,
+        notify_drop: CancellationToken,
     ) {
-        notify_detach.cancelled().await;
-        let mut ep = endpoint_handle.lock().await;
-        *ep = None;
+        select! {
+            _ = notify_drop.cancelled() => {}
+            _ = notify_detach.cancelled() => {
+                let mut ep = endpoint_handle.lock().await;
+                *ep = None;
+            }
+        }
+    }
+}
+
+impl<EH: EndpointHandle> Drop for HotplugEndpointHandleImpl<EH> {
+    fn drop(&mut self) {
+        // make sure that detach_handler also stops
+        self.notify_drop.cancel();
     }
 }
 
@@ -238,6 +254,8 @@ impl HotplugEndpointHandleImpl<DummyEndpointHandle> {
             submission_state: HotplugSubmissionState::NoTrbSubmitted,
             // just a dummy; nobody will notify, nobody listens
             notify_detach: CancellationToken::new(),
+            // just a dummy; the drop implementation will notify, but nobody listens
+            notify_drop: CancellationToken::new(),
         }
     }
 }
