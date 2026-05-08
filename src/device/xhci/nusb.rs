@@ -1,4 +1,4 @@
-use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{fmt::Debug, future::Future, io::ErrorKind, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Error};
 use nusb::{
@@ -8,9 +8,9 @@ use nusb::{
     },
     Endpoint, Interface, MaybeFuture,
 };
-use tokio::{runtime, select, sync::mpsc};
+use tokio::{io::AsyncReadExt, runtime, select, sync::mpsc, time::sleep};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::device::xhci::{
     hotplug_endpoint_handle::BaseEndpointHandle,
@@ -19,6 +19,7 @@ use crate::device::xhci::{
         ControlRequestProcessingResult, InTrbProcessingResult, RealControlEndpointHandle,
         RealInEndpointHandle, RealOutEndpointHandle,
     },
+    trb::{NormalTrbData, TransferTrb, TransferTrbVariant},
     usbrequest::UsbRequest,
 };
 
@@ -110,9 +111,9 @@ impl NusbRealDevice {
 
 impl RealDevice for NusbRealDevice {
     type RCEH = ControlEndpointHandle;
-    type RBIEH = NormalEndpointHandle<Bulk, In>;
+    type RBIEH = NormalInEndpointHandle;
     type RBOEH = NormalEndpointHandle<Bulk, Out>;
-    type RIIEH = NormalEndpointHandle<Interrupt, In>;
+    type RIIEH = NormalInEndpointHandle;
     type RIOEH = NormalEndpointHandle<Interrupt, Out>;
 
     fn speed(&self) -> Option<super::real_device::Speed> {
@@ -124,7 +125,8 @@ impl RealDevice for NusbRealDevice {
     }
 
     fn bulk_in_endpoint_handle(&self, endpoint_id: u8) -> Self::RBIEH {
-        NormalEndpointHandle::new(endpoint_id, self.device_wrapper.clone())
+        let endpoint: Endpoint<Bulk, In> = self.device_wrapper.open_endpoint(endpoint_id).expect("Failed to open endpoint on nusb device. We could handle this error and always return transaction errors. Panic is fine for now.");
+        NormalInEndpointHandle::new(endpoint, &self.async_runtime)
     }
 
     fn bulk_out_endpoint_handle(&self, endpoint_id: u8) -> Self::RBOEH {
@@ -132,7 +134,8 @@ impl RealDevice for NusbRealDevice {
     }
 
     fn interrupt_in_endpoint_handle(&self, endpoint_id: u8) -> Self::RIIEH {
-        NormalEndpointHandle::new(endpoint_id, self.device_wrapper.clone())
+        let endpoint: Endpoint<Interrupt, In> = self.device_wrapper.open_endpoint(endpoint_id).expect("Failed to open endpoint on nusb device. We could handle this error and always return transaction errors. Panic is fine for now.");
+        NormalInEndpointHandle::new(endpoint, &self.async_runtime)
     }
 
     fn interrupt_out_endpoint_handle(&self, endpoint_id: u8) -> Self::RIOEH {
@@ -452,6 +455,149 @@ impl From<nusb::Speed> for Speed {
             nusb::Speed::Super => Self::Super,
             nusb::Speed::SuperPlus => Self::SuperPlus,
             _ => todo!("new USB speed was added to non-exhaustive enum"),
+        }
+    }
+}
+
+// TODO ZONE STARTING
+pub struct NormalInEndpointHandle {
+    // signal worker to stop
+    cancel: CancellationToken,
+    request_submitter: mpsc::UnboundedSender<usize>,
+    response_receiver: mpsc::UnboundedReceiver<Vec<u8>>,
+}
+
+impl Drop for NormalInEndpointHandle {
+    fn drop(&mut self) {
+        error!("I AM DROPPED");
+        self.cancel.cancel();
+    }
+}
+
+impl Debug for NormalInEndpointHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("lol v2").finish()
+    }
+}
+
+impl RealInEndpointHandle for NormalInEndpointHandle {
+    type TrbCompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
+
+    fn submit(&mut self, len: usize) -> anyhow::Result<()> {
+        self.request_submitter.send(len)?;
+
+        Ok(())
+    }
+
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+        Box::pin(async {
+            let result = (self.response_receiver.recv().await)
+                // background worker is dead and has dropped the response sender
+                // maybe we want to error here instead
+                .map_or(InTrbProcessingResult::TransactionError, |res| {
+                    InTrbProcessingResult::Success(res)
+                });
+
+            Ok(result)
+        })
+    }
+}
+
+impl BaseEndpointHandle for NormalInEndpointHandle {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+        // nothing we can do
+        Box::pin(async { Ok(()) })
+    }
+
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+        // nusb handles clearing halts on control endpoints by itself
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl NormalInEndpointHandle {
+    fn new<EpType: BulkOrInterrupt + 'static>(
+        endpoint: nusb::Endpoint<EpType, In>,
+        async_runtime: &runtime::Handle,
+    ) -> Self {
+        let (request_submitter, request_receiver) = mpsc::unbounded_channel();
+        let (response_submitter, response_receiver) = mpsc::unbounded_channel();
+        let cancel = CancellationToken::new();
+
+        async_runtime.spawn(cancellable_normal_in_endpoint_worker::<EpType>(
+            endpoint,
+            request_receiver,
+            response_submitter,
+            cancel.clone(),
+        ));
+
+        Self {
+            cancel,
+            request_submitter,
+            response_receiver,
+        }
+    }
+}
+
+async fn cancellable_normal_in_endpoint_worker<EpType: BulkOrInterrupt>(
+    endpoint: nusb::Endpoint<EpType, In>,
+    request_receiver: mpsc::UnboundedReceiver<usize>,
+    response_submitter: mpsc::UnboundedSender<Vec<u8>>,
+    cancel: CancellationToken,
+) {
+    select! {
+        _ = normal_in_endpoint_worker(endpoint, request_receiver, response_submitter) => {},
+        _ = cancel.cancelled() => {},
+    }
+    error!("I AM CANCELLED");
+}
+
+// this function can only return with an error, but ! cannot be used in Result
+async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt>(
+    endpoint: nusb::Endpoint<EpType, In>,
+    mut request_receiver: mpsc::UnboundedReceiver<usize>,
+    response_submitter: mpsc::UnboundedSender<Vec<u8>>,
+) -> anyhow::Result<()> {
+    // seconds * N
+    const NUSB_TIMEOUT: u64 = 1000 * 2;
+
+    // create reader
+    //let endpoint = self.endpoint();
+
+    let mut reader = endpoint
+        .reader(512 * 2 * 1000 * 16) // maybe 16MB since that should be the max buffering the edtla can do
+        .with_num_transfers(1)
+        .with_read_timeout(Duration::from_millis(NUSB_TIMEOUT));
+
+    let mut pkt_reader = reader.until_short_packet();
+
+    let mut buffer = Vec::new();
+
+    loop {
+        //        sleep(Duration::new(1, 0)).await;
+        error!("I AM ALIVE");
+        if let Some(requested_length) = request_receiver.recv().await {
+            // check if buffer has enough content or top up the remaining
+            let requested_length = requested_length - buffer.len();
+
+            // do reading until end aka short or null package
+            let read_length = match pkt_reader.read_to_end(&mut buffer).await {
+                Ok(read_length) => read_length,
+                Err(e) if matches!(ErrorKind::OutOfMemory, e) => {
+                    // reader buffer was too small, how to handle this?
+                    // does a max length for td exist? -> maybe the 16MB being the edtla limit
+                    panic!("normal in buffer OOM: {}", e);
+                }
+                Err(e) => panic!("in endpoint reader error: {}", e),
+            };
+
+            // take only the requested amount from the buffer
+            let requested_bytes = buffer.drain(..requested_length).collect();
+            // ...and return it
+            response_submitter.send(requested_bytes)?;
         }
     }
 }

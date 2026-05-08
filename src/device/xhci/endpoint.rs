@@ -3,7 +3,7 @@ use tokio::{
     runtime, select,
     sync::{mpsc, oneshot},
 };
-use tracing::{trace, warn};
+use tracing::{error, trace, warn};
 
 use crate::{
     device::{
@@ -50,6 +50,13 @@ pub enum EndpointMessage {
     SetTrDequeuePointer(u64, bool, oneshot::Sender<CompletionCode>),
     Terminate(oneshot::Sender<()>),
 }
+/*
+impl<EH: HotplugEndpointHandle> Drop for EndpointWorker<EH> {
+    fn drop(&mut self) {
+        error!("I AM endpoint worker drop");
+    }
+}
+*/
 
 impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
     pub fn launch(
@@ -79,6 +86,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
     async fn run(self) {
         match self.run_loop().await {
             Ok(_) => {
+                error!("I AM endpoint worker drop properly in run()");
                 // endpoint terminated properly
             }
             Err(err) => warn!("endpoint stopped unexpectedly {err}"),

@@ -2,7 +2,7 @@ use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc};
 
 use tokio::{runtime, select, sync::Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::trace;
+use tracing::{error, trace};
 
 use crate::device::xhci::{
     endpoint_handle::{DummyEndpointHandle, EndpointHandle, TrbProcessingResult},
@@ -106,6 +106,11 @@ impl<EH: EndpointHandle> HotplugEndpointHandleImpl<EH> {
         notify_detach.cancelled().await;
         let mut ep = endpoint_handle.lock().await;
         *ep = None;
+    }
+}
+impl<EH: EndpointHandle> Drop for HotplugEndpointHandleImpl<EH> {
+    fn drop(&mut self) {
+        error!("I AM endpoint worker drop HotplugEndpointHandleImpl");
     }
 }
 
