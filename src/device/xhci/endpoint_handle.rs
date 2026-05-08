@@ -83,7 +83,7 @@ pub struct ControlEndpointHandle<RCEH: RealControlEndpointHandle> {
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
     submission_state: ControlSubmissionState,
-    trb_parser: ControlTransferParser,
+    control_transfer_state: ControlTransferState,
 }
 
 impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
@@ -101,16 +101,18 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             dma_bus,
             event_sender,
             submission_state: ControlSubmissionState::NoTrbSubmitted,
-            trb_parser: ControlTransferParser::new(ControlTransferDirection::In(UsbRequest {
-                address: 0,
-                request_type: 0,
-                request: 0,
-                value: 0,
-                index: 0,
-                length: 0,
-                data_pointer: None,
-                data: None,
-            })),
+            control_transfer_state: ControlTransferState::new(ControlTransferDirection::In(
+                UsbRequest {
+                    address: 0,
+                    request_type: 0,
+                    request: 0,
+                    value: 0,
+                    index: 0,
+                    length: 0,
+                    data_pointer: None,
+                    data: None,
+                },
+            )),
         }
     }
 
@@ -137,8 +139,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         if setup_stage_trb_data.request_type & 0x80 != 0 {
             trace!("SetupStage TRB with ControlIn");
 
-            self.trb_parser =
-                ControlTransferParser::new(ControlTransferDirection::In(request.clone()));
+            self.control_transfer_state =
+                ControlTransferState::new(ControlTransferDirection::In(request.clone()));
 
             self.real_ep.submit_control_request(request)?;
             self.submission_state = ControlSubmissionState::AwaitingControlIn(transfer_trb);
@@ -146,7 +148,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             trace!("SetupStage TRB with ControlOut");
             request.data = Some(vec![]);
 
-            self.trb_parser = ControlTransferParser::new(ControlTransferDirection::Out(request));
+            self.control_transfer_state =
+                ControlTransferState::new(ControlTransferDirection::Out(request));
 
             // actual hardware request happens in status stage after consuming the data stage td
 
@@ -154,7 +157,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 self.interrupt_on_completion(transfer_trb.address, CompletionCode::Success, false)?;
             }
 
-            self.trb_parser.state = ControlTransferStage::ConsumedSetupStageTd;
+            self.trb_parser.edtla = 0;
+            self.control_transfer_state.state = ControlTransferStage::ConsumedSetupStageTd;
             self.submission_state = ControlSubmissionState::ParserConsumedTrb(transfer_trb);
         }
 
@@ -166,7 +170,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         transfer_trb: TransferTrb,
         hardware_data: &mut Vec<u8>,
     ) -> anyhow::Result<()> {
-        match &mut self.trb_parser.direction {
+        match &mut self.control_transfer_state.direction {
             // collect hardware data
             ControlTransferDirection::In(request) => {
                 debug!("control in data {:?}", hardware_data);
@@ -191,7 +195,9 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                         false,
                     )?;
                 }
-                self.trb_parser.state = ControlTransferStage::ConsumedSetupStageTd;
+
+                self.control_transfer_state.state = ControlTransferStage::ConsumedSetupStageTd;
+                self.control_transfer_state.edtla = 0;
             }
             ControlTransferDirection::Out(_) => {
                 unreachable!(
@@ -208,7 +214,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             _ => unreachable!("checked variant before calling this handle"),
         };
 
-        match &mut self.trb_parser.direction {
+        match &mut self.control_transfer_state.direction {
             // Slice the received data to handle each trb.
             ControlTransferDirection::In(usb_request) => {
                 trace!("DataStage TRB with ControlIn");
@@ -246,7 +252,8 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         }
 
         if !data_stage_trb_data.chain {
-            self.trb_parser.state = ControlTransferStage::ConsumedDataStageTd;
+            self.control_transfer_state.state = ControlTransferStage::ConsumedDataStageTd;
+            self.control_transfer_state.edtla = 0;
         }
         self.submission_state = ControlSubmissionState::ParserConsumedTrb(transfer_trb);
         Ok(())
@@ -261,7 +268,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             _ => unreachable!("checked variant before calling this handle"),
         };
 
-        match &mut self.trb_parser.direction {
+        match &mut self.control_transfer_state.direction {
             ControlTransferDirection::In(_) => {
                 trace!("StatusStage TRB with ControlIn");
 
@@ -297,7 +304,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             _ => unreachable!("checked variant before calling this handle"),
         };
 
-        match &mut self.trb_parser.direction {
+        match &mut self.control_transfer_state.direction {
             ControlTransferDirection::In(_) => {
                 unreachable!("ControlIn requests do the Hardware request in the SetupStage")
             }
@@ -351,18 +358,17 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
 
     fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
         // a parse error is handled in the match below as unrecognized trb
-        let transfer_trb_variant = TransferTrbVariant::parse(trb.buffer);
         let transfer_trb: TransferTrb = TransferTrb {
             address: trb.address,
-            variant: transfer_trb_variant,
+            variant: TransferTrbVariant::parse(trb.buffer),
         };
 
         // passing the whole transfer trb to include the trb address and avoid multiple arguments but parsing twice always
-        match TransferTrbVariant::parse(trb.buffer) {
+        match transfer_trb.variant {
             TransferTrbVariant::SetupStage(_) => {
                 self.handle_setup_stage_trb_pre_hardware(transfer_trb)?;
             }
-            TransferTrbVariant::DataStage(_) => match &self.trb_parser.state {
+            TransferTrbVariant::DataStage(_) => match &self.control_transfer_state.state {
                 ControlTransferStage::ConsumedSetupStageTd => {
                     self.handle_data_stage_trb(transfer_trb)?;
                 }
@@ -371,22 +377,22 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         "Data Stage Trb is not allowed in this state: {:?}",
                         other_state
                     );
-                    self.trb_parser.state = ControlTransferStage::Initial;
+                    self.control_transfer_state.state = ControlTransferStage::Initial;
                 }
             },
             TransferTrbVariant::Normal(_) => {
-                match &self.trb_parser.state {
+                match &self.control_transfer_state.state {
                     ControlTransferStage::ConsumedSetupStageTd => {
                         todo!("Normal Trb in a Control Chain");
                         // This path is only Ok when not at the head of the DataStage TD.
                     }
                     other_state => {
                         error!("Normal Trb is not allowed in this state: {:?}", other_state);
-                        self.trb_parser.state = ControlTransferStage::Initial;
+                        self.control_transfer_state.state = ControlTransferStage::Initial;
                     }
                 }
             }
-            TransferTrbVariant::StatusStage(_) => match &self.trb_parser.state {
+            TransferTrbVariant::StatusStage(_) => match &self.control_transfer_state.state {
                 ControlTransferStage::ConsumedSetupStageTd => {
                     self.handle_status_stage_trb_pre_hardware(transfer_trb)?;
                 }
@@ -398,7 +404,7 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         "Status Stage Trb is not allowed in this state: {:?}",
                         other_state
                     );
-                    self.trb_parser.state = ControlTransferStage::Initial;
+                    self.control_transfer_state.state = ControlTransferStage::Initial;
                 }
             },
             TransferTrbVariant::Unrecognized(_, parse_error) => {
@@ -546,11 +552,11 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
 }
 
 #[derive(Debug)]
-pub struct ControlTransferParser {
+pub struct ControlTransferState {
     pub state: ControlTransferStage, // upcoming or current stage of a control transfer to be handled
     pub direction: ControlTransferDirection, // holding the UsbRequest -> all things data
 }
-impl ControlTransferParser {
+impl ControlTransferState {
     // previous_completion_code should never be used as is, thus the error as a default value
     const fn new(direction: ControlTransferDirection) -> Self {
         Self {
