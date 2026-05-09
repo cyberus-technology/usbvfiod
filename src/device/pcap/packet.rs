@@ -422,7 +422,7 @@ fn log_packet(
         device_address: meta.device_address,
         bus_number: meta.bus_number,
         setup_flag: setup_flag_value(meta.transfer_type, setup.is_some()),
-        data_flag: data_flag_value(payload.len()),
+        data_flag: data_flag_value(event, payload.len()),
         status,
         data_length,
         delivered_data_length: payload.len() as u32,
@@ -447,11 +447,15 @@ const fn setup_flag_value(transfer_type: UsbTransferType, has_setup: bool) -> u8
     }
 }
 
-// non-zero when there is no payload data.
-const fn data_flag_value(payload_len: usize) -> u8 {
-    if payload_len == 0 {
-        1
-    } else {
+// zero when payload data is present; otherwise use the event marker.
+const fn data_flag_value(event: UsbEventType, payload_len: usize) -> u8 {
+    if payload_len != 0 {
         0
+    } else {
+        match event {
+            UsbEventType::Submission => b'<',
+            UsbEventType::Completion => b'>',
+            UsbEventType::Error => b'E',
+        }
     }
 }
