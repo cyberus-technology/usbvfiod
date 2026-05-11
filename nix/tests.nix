@@ -23,6 +23,7 @@ let
 
             boot = {
               initrd.kernelModules = [ "virtio_console" ];
+              zfs.forceImportRoot = false;
 
               kernelParams = [
                 # currently we can not handle the automatic suspend that is triggered so we disable dynamic power management
