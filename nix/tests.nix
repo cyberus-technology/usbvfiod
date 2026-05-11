@@ -630,7 +630,7 @@ let
 
     # Test filesystem
     cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=60)
-    cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
+    cloud_hypervisor.wait_until_succeeds("mount /dev/sda1 /mnt", timeout=60)
     cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt", timeout=60)
     cloud_hypervisor.succeed("umount /mnt", timeout=60)
     cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
