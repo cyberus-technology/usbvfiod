@@ -60,6 +60,11 @@ pub enum UsbDirection {
     DeviceToHost,
 }
 
+// Convert an xHCI endpoint id to the USB endpoint address stored in PCAP
+// records. Normal endpoints encode their direction in the low bit of the xHCI
+// endpoint id, so rotating right moves that bit into the USB IN position
+// (0x80). Control endpoints always use endpoint number zero, so their direction
+// has to come from the control request/response tracked by the caller instead.
 const fn endpoint_address(
     transfer_type: UsbTransferType,
     control_direction: Option<UsbDirection>,
@@ -71,7 +76,6 @@ const fn endpoint_address(
             UsbDirection::DeviceToHost => 0x80,
         }
     } else {
-        // Match the USB endpoint address mapping used by the nusb adapter.
         xhci_endpoint_id.rotate_right(1)
     }
 }
