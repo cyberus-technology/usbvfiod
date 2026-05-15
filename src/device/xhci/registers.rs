@@ -1,10 +1,10 @@
 use std::sync::{
-    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicU32, AtomicU64, Ordering},
     Arc,
 };
 
 use tokio::sync::Notify;
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::device::{
     pci::constants::xhci::{
@@ -179,43 +179,61 @@ impl DcbaapRegister {
     }
 }
 
+/// See XHCI specification Section 5.4.1 for detailed field descriptions.
+///
+/// Actual actions/usage are currently only implemented for Bit 0 (Run/Stop).
+/// Otherwise this is only for storing and reporting back register state to system software.
 #[derive(Debug)]
 pub struct UsbcmdRegister {
-    running: Arc<AtomicBool>,
+    value: Arc<AtomicU32>,
 }
 
 impl UsbcmdRegister {
     pub fn new() -> Self {
-        let running = Arc::new(AtomicBool::new(false));
-
-        Self { running }
+        Self {
+            value: Arc::new(AtomicU32::new(0)),
+        }
     }
 
-    pub fn write(&self, value: u64) {
-        self.running.store(value & 0x1 != 0, Ordering::Relaxed);
+    pub fn read(&self) -> u32 {
+        self.value.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn running_bit(&self) -> Arc<AtomicBool> {
-        self.running.clone()
+    pub fn write(&self, value: u32) {
+        // All by default writable bits excluding ...
+        const BITMASK_RW: u32 = 0b101;
+        // ... some bits we already ignore when writing.
+        const BITMASK_RW_IGNORED: u32 = 0b100101111100001010;
+
+        if value & BITMASK_RW_IGNORED > 0 {
+            warn!(
+                "received at least one bit that is ignored for USBCMB: {}",
+                value & BITMASK_RW_IGNORED
+            );
+        }
+
+        let value = value & BITMASK_RW;
+        self.value.store(value, Ordering::Relaxed);
+    }
+
+    pub fn value_reference(&self) -> Arc<AtomicU32> {
+        self.value.clone()
     }
 }
 
 #[derive(Debug)]
 pub struct UsbstsRegister {
-    running: Arc<AtomicBool>,
+    usbcmd: Arc<AtomicU32>,
 }
 
 impl UsbstsRegister {
-    pub const fn new(running: Arc<AtomicBool>) -> Self {
-        Self { running }
+    pub const fn new(usbcmd: Arc<AtomicU32>) -> Self {
+        Self { usbcmd }
     }
 
     pub fn read(&self) -> u64 {
-        let hch = if self.running.load(Ordering::Relaxed) {
-            0
-        } else {
-            usbsts::HCH
-        };
+        let is_running = (self.usbcmd.load(Ordering::Relaxed) & 0x1) == 1;
+        let hch = if is_running { 0 } else { usbsts::HCH };
         hch | usbsts::EINT | usbsts::PCD
     }
 }
