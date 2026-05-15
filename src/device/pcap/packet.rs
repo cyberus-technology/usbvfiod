@@ -414,6 +414,9 @@ fn log_packet(
     setup: Option<[u8; 8]>,
     payload: &[u8],
 ) {
+    let direction = endpoint_direction(control_direction, meta.endpoint_id);
+    let data_flag = data_flag_value(event, direction);
+    let payload = packet_payload(data_flag, payload);
     let meta = UsbPacketLinktypeHeader {
         id: urb_id,
         event_type: event.code(),
@@ -422,7 +425,7 @@ fn log_packet(
         device_address: meta.device_address,
         bus_number: meta.bus_number,
         setup_flag: setup_flag_value(meta.transfer_type, setup.is_some()),
-        data_flag: data_flag_value(event, payload.len()),
+        data_flag,
         status,
         data_length,
         delivered_data_length: payload.len() as u32,
@@ -447,15 +450,33 @@ const fn setup_flag_value(transfer_type: UsbTransferType, has_setup: bool) -> u8
     }
 }
 
-// zero when payload data is present; otherwise use the event marker.
-const fn data_flag_value(event: UsbEventType, payload_len: usize) -> u8 {
-    if payload_len != 0 {
-        0
+const fn packet_payload(data_flag: u8, payload: &[u8]) -> &[u8] {
+    if data_flag == 0 {
+        payload
     } else {
-        match event {
-            UsbEventType::Submission => b'<',
-            UsbEventType::Completion => b'>',
-            UsbEventType::Error => b'E',
-        }
+        &[]
+    }
+}
+
+const fn endpoint_direction(
+    control_direction: Option<UsbDirection>,
+    xhci_endpoint_id: u8,
+) -> UsbDirection {
+    if let Some(direction) = control_direction {
+        direction
+    } else if xhci_endpoint_id & 1 == 0 {
+        UsbDirection::HostToDevice
+    } else {
+        UsbDirection::DeviceToHost
+    }
+}
+
+// zero for records that may carry data; otherwise use the event marker.
+const fn data_flag_value(event: UsbEventType, direction: UsbDirection) -> u8 {
+    match event {
+        UsbEventType::Submission if matches!(direction, UsbDirection::DeviceToHost) => b'<',
+        UsbEventType::Completion if matches!(direction, UsbDirection::HostToDevice) => b'>',
+        UsbEventType::Error => b'E',
+        UsbEventType::Submission | UsbEventType::Completion => 0,
     }
 }
