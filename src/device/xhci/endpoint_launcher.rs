@@ -126,7 +126,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
 
             let endpoint_sender = match device {
                 Some(device) => {
-                    let pcap_usb_type = match device.realdevice_ref().speed() {
+                    let pcap_usb_bus_number = match device.realdevice_ref().speed() {
                         Some(speed) if speed.is_usb2_speed() => 2,
                         Some(_) => 3,
                         None => 0,
@@ -141,7 +141,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                     match endpoint_type {
                     EndpointType::Control => {
                         let pcap_meta = EndpointPcapMeta::control(
-                            pcap_usb_type,
+                            pcap_usb_bus_number,
                             request.slot_id,
                             request.endpoint_id,
                         );
@@ -155,7 +155,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                     }
                     EndpointType::BulkIn => {
                         let pcap_meta = EndpointPcapMeta::bulk(
-                            pcap_usb_type,
+                            pcap_usb_bus_number,
                             request.slot_id,
                             request.endpoint_id,
                         );
@@ -171,7 +171,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                     }
                     EndpointType::BulkOut => {
                         let pcap_meta = EndpointPcapMeta::bulk(
-                            pcap_usb_type,
+                            pcap_usb_bus_number,
                             request.slot_id,
                             request.endpoint_id,
                         );
@@ -187,7 +187,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                     }
                     EndpointType::InterruptIn => {
                         let pcap_meta = EndpointPcapMeta::interrupt(
-                            pcap_usb_type,
+                            pcap_usb_bus_number,
                             request.slot_id,
                             request.endpoint_id,
                         );
@@ -203,7 +203,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                     }
                     EndpointType::InterruptOut => {
                         let pcap_meta = EndpointPcapMeta::interrupt(
-                            pcap_usb_type,
+                            pcap_usb_bus_number,
                             request.slot_id,
                             request.endpoint_id,
                         );
