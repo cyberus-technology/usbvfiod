@@ -2,7 +2,7 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::device::xhci::usbrequest::UsbRequest;
 use tracing::warn;
@@ -80,25 +80,6 @@ const fn endpoint_address(
     }
 }
 
-/// Packet timestamp in seconds and microseconds.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Timestamp {
-    pub seconds: u32,
-    pub microseconds: u32,
-}
-
-impl From<SystemTime> for Timestamp {
-    fn from(value: SystemTime) -> Self {
-        let duration = value
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
-        Self {
-            seconds: duration.as_secs() as u32,
-            microseconds: duration.subsec_micros(),
-        }
-    }
-}
-
 /// Linux USB per-packet header for PCAP linktype 189.
 ///
 /// `header_bytes` writes the fields in little-endian order.
@@ -118,7 +99,7 @@ pub struct UsbPacketLinktypeHeader {
 }
 
 impl UsbPacketLinktypeHeader {
-    pub fn header_bytes(&self, event_timestamp: Timestamp) -> [u8; 48] {
+    pub fn header_bytes(&self, now: Duration) -> [u8; 48] {
         let mut header = [0u8; 48];
         header[0..8].copy_from_slice(&self.id.to_le_bytes());
         header[8] = self.event_type;
@@ -128,8 +109,8 @@ impl UsbPacketLinktypeHeader {
         header[12..14].copy_from_slice(&self.bus_number.to_le_bytes());
         header[14] = self.setup_flag;
         header[15] = self.data_flag;
-        header[16..24].copy_from_slice(&(event_timestamp.seconds as i64).to_le_bytes());
-        header[24..28].copy_from_slice(&(event_timestamp.microseconds as i32).to_le_bytes());
+        header[16..24].copy_from_slice(&(now.as_secs() as i64).to_le_bytes());
+        header[24..28].copy_from_slice(&(now.subsec_micros() as i32).to_le_bytes());
         header[28..32].copy_from_slice(&self.status.to_le_bytes());
         header[32..36].copy_from_slice(&self.data_length.to_le_bytes());
         header[36..40].copy_from_slice(&self.delivered_data_length.to_le_bytes());
@@ -152,18 +133,18 @@ pub fn pcap_global_header_bytes() -> [u8; 24] {
 }
 
 /// Builds one PCAP record from the record header, linktype header, and payload.
-pub fn pcap_record_bytes(
-    capture_timestamp: Timestamp,
-    event_timestamp: Timestamp,
-    meta: &UsbPacketLinktypeHeader,
-    payload: &[u8],
-) -> Vec<u8> {
-    let link_header = meta.header_bytes(event_timestamp);
+pub fn pcap_record_bytes(meta: &UsbPacketLinktypeHeader, payload: &[u8]) -> Vec<u8> {
+    // Safety: the current system time should not be before the Unix epoch
+    // unless the system clock is badly misconfigured.
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let link_header = meta.header_bytes(now);
     let original_len = link_header.len() + payload.len();
     let captured_len = original_len.min(SNAPLEN as usize);
     let mut record = Vec::with_capacity(16 + captured_len);
-    record.extend_from_slice(&capture_timestamp.seconds.to_le_bytes());
-    record.extend_from_slice(&capture_timestamp.microseconds.to_le_bytes());
+    record.extend_from_slice(&(now.as_secs() as u32).to_le_bytes());
+    record.extend_from_slice(&now.subsec_micros().to_le_bytes());
     record.extend_from_slice(&(captured_len as u32).to_le_bytes());
     record.extend_from_slice(&(original_len as u32).to_le_bytes());
 
@@ -333,13 +314,11 @@ pub fn log_error(
     setup: Option<[u8; 8]>,
     payload: &[u8],
 ) {
-    let event_timestamp = Timestamp::from(SystemTime::now());
     log_packet(
         urb_id,
         event,
         meta,
         control_direction,
-        event_timestamp,
         status,
         payload.len() as u32,
         setup,
@@ -356,13 +335,11 @@ pub fn log_submission(
     setup: Option<[u8; 8]>,
     payload: &[u8],
 ) {
-    let event_timestamp = Timestamp::from(SystemTime::now());
     log_packet(
         urb_id,
         UsbEventType::Submission,
         meta,
         control_direction,
-        event_timestamp,
         0,
         expected_length,
         setup,
@@ -379,13 +356,11 @@ pub fn log_completion(
     actual_length: u32,
     payload: &[u8],
 ) {
-    let event_timestamp = Timestamp::from(SystemTime::now());
     log_packet(
         urb_id,
         UsbEventType::Completion,
         meta,
         control_direction,
-        event_timestamp,
         status,
         actual_length,
         None,
@@ -412,7 +387,6 @@ fn log_packet(
     event: UsbEventType,
     meta: super::meta::EndpointPcapMeta,
     control_direction: Option<UsbDirection>,
-    event_timestamp: Timestamp,
     status: i32,
     data_length: u32,
     setup: Option<[u8; 8]>,
@@ -440,8 +414,7 @@ fn log_packet(
         },
     };
 
-    let capture_timestamp = Timestamp::from(SystemTime::now());
-    let record = pcap_record_bytes(capture_timestamp, event_timestamp, &meta, payload);
+    let record = pcap_record_bytes(&meta, payload);
     UsbPcapManager::write_record(&record);
 }
 
