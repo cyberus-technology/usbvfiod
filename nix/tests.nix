@@ -549,6 +549,9 @@ let
                 } --socket-path ${usbvfiodSocket} --hotplug-socket-path ${usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
               '';
             };
+            environment = {
+              RUST_BACKTRACE = "full";
+            };
           };
 
           cloud-hypervisor =
