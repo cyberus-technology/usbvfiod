@@ -10,7 +10,7 @@ use nusb::{
 };
 use tokio::{io::AsyncReadExt, runtime, select, sync::mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::device::xhci::{
     hotplug_endpoint_handle::BaseEndpointHandle,
@@ -517,8 +517,7 @@ impl BaseEndpointHandle for NormalInEndpointHandle {
     }
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        // nusb handles clearing halts on control endpoints by itself
-        Box::pin(async { Ok(()) })
+        Box::pin(async { todo!("clear halt") })
     }
 }
 
@@ -546,7 +545,7 @@ impl NormalInEndpointHandle {
     }
 }
 
-async fn cancellable_normal_in_endpoint_worker<EpType: BulkOrInterrupt>(
+async fn cancellable_normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
     endpoint: nusb::Endpoint<EpType, In>,
     request_receiver: mpsc::UnboundedReceiver<usize>,
     response_submitter: mpsc::UnboundedSender<Vec<u8>>,
@@ -559,125 +558,195 @@ async fn cancellable_normal_in_endpoint_worker<EpType: BulkOrInterrupt>(
 }
 
 // this function can only return with an error, but ! cannot be used in Result
-async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt>(
+async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
     endpoint: nusb::Endpoint<EpType, In>,
     mut request_receiver: mpsc::UnboundedReceiver<usize>,
-    response_submitter: mpsc::UnboundedSender<Vec<u8>>,
+    response_submitter: mpsc::UnboundedSender<Vec<u8>>, // TODO into a processing result instead of a vec u8?
 ) -> anyhow::Result<()> {
+    use nusb::transfer::{Bulk, Interrupt};
+    use std::any::TypeId;
+
     // seconds * N
-    const NUSB_TIMEOUT: u64 = 1000 * 20;
+    const NUSB_TIMEOUT: u64 = 1000 * 200;
 
-    let size = endpoint.max_packet_size();
+    let mut reader;
+    let size;
 
-    let mut reader = endpoint
-        // 1KB * 10
-        //.reader(512 * 2 * 10) // maybe 16MB since that should be the max buffering the edtla can do
-        .reader(size) // maybe 16MB since that should be the max buffering the edtla can do
-        .with_num_transfers(1)
-        .with_read_timeout(Duration::from_millis(NUSB_TIMEOUT));
-    let mut pkt_reader = reader.until_short_packet();
+    if TypeId::of::<EpType>() == TypeId::of::<Bulk>() {
+        info!("creating normal in worker for bulk");
+        size = 512 * 2 * 5;
+        reader = endpoint
+            .reader(size)
+            .with_num_transfers(1)
+            .with_read_timeout(Duration::from_millis(NUSB_TIMEOUT));
 
-    let mut buffer = Vec::new();
+        let mut pkt_reader = reader.until_short_packet();
 
-    let mut debug_counter = 0;
+        let mut buffer = Vec::new();
 
-    loop {
-        debug_counter += 1;
-        trace!(
-            "normal_in_endpoint_worker loop; counter at {}",
-            debug_counter
-        );
+        let mut debug_counter = 0;
 
-        if let Some(requested_length) = request_receiver.recv().await {
-            debug!("original requested length: {requested_length}");
-            debug!("current buffer length: {}", buffer.len());
+        loop {
+            debug_counter += 1;
+            trace!(
+                "normal_in_endpoint_worker loop; counter at {}",
+                debug_counter
+            );
 
-            // do reading until end aka short or null package
-            let read_length = if requested_length > buffer.len() {
-                trace!("attempting a read");
+            if let Some(requested_length) = request_receiver.recv().await {
+                info!("original requested length: {requested_length}");
+                info!("current buffer length: {}", buffer.len());
 
-                let mut read_sum = 0;
-                loop {
-                    // read
-                    let mut hardware_used_buffer: Vec<u8> = vec![0; size];
+                // do reading until end aka short or null package
+                let read_length = if requested_length > buffer.len() {
+                    info!("attempting a read");
 
-                    let read_length = match pkt_reader.read(&mut hardware_used_buffer).await {
-                        Ok(length) => length,
-                        Err(e) => panic!("read failed: {e:?}"),
-                    };
-
-                    // move from hardware_used_buffer to buffer that will return bytes
-                    //   get slice of hardware_used_buffer according to read_length
-                    //   now we dont care about hardware_used_buffer any more
-                    //   append the slice to our own buffer
-                    //     check if this is possible: we might read more than currently requested -> is possible since max packet is 1024 and min is 512 so it could read 512 bytes too early
-
-                    buffer.append(&mut hardware_used_buffer.split_off(read_length));
-
-                    read_sum += read_length;
-
-                    // if EOF, clear end and break and send
-                    // necessary for short packet handling
-                    if read_length == 0 && pkt_reader.is_end() {
-                        info!("reached EOF, consuming end to continue on next request");
-                        let _ = pkt_reader.consume_end();
-                        break;
+                    match pkt_reader.read_to_end(&mut buffer).await {
+                        Ok(read_length) => {
+                            trace!("we have a return value from the reader {}", read_length);
+                            let _ = pkt_reader.consume_end();
+                            Some(read_length)
+                        }
+                        Err(e) if e.kind() == tokio::io::ErrorKind::OutOfMemory => {
+                            // TODO does a max length for a td exist? -> maybe the 16MB being the edtla limit
+                            panic!("normal in buffer OOM: {e}");
+                        }
+                        Err(e) => panic!("in endpoint reader error: {e}"),
                     }
-
-                    // if requested_length full break and return
-                    // necessary for interrupt ep with no EOF like usb 1.1
-                    if read_length == 0 && read_sum >= requested_length {
-                        info!("read what we needed, rest until EOF is not yet read");
-                        break;
-                    }
-                }
-                Some(read_sum)
-
-                /*
-                match pkt_reader.read_to_end(&mut buffer).await {
-                    Ok(read_length) => {
-                        trace!("we have a return value from the reader {}", read_length);
-                        let _ = pkt_reader.consume_end();
-                        Some(read_length)
-                    }
-                    Err(e) if e.kind() == ErrorKind::OutOfMemory => {
-                        // TODO does a max length for a td exist? -> maybe the 16MB being the edtla limit
-                        panic!("normal in buffer OOM: {e}");
-                    }
-                    Err(e) => panic!("in endpoint reader error: {e}"),
-                }
-                */
-            } else {
-                trace!("skipping hardware request");
-                None
-            };
-
-            // collect data to return
-            let requested_bytes: Vec<u8>;
-            if let Some(length) = read_length {
-                // hardware read happened
-                if length < requested_length {
-                    // got short packet
-                    requested_bytes = buffer.drain(..length).collect();
                 } else {
-                    // received at least full requested length
+                    warn!("skipping hardware request");
+                    None
+                };
+
+                // collect data to return
+                let requested_bytes: Vec<u8>;
+                if let Some(length) = read_length {
+                    // hardware read happened
+                    if length < requested_length {
+                        // got short packet
+                        requested_bytes = buffer.drain(..length).collect();
+                    } else {
+                        // received at least full requested length
+                        requested_bytes = buffer.drain(..requested_length).collect();
+                    }
+                } else {
+                    // from buffer only
                     requested_bytes = buffer.drain(..requested_length).collect();
                 }
+
+                debug!("the responded bytes len: {:?}", requested_bytes.len());
+                debug!("remaining buffer length: {}", buffer.len());
+
+                // ...and return it
+                response_submitter.send(requested_bytes)?;
             } else {
-                // from buffer only
-                requested_bytes = buffer.drain(..requested_length).collect();
+                warn!("received a none from the request_receiver, this worker is dead");
+                // kill task itself
+                return anyhow::Ok(());
             }
-
-            debug!("the responded bytes len: {:?}", requested_bytes.len());
-            debug!("remaining buffer length: {}", buffer.len());
-
-            // ...and return it
-            response_submitter.send(requested_bytes)?;
-        } else {
-            warn!("received a none from the request_receiver, this worker is dead");
-            // kill task itself
-            return anyhow::Ok(());
+            trace!("one loop done");
         }
-        trace!("one loop done");
+    } else if TypeId::of::<EpType>() == TypeId::of::<Interrupt>() {
+        info!("creating normal in worker for interrupt");
+        size = endpoint.max_packet_size();
+        reader = endpoint
+            .reader(size)
+            .with_num_transfers(8)
+            .with_read_timeout(Duration::from_millis(NUSB_TIMEOUT));
+        let mut pkt_reader = reader.until_short_packet();
+
+        let mut buffer = Vec::new();
+
+        let mut debug_counter = 0;
+
+        loop {
+            debug_counter += 1;
+            trace!(
+                "normal_in_endpoint_worker loop; counter at {}",
+                debug_counter
+            );
+
+            if let Some(requested_length) = request_receiver.recv().await {
+                info!("original requested length: {requested_length}");
+                info!("current buffer length: {}", buffer.len());
+
+                // do reading until end aka short or null package
+                let read_length = if requested_length > buffer.len() {
+                    info!("attempting a read");
+
+                    let mut read_sum = 0;
+                    loop {
+                        info!("reading loop");
+
+                        // read
+                        let mut hardware_used_buffer: Vec<u8> = vec![0; size];
+
+                        let read_length = match pkt_reader.read(&mut hardware_used_buffer).await {
+                            Ok(length) => length,
+                            Err(err) => {
+                                error!("read failed: {err:?}");
+                                //processing_result = map_in_err(err);
+                                //panic!("read failed: {err:?}");
+                                0
+                            }
+                        };
+
+                        info!("read {read_length} characters: {hardware_used_buffer:?}");
+
+                        if pkt_reader.is_end() {
+                            info!("reached EOF, consuming end to continue on next request");
+                            let _ = pkt_reader.consume_end();
+                            break;
+                        }
+
+                        info!("buffer.append");
+                        buffer.append(&mut hardware_used_buffer.drain(0..(read_length)).collect());
+                        read_sum += read_length;
+
+                        info!("read sum is {}", read_sum);
+
+                        // if requested_length full break and return
+                        // necessary for interrupt ep with no EOF like usb 1.1
+                        if read_sum >= requested_length {
+                            info!("read what we needed, rest until EOF is not yet read");
+                            break;
+                        }
+                    }
+                    Some(read_sum)
+                } else {
+                    warn!("skipping hardware request");
+                    None
+                };
+
+                // collect data to return
+                let requested_bytes: Vec<u8>;
+                if let Some(length) = read_length {
+                    // hardware read happened
+                    if length < requested_length {
+                        // got short packet
+                        requested_bytes = buffer.drain(..length).collect();
+                    } else {
+                        // received at least full requested length
+                        requested_bytes = buffer.drain(..requested_length).collect();
+                    }
+                } else {
+                    // from buffer only
+                    requested_bytes = buffer.drain(..requested_length).collect();
+                }
+
+                debug!("the responded bytes len: {:?}", requested_bytes.len());
+                debug!("remaining buffer length: {}", buffer.len());
+
+                // ...and return it
+                response_submitter.send(requested_bytes)?;
+            } else {
+                warn!("received a none from the request_receiver, this worker is dead");
+                // kill task itself
+                return anyhow::Ok(());
+            }
+            trace!("one loop done");
+        }
+    } else {
+        unreachable!("");
     }
 }

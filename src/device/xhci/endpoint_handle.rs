@@ -1,6 +1,6 @@
 use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin};
 
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::device::{
     bus::BusDeviceRef,
