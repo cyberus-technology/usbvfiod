@@ -228,7 +228,7 @@ let
   # Some static values for ...
   # ... creating blockdevice backing files.
   imagePathPart = "/tmp/image";
-  imageSize = "8M";
+  imageSize = "48M";
   # ... identifying QEMU's virtual Devices.
   blockdeviceVendorId = "46f4";
   blockdeviceProductId = "0001";
@@ -631,14 +631,29 @@ let
     # The Script is sometimes too fast for the nested guest to detect the new partition.
     cloud_hypervisor.wait_until_succeeds("lsblk /dev/sda1", timeout=60)
 
-    # Test filesystem
+    # Make a filesystem
     cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=60)
     cloud_hypervisor.wait_until_succeeds("mount /dev/sda1 /mnt", timeout=60)
-    cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt", timeout=60)
+
+    # Create a file and compute a checksum
+    cloud_hypervisor.succeed("dd if=/dev/urandom of=/tmp/file count=32 bs=1M", timeout=60)
+    out = cloud_hypervisor.succeed("sha256sum /tmp/file", timeout=60)
+    hash_tmp = out.split()
+    print(f"hash_tmp: {hash_tmp}")
+
+    # Copy the file on the blockdevice
+    cloud_hypervisor.succeed("cp /tmp/file /mnt/file", timeout=60)
+    cloud_hypervisor.succeed("sync", timeout=60)
+    cloud_hypervisor.succeed("echo 3 > /proc/sys/vm/drop_caches", timeout=60)
     cloud_hypervisor.succeed("umount /mnt", timeout=60)
     cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
-    out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=60)
-    search("123TEST123", out)
+
+    # Check if the file checksum changed
+    out = cloud_hypervisor.succeed("sha256sum /mnt/file", timeout=60)
+    hash_mnt = out.split()
+    print(f"hash_mnt: {hash_mnt}")
+    if (hash_tmp[0] != hash_mnt[0]):
+      raise RequestedAssertionFailed("The checksum changed after copying to the mounted USB blockdevice.")
   '';
 
   blockdeviceTests = builtins.listToAttrs (
@@ -803,14 +818,14 @@ blockdeviceTests
       search(r'Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M', out)
 
       out = cloud_hypervisor.succeed("lsblk", timeout=60)
-      search(r'sda\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
-      search(r'sdb\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
-      search(r'sdc\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
-      search(r'sdd\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
-      search(r'sde\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
-      search(r'sdf\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
-      search(r'sdg\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
-      search(r'sdh\s+\d+:\d+\s+0\s+8M\s+0\s+disk', out)
+      search(r'sda\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
+      search(r'sdb\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
+      search(r'sdc\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
+      search(r'sdd\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
+      search(r'sde\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
+      search(r'sdf\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
+      search(r'sdg\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
+      search(r'sdh\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
     '';
   };
 
