@@ -569,9 +569,12 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt>(
     // seconds * N
     const NUSB_TIMEOUT: u64 = 1000 * 20;
 
+    let size = endpoint.max_packet_size();
+
     let mut reader = endpoint
         // 1KB * 10
-        .reader(512 * 2 * 10) // maybe 16MB since that should be the max buffering the edtla can do
+        //.reader(512 * 2 * 10) // maybe 16MB since that should be the max buffering the edtla can do
+        .reader(size) // maybe 16MB since that should be the max buffering the edtla can do
         .with_num_transfers(1)
         .with_read_timeout(Duration::from_millis(NUSB_TIMEOUT));
     let mut pkt_reader = reader.until_short_packet();
@@ -594,6 +597,15 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt>(
             // do reading until end aka short or null package
             let read_length = if requested_length > buffer.len() {
                 trace!("attempting a read");
+
+                loop {
+                    // read
+
+                    // if EOF, clear end and break and send
+                    // if requested_length on interrupt on usb 1.1 break and return
+
+                    break;
+                }
 
                 match pkt_reader.read_to_end(&mut buffer).await {
                     Ok(read_length) => {
