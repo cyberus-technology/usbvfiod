@@ -307,8 +307,8 @@ impl UsbVersion {
     }
 }
 
-// Helper function to get port index from MMIO address
-const fn get_port_index_from_addr(
+// Helper function to get port id from MMIO address
+const fn get_port_id_from_addr(
     addr: u64,
     base_addr: u64,
     port_count: u64,
@@ -317,7 +317,7 @@ const fn get_port_index_from_addr(
     if addr >= base_addr && addr < base_addr + (port_count * offset::PORT_STRIDE) {
         // Check if this is the correct register within the port's PORT_STRIDE byte range
         if (addr - base_addr) % offset::PORT_STRIDE == register_offset {
-            Some(((addr - base_addr) / offset::PORT_STRIDE) as usize)
+            Some(((addr - base_addr) / offset::PORT_STRIDE) as usize + 1)
         } else {
             None
         }
@@ -326,16 +326,16 @@ const fn get_port_index_from_addr(
     }
 }
 
-pub const fn get_portsc_index(addr: u64) -> Option<usize> {
-    get_port_index_from_addr(addr, offset::PORTSC, MAX_PORTS, 0)
+pub const fn get_portsc_id(addr: u64) -> Option<usize> {
+    get_port_id_from_addr(addr, offset::PORTSC, MAX_PORTS, 0)
 }
 
-pub const fn get_portpmsc_index(addr: u64) -> Option<usize> {
-    get_port_index_from_addr(addr, offset::PORTSC, MAX_PORTS, 0x4)
+pub const fn get_portpmsc_id(addr: u64) -> Option<usize> {
+    get_port_id_from_addr(addr, offset::PORTSC, MAX_PORTS, 0x4)
 }
 
-pub const fn get_portli_index(addr: u64) -> Option<usize> {
-    get_port_index_from_addr(addr, offset::PORTSC, MAX_PORTS, 0x8)
+pub const fn get_portli_id(addr: u64) -> Option<usize> {
+    get_port_id_from_addr(addr, offset::PORTSC, MAX_PORTS, 0x8)
 }
 
 #[derive(Debug, Clone)]
