@@ -1,6 +1,6 @@
 use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin};
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -729,6 +729,174 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
 }
 
 impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for InEndpointHandle<RIEH> {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.real_ep.cancel().await })
+    }
+
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.real_ep.clear_halt().await })
+    }
+}
+#[derive(Debug)]
+enum TdBasedNormalSubmissionState {
+    CollectingTd,
+    AwaitingRealTransfer,
+}
+
+#[derive(Debug)]
+pub struct TdBasedInEndpointHandle<RIEH: RealInEndpointHandle> {
+    slot_id: u8,
+    endpoint_id: u8,
+    pcap_meta: EndpointPcapMeta,
+    real_ep: RIEH,
+    dma_bus: BusDeviceRef,
+    event_sender: EventSender,
+    submission_state: TdBasedNormalSubmissionState,
+    trbs: Vec<TransferTrb>,
+}
+
+impl<RIEH: RealInEndpointHandle> TdBasedInEndpointHandle<RIEH> {
+    pub fn new(
+        slot_id: u8,
+        endpoint_id: u8,
+        pcap_meta: EndpointPcapMeta,
+        real_ep: RIEH,
+        dma_bus: BusDeviceRef,
+        event_sender: EventSender,
+    ) -> Self {
+        Self {
+            slot_id,
+            endpoint_id,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+            submission_state: TdBasedNormalSubmissionState::CollectingTd,
+            trbs: vec![],
+        }
+    }
+
+    fn submit_td_to_real_ep(&mut self) -> anyhow::Result<()> {
+        let td_request_length = self
+            .trbs
+            .iter()
+            .filter_map(|trb| match &trb.variant {
+                TransferTrbVariant::Normal(normal_trb_data) => {
+                    Some(normal_trb_data.transfer_length as usize)
+                }
+                _ => None,
+            })
+            .sum::<usize>();
+        debug!("Submitting real request for {td_request_length} bytes");
+        self.real_ep.submit(td_request_length)?;
+
+        Ok(())
+    }
+}
+
+impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH> {
+    type TrbCompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
+
+    fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
+        let transfer_trb = TransferTrbVariant::parse(trb.buffer);
+        match &transfer_trb {
+            TransferTrbVariant::Normal(normal_data) => {
+                let chain = normal_data.chain;
+
+                let normal_trb = TransferTrb {
+                    address: trb.address,
+                    variant: transfer_trb,
+                };
+                self.trbs.push(normal_trb);
+                if !chain {
+                    self.submit_td_to_real_ep()?;
+                    self.submission_state = TdBasedNormalSubmissionState::AwaitingRealTransfer;
+                }
+            }
+            _ => todo!(),
+        }
+
+        Ok(())
+    }
+
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+        Box::pin(async {
+            match self.submission_state {
+                TdBasedNormalSubmissionState::CollectingTd => Ok(TrbProcessingResult::Ok),
+                TdBasedNormalSubmissionState::AwaitingRealTransfer => {
+                    match self.real_ep.next_completion().await? {
+                        InTrbProcessingResult::Disconnect => todo!(),
+                        InTrbProcessingResult::Stall => todo!(),
+                        InTrbProcessingResult::TransactionError => todo!(),
+                        InTrbProcessingResult::Success(device_response) => {
+                            debug!(
+                                "received device response with {} bytes",
+                                device_response.len()
+                            );
+                            let trbs = mem::take(&mut self.trbs);
+                            let addr_and_normal_data =
+                                trbs.iter().filter_map(|trb| match &trb.variant {
+                                    TransferTrbVariant::Normal(normal_trb_data) => {
+                                        Some((trb.address, normal_trb_data))
+                                    }
+                                    _ => None,
+                                });
+                            let mut offset = 0;
+                            for (addr, data) in addr_and_normal_data {
+                                pcap::in_submission(self.pcap_meta, addr, data.transfer_length);
+                                let bytes_available = device_response.len() - offset;
+                                let dma_byte_count =
+                                    bytes_available.min(data.transfer_length as usize);
+
+                                debug!(
+                                    "copying {dma_byte_count} bytes to {:#x}",
+                                    data.data_pointer
+                                );
+                                self.dma_bus.write_bulk(
+                                    data.data_pointer,
+                                    &device_response[offset..(offset + dma_byte_count)],
+                                );
+
+                                pcap::in_completion(
+                                    self.pcap_meta,
+                                    addr,
+                                    &device_response[offset..(offset + dma_byte_count)],
+                                );
+
+                                offset += dma_byte_count;
+
+                                // event sending only when IOC is set
+                                if data.interrupt_on_completion {
+                                    let transfer_event = EventTrb::new_transfer_event_trb(
+                                        addr,
+                                        0,
+                                        CompletionCode::Success,
+                                        false,
+                                        self.endpoint_id,
+                                        self.slot_id,
+                                    );
+
+                                    self.event_sender.send(transfer_event)?;
+                                }
+                            }
+
+                            if offset != device_response.len() {
+                                warn!("leftover data on IN TD (offset: {offset}, response length: {})", device_response.len());
+                            }
+                        }
+                    }
+                    self.submission_state = TdBasedNormalSubmissionState::CollectingTd;
+                    Ok(TrbProcessingResult::Ok)
+                }
+            }
+        })
+    }
+}
+
+impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for TdBasedInEndpointHandle<RIEH> {
     type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
