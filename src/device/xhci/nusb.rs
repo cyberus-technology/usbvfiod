@@ -1,4 +1,6 @@
-use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc, thread::sleep, time::Duration};
+use std::{
+    cmp::min, fmt::Debug, future::Future, pin::Pin, sync::Arc, thread::sleep, time::Duration,
+};
 
 use anyhow::{anyhow, Error};
 use nusb::{
@@ -245,6 +247,8 @@ async fn control_endpoint_worker(
             let processing_result = match is_out_request {
                 true => {
                     let data = request.data.unwrap_or(Vec::new());
+                    error!("nusb file: doing controlout");
+
                     let control = ControlOut {
                         control_type,
                         recipient,
@@ -253,12 +257,16 @@ async fn control_endpoint_worker(
                         index: request.index,
                         data: &data,
                     };
+                    error!("{:?}", control);
                     match device
                         .control_out(control, Duration::from_millis(2000))
                         .await
                     {
                         Ok(_) => ControlRequestProcessingResult::SuccessfulControlOut,
-                        Err(err) => map_error(err),
+                        Err(err) => {
+                            error!("mapping {:?}", err);
+                            map_error(err)
+                        }
                     }
                 }
                 false => {
@@ -598,13 +606,12 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
                 info!("current buffer length: {}", buffer.len());
 
                 // do reading until end aka short or null package
-                let read_length = if requested_length > buffer.len() {
+                let read_length = if requested_length > buffer.len() && !pkt_reader.is_end() {
                     info!("attempting a read");
 
                     match pkt_reader.read_to_end(&mut buffer).await {
                         Ok(read_length) => {
                             trace!("we have a return value from the reader {}", read_length);
-                            let _ = pkt_reader.consume_end();
                             Some(read_length)
                         }
                         Err(e) if e.kind() == tokio::io::ErrorKind::OutOfMemory => {
@@ -631,7 +638,13 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
                     }
                 } else {
                     // from buffer only
-                    requested_bytes = buffer.drain(..requested_length).collect();
+                    requested_bytes = buffer
+                        .drain(..min(buffer.len(), requested_length))
+                        .collect();
+                }
+
+                if buffer.is_empty() && pkt_reader.is_end() {
+                    let _ = pkt_reader.consume_end();
                 }
 
                 debug!("the responded bytes len: {:?}", requested_bytes.len());
