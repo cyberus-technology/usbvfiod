@@ -91,3 +91,25 @@ $ sudo dmesg | grep -E xhci\|usb
 >
 > Alternatively, provide `dyndbg==pfml` as option to `modprobe` on
 > invocation or through a `modprobe` config.
+
+### PCAP Tracing for USB Transfers
+
+To inspect transfer messages more conveniently without searching through
+log output, `usbvfiod` can write USB traffic to a PCAP file:
+
+```console
+$ cargo run -- --socket-path /tmp/usbvfiod.sock --pcap-path PCAP_PATH -vv
+```
+
+`PCAP_PATH` is the path where `usbvfiod` should write the generated PCAP file.
+The generated file uses the Linux USB PCAP link type and can be opened with
+tools such as Wireshark. It records transfer submissions, completions, and
+errors together with the endpoint and transfer metadata.
+
+In the traditional Linux USB PCAP format, the bus number and device address
+fields refer to the real USB device path, as in `/dev/bus/usb/$BUS/$DEVICE`.
+For `usbvfiod` traces, this project adapts these fields to its own needs:
+
+- the bus number is the USB version (`2` for USB 2.x speeds, `3` for USB 3.x
+  speeds, or `0` if the speed is unknown), and
+- the device address is the xHCI slot ID.
