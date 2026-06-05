@@ -260,12 +260,23 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 // created Events we keep count of pretend transfers.
                 self.control_transfer_state.edtla += data_stage_trb_data.transfer_length as u64;
 
-                let mut byte_slice = vec![0; data_stage_trb_data.transfer_length as usize];
-                self.dma_bus
-                    .read_bulk(data_stage_trb_data.data_pointer, &mut byte_slice);
+                if data_stage_trb_data.immediate_data {
+                    // only event data should follow when immediate data is used
 
-                // SAFETY: is always set in the preceding setup stage
-                control_out.data.as_mut().unwrap().append(&mut byte_slice);
+                    // SAFETY: is always set in the preceding setup stage
+                    control_out.data.as_mut().unwrap().append(
+                        &mut data_stage_trb_data.data_pointer.to_be_bytes()
+                            [..data_stage_trb_data.transfer_length as usize]
+                            .to_vec(),
+                    );
+                } else {
+                    let mut tmp = vec![0u8; data_stage_trb_data.transfer_length as usize];
+                    self.dma_bus
+                        .read_bulk(data_stage_trb_data.data_pointer, &mut tmp);
+
+                    // SAFETY: is always set in the preceding setup stage
+                    control_out.data.as_mut().unwrap().append(&mut tmp);
+                }
             }
         }
 
