@@ -80,6 +80,7 @@ pub fn in_completion(base: EndpointPcapMeta, urb_id: u64, data: &[u8]) {
     packet::log_completion(base, None, urb_id, 0, data.len() as u32, data);
 }
 
+#[expect(dead_code)]
 pub fn in_error(meta: EndpointPcapMeta, urb_id: u64, error: &InTrbProcessingResult) {
     packet::log_error(
         meta,
