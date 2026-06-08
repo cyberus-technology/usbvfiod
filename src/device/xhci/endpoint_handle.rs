@@ -765,6 +765,10 @@ impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
             _ => unreachable!("checked variant before calling this handle"),
         };
 
+        if normal_trb_data.immediate_data {
+            todo!()
+        }
+
         if !normal_trb_data.chain {
             self.normal_transfer_state = NormalTransferState::new();
         }
@@ -1029,6 +1033,10 @@ impl<RIEH: RealInEndpointHandle> InEndpointHandle<RIEH> {
             TransferTrbVariant::Normal(normal_trb_data) => normal_trb_data,
             _ => unreachable!("checked variant before calling this handle"),
         };
+
+        if normal_trb_data.immediate_data {
+            todo!()
+        }
 
         if !normal_trb_data.chain {
             self.normal_transfer_state = NormalTransferState::new();
