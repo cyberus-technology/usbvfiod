@@ -247,7 +247,7 @@ async fn control_endpoint_worker(
             let processing_result = match is_out_request {
                 true => {
                     let data = request.data.unwrap_or(Vec::new());
-                    error!("nusb file: doing controlout");
+                    trace!("nusb file: doing controlout");
 
                     let control = ControlOut {
                         control_type,
@@ -257,14 +257,14 @@ async fn control_endpoint_worker(
                         index: request.index,
                         data: &data,
                     };
-                    error!("{:?}", control);
+                    trace!("{:?}", control);
                     match device
                         .control_out(control, Duration::from_millis(2000))
                         .await
                     {
                         Ok(_) => ControlRequestProcessingResult::SuccessfulControlOut,
                         Err(err) => {
-                            error!("mapping {:?}", err);
+                            trace!("mapping {:?}", err);
                             map_error(err)
                         }
                     }
@@ -581,7 +581,7 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
     let size;
 
     if TypeId::of::<EpType>() == TypeId::of::<Bulk>() {
-        info!("creating normal in worker for bulk");
+        trace!("creating normal in worker for bulk");
         size = 512 * 2 * 5;
         reader = endpoint
             .reader(size)
@@ -602,12 +602,12 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
             );
 
             if let Some(requested_length) = request_receiver.recv().await {
-                info!("original requested length: {requested_length}");
-                info!("current buffer length: {}", buffer.len());
+                trace!("original requested length: {requested_length}");
+                trace!("current buffer length: {}", buffer.len());
 
                 // do reading until end aka short or null package
                 let read_length = if requested_length > buffer.len() && !pkt_reader.is_end() {
-                    info!("attempting a read");
+                    trace!("attempting a read");
 
                     match pkt_reader.read_to_end(&mut buffer).await {
                         Ok(read_length) => {
@@ -621,7 +621,7 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
                         Err(e) => panic!("in endpoint reader error: {e}"),
                     }
                 } else {
-                    warn!("skipping hardware request");
+                    debug!("skipping hardware request");
                     None
                 };
 
@@ -660,7 +660,7 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
             trace!("one loop done");
         }
     } else if TypeId::of::<EpType>() == TypeId::of::<Interrupt>() {
-        info!("creating normal in worker for interrupt");
+        trace!("creating normal in worker for interrupt");
         size = endpoint.max_packet_size();
         reader = endpoint
             .reader(size)
@@ -680,16 +680,16 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
             );
 
             if let Some(requested_length) = request_receiver.recv().await {
-                info!("original requested length: {requested_length}");
-                info!("current buffer length: {}", buffer.len());
+                trace!("original requested length: {requested_length}");
+                trace!("current buffer length: {}", buffer.len());
 
                 // do reading until end aka short or null package
                 let read_length = if requested_length > buffer.len() {
-                    info!("attempting a read");
+                    trace!("attempting a read");
 
                     let mut read_sum = 0;
                     loop {
-                        info!("reading loop");
+                        trace!("reading loop");
 
                         // read
                         let mut hardware_used_buffer: Vec<u8> = vec![0; size];
@@ -704,30 +704,30 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
                             }
                         };
 
-                        info!("read {read_length} characters: {hardware_used_buffer:?}");
+                        trace!("read {read_length} characters: {hardware_used_buffer:?}");
 
                         if pkt_reader.is_end() {
-                            info!("reached EOF, consuming end to continue on next request");
+                            trace!("reached EOF, consuming end to continue on next request");
                             let _ = pkt_reader.consume_end();
                             break;
                         }
 
-                        info!("buffer.append");
+                        trace!("buffer.append");
                         buffer.append(&mut hardware_used_buffer.drain(0..(read_length)).collect());
                         read_sum += read_length;
 
-                        info!("read sum is {}", read_sum);
+                        trace!("read sum is {}", read_sum);
 
                         // if requested_length full break and return
                         // necessary for interrupt ep with no EOF like usb 1.1
                         if read_sum >= requested_length {
-                            info!("read what we needed, rest until EOF is not yet read");
+                            trace!("read what we needed, rest until EOF is not yet read");
                             break;
                         }
                     }
                     Some(read_sum)
                 } else {
-                    warn!("skipping hardware request");
+                    debug!("skipping hardware request");
                     None
                 };
 
