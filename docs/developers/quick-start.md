@@ -8,7 +8,7 @@ An easy way to get a testing setup is to connect `usbvfiod` with Cloud
 Hypervisor. For this, start `usbvfiod` in one terminal:
 
 ```console
-$ cargo run -- --socket-path /tmp/usbvfiod.sock -vv
+$ cargo run --bin usbvfiod -- --socket-path /tmp/usbvfiod.sock -vv
 2025-04-25T09:41:40.891734Z  INFO usbvfiod: We're up!
 ```
 
@@ -98,7 +98,7 @@ To inspect transfer messages more conveniently without searching through
 log output, `usbvfiod` can write USB traffic to a PCAP file:
 
 ```console
-$ cargo run -- --socket-path /tmp/usbvfiod.sock --pcap-path PCAP_PATH -vv
+$ cargo run --bin usbvfiod -- --socket-path /tmp/usbvfiod.sock --pcap-path PCAP_PATH -vv
 ```
 
 `PCAP_PATH` is the path where `usbvfiod` should write the generated PCAP file.
