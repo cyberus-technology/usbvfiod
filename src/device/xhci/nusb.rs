@@ -78,7 +78,7 @@ impl NusbDeviceWrapper {
             .get_interface_number_containing_endpoint(endpoint_address)
             .ok_or_else(|| anyhow!("Endpoint with id {endpoint_id} is not part of an interface"))?;
         // TODO retry this because of race condition after sending a stop signal to a worker
-        for n in 1..1000 {
+        for n in 1..10000 {
             if let Ok(endpoint) = self.interfaces[interface_num].endpoint(endpoint_address) {
                 return Ok(endpoint);
             }
@@ -476,7 +476,7 @@ pub struct NormalInEndpointHandle {
     // signal worker to stop
     cancel: CancellationToken,
     request_submitter: mpsc::UnboundedSender<usize>,
-    response_receiver: mpsc::UnboundedReceiver<Vec<u8>>,
+    response_receiver: mpsc::UnboundedReceiver<InTrbProcessingResult>,
 }
 
 impl Drop for NormalInEndpointHandle {
@@ -507,9 +507,7 @@ impl RealInEndpointHandle for NormalInEndpointHandle {
             let result = (self.response_receiver.recv().await)
                 // background worker is dead and has dropped the response sender
                 // maybe we want to error here instead
-                .map_or(InTrbProcessingResult::TransactionError, |res| {
-                    InTrbProcessingResult::Success(res)
-                });
+                .map_or(InTrbProcessingResult::TransactionError, |res| res);
 
             Ok(result)
         })
@@ -525,7 +523,11 @@ impl BaseEndpointHandle for NormalInEndpointHandle {
     }
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async { todo!("clear halt") })
+        Box::pin(async {
+            info!("not doing anything to clear the halt with the higher level api");
+            //todo!("clear halt")
+            Ok(())
+        })
     }
 }
 
@@ -556,7 +558,7 @@ impl NormalInEndpointHandle {
 async fn cancellable_normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
     endpoint: nusb::Endpoint<EpType, In>,
     request_receiver: mpsc::UnboundedReceiver<usize>,
-    response_submitter: mpsc::UnboundedSender<Vec<u8>>,
+    response_submitter: mpsc::UnboundedSender<InTrbProcessingResult>,
     cancel: CancellationToken,
 ) {
     select! {
@@ -569,7 +571,7 @@ async fn cancellable_normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static
 async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
     endpoint: nusb::Endpoint<EpType, In>,
     mut request_receiver: mpsc::UnboundedReceiver<usize>,
-    response_submitter: mpsc::UnboundedSender<Vec<u8>>, // TODO into a processing result instead of a vec u8?
+    response_submitter: mpsc::UnboundedSender<InTrbProcessingResult>,
 ) -> anyhow::Result<()> {
     use nusb::transfer::{Bulk, Interrupt};
     use std::any::TypeId;
@@ -618,7 +620,11 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
                             // TODO does a max length for a td exist? -> maybe the 16MB being the edtla limit
                             panic!("normal in buffer OOM: {e}");
                         }
-                        Err(e) => panic!("in endpoint reader error: {e}"),
+                        Err(e) => {
+                            info!("in endpoint reader error: {e}");
+                            response_submitter.send(InTrbProcessingResult::Stall)?;
+                            continue;
+                        }
                     }
                 } else {
                     debug!("skipping hardware request");
@@ -651,7 +657,7 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
                 debug!("remaining buffer length: {}", buffer.len());
 
                 // ...and return it
-                response_submitter.send(requested_bytes)?;
+                response_submitter.send(InTrbProcessingResult::Success(requested_bytes))?;
             } else {
                 warn!("received a none from the request_receiver, this worker is dead");
                 // kill task itself
@@ -751,7 +757,7 @@ async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
                 debug!("remaining buffer length: {}", buffer.len());
 
                 // ...and return it
-                response_submitter.send(requested_bytes)?;
+                response_submitter.send(InTrbProcessingResult::Success(requested_bytes))?;
             } else {
                 warn!("received a none from the request_receiver, this worker is dead");
                 // kill task itself
