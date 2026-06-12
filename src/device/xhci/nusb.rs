@@ -1,4 +1,6 @@
-use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    cmp::min, fmt::Debug, future::Future, pin::Pin, sync::Arc, thread::sleep, time::Duration,
+};
 
 use anyhow::{anyhow, Error};
 use nusb::{
@@ -8,9 +10,9 @@ use nusb::{
     },
     Endpoint, Interface, MaybeFuture,
 };
-use tokio::{runtime, select, sync::mpsc};
+use tokio::{io::AsyncReadExt, runtime, select, sync::mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::device::xhci::{
     hotplug_endpoint_handle::BaseEndpointHandle,
@@ -75,9 +77,16 @@ impl NusbDeviceWrapper {
         let interface_num = self
             .get_interface_number_containing_endpoint(endpoint_address)
             .ok_or_else(|| anyhow!("Endpoint with id {endpoint_id} is not part of an interface"))?;
-        let endpoint = self.interfaces[interface_num].endpoint(endpoint_address)?;
+        // TODO retry this because of race condition after sending a stop signal to a worker
+        for n in 1..10000 {
+            if let Ok(endpoint) = self.interfaces[interface_num].endpoint(endpoint_address) {
+                return Ok(endpoint);
+            }
+            warn!("endpoint currently not available; this was try nr {n}");
 
-        Ok(endpoint)
+            sleep(Duration::new(0, 100));
+        }
+        panic!("unable to open endpoint");
     }
 }
 
@@ -109,9 +118,9 @@ impl NusbRealDevice {
 
 impl RealDevice for NusbRealDevice {
     type RCEH = ControlEndpointHandle;
-    type RBIEH = NormalEndpointHandle<Bulk, In>;
+    type RBIEH = NormalInEndpointHandle;
     type RBOEH = NormalEndpointHandle<Bulk, Out>;
-    type RIIEH = NormalEndpointHandle<Interrupt, In>;
+    type RIIEH = NormalInEndpointHandle;
     type RIOEH = NormalEndpointHandle<Interrupt, Out>;
 
     fn speed(&self) -> Option<super::real_device::Speed> {
@@ -123,7 +132,8 @@ impl RealDevice for NusbRealDevice {
     }
 
     fn bulk_in_endpoint_handle(&self, endpoint_id: u8) -> Self::RBIEH {
-        NormalEndpointHandle::new(endpoint_id, self.device_wrapper.clone())
+        let endpoint: Endpoint<Bulk, In> = self.device_wrapper.open_endpoint(endpoint_id).expect("Failed to open endpoint on nusb device. We could handle this error and always return transaction errors. Panic is fine for now.");
+        NormalInEndpointHandle::new(endpoint, &self.async_runtime)
     }
 
     fn bulk_out_endpoint_handle(&self, endpoint_id: u8) -> Self::RBOEH {
@@ -131,7 +141,8 @@ impl RealDevice for NusbRealDevice {
     }
 
     fn interrupt_in_endpoint_handle(&self, endpoint_id: u8) -> Self::RIIEH {
-        NormalEndpointHandle::new(endpoint_id, self.device_wrapper.clone())
+        let endpoint: Endpoint<Interrupt, In> = self.device_wrapper.open_endpoint(endpoint_id).expect("Failed to open endpoint on nusb device. We could handle this error and always return transaction errors. Panic is fine for now.");
+        NormalInEndpointHandle::new(endpoint, &self.async_runtime)
     }
 
     fn interrupt_out_endpoint_handle(&self, endpoint_id: u8) -> Self::RIOEH {
@@ -236,6 +247,8 @@ async fn control_endpoint_worker(
             let processing_result = match is_out_request {
                 true => {
                     let data = request.data.unwrap_or(Vec::new());
+                    trace!("nusb file: doing controlout");
+
                     let control = ControlOut {
                         control_type,
                         recipient,
@@ -244,12 +257,16 @@ async fn control_endpoint_worker(
                         index: request.index,
                         data: &data,
                     };
+                    trace!("{:?}", control);
                     match device
                         .control_out(control, Duration::from_millis(2000))
                         .await
                     {
                         Ok(_) => ControlRequestProcessingResult::SuccessfulControlOut,
-                        Err(err) => map_error(err),
+                        Err(err) => {
+                            trace!("mapping {:?}", err);
+                            map_error(err)
+                        }
                     }
                 }
                 false => {
@@ -452,5 +469,303 @@ impl From<nusb::Speed> for Speed {
             nusb::Speed::SuperPlus => Self::SuperPlus,
             _ => todo!("new USB speed was added to non-exhaustive enum"),
         }
+    }
+}
+
+pub struct NormalInEndpointHandle {
+    // signal worker to stop
+    cancel: CancellationToken,
+    request_submitter: mpsc::UnboundedSender<usize>,
+    response_receiver: mpsc::UnboundedReceiver<InTrbProcessingResult>,
+}
+
+impl Drop for NormalInEndpointHandle {
+    fn drop(&mut self) {
+        trace!("called Drop for NormalInEndpointHandle");
+        self.cancel.cancel();
+    }
+}
+
+impl Debug for NormalInEndpointHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("lol v2").finish()
+    }
+}
+
+impl RealInEndpointHandle for NormalInEndpointHandle {
+    type TrbCompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
+
+    fn submit(&mut self, len: usize) -> anyhow::Result<()> {
+        self.request_submitter.send(len)?;
+
+        Ok(())
+    }
+
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+        Box::pin(async {
+            let result = (self.response_receiver.recv().await)
+                // background worker is dead and has dropped the response sender
+                // maybe we want to error here instead
+                .map_or(InTrbProcessingResult::TransactionError, |res| res);
+
+            Ok(result)
+        })
+    }
+}
+
+impl BaseEndpointHandle for NormalInEndpointHandle {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+        // nothing we can do
+        Box::pin(async { Ok(()) })
+    }
+
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async {
+            info!("not doing anything to clear the halt with the higher level api");
+            //todo!("clear halt")
+            Ok(())
+        })
+    }
+}
+
+impl NormalInEndpointHandle {
+    fn new<EpType: BulkOrInterrupt + 'static>(
+        endpoint: nusb::Endpoint<EpType, In>,
+        async_runtime: &runtime::Handle,
+    ) -> Self {
+        let (request_submitter, request_receiver) = mpsc::unbounded_channel();
+        let (response_submitter, response_receiver) = mpsc::unbounded_channel();
+        let cancel = CancellationToken::new();
+
+        async_runtime.spawn(cancellable_normal_in_endpoint_worker::<EpType>(
+            endpoint,
+            request_receiver,
+            response_submitter,
+            cancel.clone(),
+        ));
+
+        Self {
+            cancel,
+            request_submitter,
+            response_receiver,
+        }
+    }
+}
+
+async fn cancellable_normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
+    endpoint: nusb::Endpoint<EpType, In>,
+    request_receiver: mpsc::UnboundedReceiver<usize>,
+    response_submitter: mpsc::UnboundedSender<InTrbProcessingResult>,
+    cancel: CancellationToken,
+) {
+    select! {
+        _ = normal_in_endpoint_worker(endpoint, request_receiver, response_submitter) => {},
+        _ = cancel.cancelled() => {trace!("used the cancel token for an endpoint worker");},
+    }
+}
+
+// this function can only return with an error, but ! cannot be used in Result
+async fn normal_in_endpoint_worker<EpType: BulkOrInterrupt + 'static>(
+    endpoint: nusb::Endpoint<EpType, In>,
+    mut request_receiver: mpsc::UnboundedReceiver<usize>,
+    response_submitter: mpsc::UnboundedSender<InTrbProcessingResult>,
+) -> anyhow::Result<()> {
+    use nusb::transfer::{Bulk, Interrupt};
+    use std::any::TypeId;
+
+    // seconds * N
+    const NUSB_TIMEOUT: u64 = 1000 * 200;
+
+    let mut reader;
+    let size;
+
+    if TypeId::of::<EpType>() == TypeId::of::<Bulk>() {
+        trace!("creating normal in worker for bulk");
+        size = 512 * 2 * 5;
+        reader = endpoint
+            .reader(size)
+            .with_num_transfers(1)
+            .with_read_timeout(Duration::from_millis(NUSB_TIMEOUT));
+
+        let mut pkt_reader = reader.until_short_packet();
+
+        let mut buffer = Vec::new();
+
+        let mut debug_counter = 0;
+
+        loop {
+            debug_counter += 1;
+            trace!(
+                "normal_in_endpoint_worker loop; counter at {}",
+                debug_counter
+            );
+
+            if let Some(requested_length) = request_receiver.recv().await {
+                trace!("original requested length: {requested_length}");
+                trace!("current buffer length: {}", buffer.len());
+
+                // do reading until end aka short or null package
+                let read_length = if requested_length > buffer.len() && !pkt_reader.is_end() {
+                    trace!("attempting a read");
+
+                    match pkt_reader.read_to_end(&mut buffer).await {
+                        Ok(read_length) => {
+                            trace!("we have a return value from the reader {}", read_length);
+                            Some(read_length)
+                        }
+                        Err(e) if e.kind() == tokio::io::ErrorKind::OutOfMemory => {
+                            // TODO does a max length for a td exist? -> maybe the 16MB being the edtla limit
+                            panic!("normal in buffer OOM: {e}");
+                        }
+                        Err(e) => {
+                            info!("in endpoint reader error: {e}");
+                            response_submitter.send(InTrbProcessingResult::Stall)?;
+                            continue;
+                        }
+                    }
+                } else {
+                    debug!("skipping hardware request");
+                    None
+                };
+
+                // collect data to return
+                let requested_bytes: Vec<u8>;
+                if let Some(length) = read_length {
+                    // hardware read happened
+                    if length < requested_length {
+                        // got short packet
+                        requested_bytes = buffer.drain(..length).collect();
+                    } else {
+                        // received at least full requested length
+                        requested_bytes = buffer.drain(..requested_length).collect();
+                    }
+                } else {
+                    // from buffer only
+                    requested_bytes = buffer
+                        .drain(..min(buffer.len(), requested_length))
+                        .collect();
+                }
+
+                if buffer.is_empty() && pkt_reader.is_end() {
+                    let _ = pkt_reader.consume_end();
+                }
+
+                debug!("the responded bytes len: {:?}", requested_bytes.len());
+                debug!("remaining buffer length: {}", buffer.len());
+
+                // ...and return it
+                response_submitter.send(InTrbProcessingResult::Success(requested_bytes))?;
+            } else {
+                warn!("received a none from the request_receiver, this worker is dead");
+                // kill task itself
+                return anyhow::Ok(());
+            }
+            trace!("one loop done");
+        }
+    } else if TypeId::of::<EpType>() == TypeId::of::<Interrupt>() {
+        trace!("creating normal in worker for interrupt");
+        size = endpoint.max_packet_size();
+        reader = endpoint
+            .reader(size)
+            .with_num_transfers(8)
+            .with_read_timeout(Duration::from_millis(NUSB_TIMEOUT));
+        let mut pkt_reader = reader.until_short_packet();
+
+        let mut buffer = Vec::new();
+
+        let mut debug_counter = 0;
+
+        loop {
+            debug_counter += 1;
+            trace!(
+                "normal_in_endpoint_worker loop; counter at {}",
+                debug_counter
+            );
+
+            if let Some(requested_length) = request_receiver.recv().await {
+                trace!("original requested length: {requested_length}");
+                trace!("current buffer length: {}", buffer.len());
+
+                // do reading until end aka short or null package
+                let read_length = if requested_length > buffer.len() {
+                    trace!("attempting a read");
+
+                    let mut read_sum = 0;
+                    loop {
+                        trace!("reading loop");
+
+                        // read
+                        let mut hardware_used_buffer: Vec<u8> = vec![0; size];
+
+                        let read_length = match pkt_reader.read(&mut hardware_used_buffer).await {
+                            Ok(length) => length,
+                            Err(err) => {
+                                error!("read failed: {err:?}");
+                                //processing_result = map_in_err(err);
+                                //panic!("read failed: {err:?}");
+                                0
+                            }
+                        };
+
+                        trace!("read {read_length} characters: {hardware_used_buffer:?}");
+
+                        if pkt_reader.is_end() {
+                            trace!("reached EOF, consuming end to continue on next request");
+                            let _ = pkt_reader.consume_end();
+                            break;
+                        }
+
+                        trace!("buffer.append");
+                        buffer.append(&mut hardware_used_buffer.drain(0..(read_length)).collect());
+                        read_sum += read_length;
+
+                        trace!("read sum is {}", read_sum);
+
+                        // if requested_length full break and return
+                        // necessary for interrupt ep with no EOF like usb 1.1
+                        if read_sum >= requested_length {
+                            trace!("read what we needed, rest until EOF is not yet read");
+                            break;
+                        }
+                    }
+                    Some(read_sum)
+                } else {
+                    debug!("skipping hardware request");
+                    None
+                };
+
+                // collect data to return
+                let requested_bytes: Vec<u8>;
+                if let Some(length) = read_length {
+                    // hardware read happened
+                    if length < requested_length {
+                        // got short packet
+                        requested_bytes = buffer.drain(..length).collect();
+                    } else {
+                        // received at least full requested length
+                        requested_bytes = buffer.drain(..requested_length).collect();
+                    }
+                } else {
+                    // from buffer only
+                    requested_bytes = buffer.drain(..requested_length).collect();
+                }
+
+                debug!("the responded bytes len: {:?}", requested_bytes.len());
+                debug!("remaining buffer length: {}", buffer.len());
+
+                // ...and return it
+                response_submitter.send(InTrbProcessingResult::Success(requested_bytes))?;
+            } else {
+                warn!("received a none from the request_receiver, this worker is dead");
+                // kill task itself
+                return anyhow::Ok(());
+            }
+            trace!("one loop done");
+        }
+    } else {
+        unreachable!("");
     }
 }

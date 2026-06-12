@@ -1,6 +1,6 @@
 use std::{fmt::Debug, future::Future, mem, ops::ControlFlow, pin::Pin};
 
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -554,6 +554,12 @@ impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for OutEndpointHandle<ROEH>
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async { self.real_ep.clear_halt().await })
+    }
+}
+
+impl<RIEH: RealInEndpointHandle> Drop for InEndpointHandle<RIEH> {
+    fn drop(&mut self) {
+        trace!("called <RIEH: RealInEndpointHandle> Drop for InEndpointHandle<RIEH>");
     }
 }
 
