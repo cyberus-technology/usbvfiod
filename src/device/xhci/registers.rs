@@ -333,4 +333,26 @@ mod tests {
             "writing 1 to bit 17 should clear the bit."
         );
     }
+
+    #[test]
+    fn usbcmd_read_write() {
+        let reg = UsbcmdRegister::new();
+
+        reg.write(0x5);
+        assert_eq!(reg.read(), 0x5, "Writing to allowed bits should work.");
+
+        reg.write(0xd);
+        assert_eq!(
+            reg.read(),
+            0x5,
+            "Writing any bit besides the allowed ones should be ignored."
+        );
+
+        reg.write(0x1);
+        assert_eq!(
+            reg.read(),
+            0x1,
+            "Not writing to allowed and already set bit 2 should clear it."
+        );
+    }
 }
