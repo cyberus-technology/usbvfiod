@@ -632,7 +632,9 @@ let
     cloud_hypervisor.wait_until_succeeds("lsblk /dev/sda1", timeout=60)
 
     # Make a filesystem
-    cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=60)
+    out = cloud_hypervisor.succeed("mkfs.ext4 -v /dev/sda1", timeout=60)
+    print(out)
+    cloud_hypervisor.succeed("fsck -t ext4 -V -r /dev/sda1 -- -y", timeout=60)
     cloud_hypervisor.wait_until_succeeds("mount /dev/sda1 /mnt", timeout=60)
 
     # Create a file and compute a checksum
