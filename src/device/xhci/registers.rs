@@ -270,17 +270,14 @@ impl ErstbaRegister {
 mod tests {
     use crate::device::xhci::interrupter::Interrupter;
     use crate::dynamic_bus::DynamicBus;
-    use crate::{init_runtime, runtime};
 
     use super::*;
 
-    #[test]
-    fn portsc_read_write() {
-        // TODO this is conflicting with other tests using runtime (currently only this one)
-        init_runtime().expect("Failed to initialize async runtime");
-        let async_runtime = runtime();
+    #[tokio::test]
+    async fn portsc_read_write() {
+        let async_runtime = tokio::runtime::Handle::current();
         let dma_bus = Arc::new(DynamicBus::new());
-        let interrupter = Interrupter::new(dma_bus, async_runtime);
+        let interrupter = Interrupter::new(dma_bus, &async_runtime);
         let reg = PortscRegister::new(interrupter.create_event_sender(), UsbVersion::USB3, 1);
 
         reg.set(0x00260203);
