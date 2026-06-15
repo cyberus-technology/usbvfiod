@@ -100,7 +100,7 @@ let
     let
       inherit (netbootNixos debug) config;
 
-      kernelTarget = pkgs.stdenv.hostPlatform.linux-kernel.target;
+      kernelTarget = pkgs.linux.target;
     in
     {
       initrd = "${config.system.build.netbootRamdisk}/initrd";
