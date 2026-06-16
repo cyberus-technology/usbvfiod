@@ -341,6 +341,9 @@ impl ControlRequestParser {
                 },
                 ControlRequestParserState::SetupStageConsumed => match transfer_trb {
                     TransferTrbVariant::DataStage(data_trb_data) => {
+                        if data_trb_data.immediate_data {
+                            todo!("immediate data on data stage trb")
+                        }
                         let mut data = vec![0; self.request_builder.length as usize];
                         self.dma_bus
                             .read_bulk(data_trb_data.data_pointer, &mut data);
