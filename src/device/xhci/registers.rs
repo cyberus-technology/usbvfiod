@@ -1,14 +1,14 @@
 use std::sync::{
-    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicU32, AtomicU64, Ordering},
     Arc,
 };
 
 use tokio::sync::Notify;
-use tracing::trace;
+use tracing::{info, trace, warn};
 
 use crate::device::{
     pci::constants::xhci::{
-        operational::{portsc, usbsts},
+        operational::{portsc, usbcmd, usbsts},
         MAX_SLOTS,
     },
     xhci::{interrupter::EventSender, port::UsbVersion, trb::EventTrb},
@@ -179,43 +179,62 @@ impl DcbaapRegister {
     }
 }
 
+/// USB Command Register (chapter 5.4.1)
 #[derive(Debug)]
 pub struct UsbcmdRegister {
-    running: Arc<AtomicBool>,
+    value: Arc<AtomicU32>,
 }
 
 impl UsbcmdRegister {
     pub fn new() -> Self {
-        let running = Arc::new(AtomicBool::new(false));
-
-        Self { running }
+        Self {
+            value: Arc::new(AtomicU32::new(0)),
+        }
     }
 
+    pub fn read(&self) -> u64 {
+        self.value.load(std::sync::atomic::Ordering::Relaxed).into()
+    }
+
+    /// A simple write with a very limited list of allowed bits (RsvdP is also not written).
     pub fn write(&self, value: u64) {
-        self.running.store(value & 0x1 != 0, Ordering::Relaxed);
+        // Currently writable bits ...
+        const BITMASK_PRESERVED: u64 = usbcmd::RS | usbcmd::INTE;
+        // ... ignoring any other bits and printing a warning when attempted.
+        if value & usbcmd::HCRST == usbcmd::HCRST {
+            info!("Host Controller Reset attempted; no action");
+        }
+        if value & !(BITMASK_PRESERVED | usbcmd::HCRST) != 0 {
+            warn!(
+                "received at least one bit that is ignored for USBCMD: {}",
+                value & !BITMASK_PRESERVED
+            );
+        }
+
+        let value = value & BITMASK_PRESERVED;
+        // SAFETY: USBCMD is defined as 32 bit and the masks used above enforce it.
+        self.value
+            .store(value.try_into().unwrap(), Ordering::Relaxed);
     }
 
-    pub fn running_bit(&self) -> Arc<AtomicBool> {
-        self.running.clone()
+    pub fn value_reference(&self) -> Arc<AtomicU32> {
+        self.value.clone()
     }
 }
 
 #[derive(Debug)]
 pub struct UsbstsRegister {
-    running: Arc<AtomicBool>,
+    usbcmd: Arc<AtomicU32>,
 }
 
 impl UsbstsRegister {
-    pub const fn new(running: Arc<AtomicBool>) -> Self {
-        Self { running }
+    pub const fn new(usbcmd: Arc<AtomicU32>) -> Self {
+        Self { usbcmd }
     }
 
     pub fn read(&self) -> u64 {
-        let hch = if self.running.load(Ordering::Relaxed) {
-            0
-        } else {
-            usbsts::HCH
-        };
+        let is_running = (self.usbcmd.load(Ordering::Relaxed) as u64 & usbcmd::RS) == usbcmd::RS;
+        let hch = if is_running { 0 } else { usbsts::HCH };
         hch | usbsts::EINT | usbsts::PCD
     }
 }
@@ -309,6 +328,28 @@ mod tests {
             reg.read(),
             0x00000203,
             "writing 1 to bit 17 should clear the bit."
+        );
+    }
+
+    #[test]
+    fn usbcmd_read_write() {
+        let reg = UsbcmdRegister::new();
+
+        reg.write(0x5);
+        assert_eq!(reg.read(), 0x5, "Writing to allowed bits should work.");
+
+        reg.write(0xd);
+        assert_eq!(
+            reg.read(),
+            0x5,
+            "Writing any bit besides the allowed ones should be ignored."
+        );
+
+        reg.write(0x1);
+        assert_eq!(
+            reg.read(),
+            0x1,
+            "Not writing to allowed and already set bit 2 should clear it."
         );
     }
 }

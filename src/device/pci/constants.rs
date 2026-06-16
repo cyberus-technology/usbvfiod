@@ -332,6 +332,26 @@ pub mod xhci {
             pub const CRR: u64 = 0x8;
         }
 
+        /// See xhci specification chapter 5.4.1
+        pub mod usbcmd {
+            pub const RS: u64 = 0x1;
+            pub const HCRST: u64 = 0x2;
+            pub const INTE: u64 = 0x4;
+        }
+
+        /// See xhci specification chapter 5.4.2
+        pub mod usbsts {
+            pub const HCH: u64 = 0x1;
+            pub const HSE: u64 = 0x4;
+            pub const EINT: u64 = 0x8;
+            pub const PCD: u64 = 0x10;
+            pub const SSS: u64 = 0x100;
+            pub const RSS: u64 = 0x200;
+            pub const SRE: u64 = 0x400;
+            pub const CNR: u64 = 0x800;
+            pub const HCE: u64 = 0x1000;
+        }
+
         /// See xhci specification chapter 5.4.8
         ///
         /// Bitmask of the specific field in the portsc register.
@@ -366,18 +386,6 @@ pub mod xhci {
                 pub const PLS_RXDETECT: u64 = 0xa0;
                 pub const PLS_POLLING: u64 = 0xe0;
             }
-        }
-
-        pub mod usbsts {
-            pub const HCH: u64 = 0x1;
-            pub const HSE: u64 = 0x4;
-            pub const EINT: u64 = 0x8;
-            pub const PCD: u64 = 0x10;
-            pub const SSS: u64 = 0x100;
-            pub const RSS: u64 = 0x200;
-            pub const SRE: u64 = 0x400;
-            pub const CNR: u64 = 0x800;
-            pub const HCE: u64 = 0x1000;
         }
     }
 
