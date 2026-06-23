@@ -43,7 +43,7 @@ pub trait EndpointHandle: BaseEndpointHandle {
 /// - Some((addr, cs)) indicates that the stall/error happened on an earlier TRB but we notice it only
 ///   now because we aggregated all TRBs of a TD before talking to the real device; the endpoint
 ///   state machine should wind the dequeue pointer (and associated cycle state) back to this TRB.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrbProcessingResult {
     Ok,
     Stall(Option<(u64, bool)>),
