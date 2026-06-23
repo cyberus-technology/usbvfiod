@@ -172,6 +172,7 @@ impl PortStatusChangeEventTrbData {
 #[derive(Debug, PartialEq, Eq)]
 pub struct TransferEventTrbData {
     trb_pointer: u64,
+    /// 24 Bit
     trb_transfer_length: u32,
     completion_code: CompletionCode,
     event_data: bool,
