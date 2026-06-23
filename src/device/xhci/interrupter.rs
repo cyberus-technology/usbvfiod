@@ -176,3 +176,49 @@ impl EventWorker {
         }
     }
 }
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    pub mod testutils {
+        use super::*;
+        pub struct DummyInterrupter {
+            msg_recv: mpsc::UnboundedReceiver<InterrupterMessage>,
+        }
+
+        impl DummyInterrupter {
+            pub fn new() -> (EventSender, Self) {
+                let (sender, recv) = mpsc::unbounded_channel();
+                let event_sender = EventSender { sender };
+                let dummy = Self { msg_recv: recv };
+
+                (event_sender, dummy)
+            }
+
+            pub fn next_event(&mut self) -> Option<EventTrb> {
+                match self.msg_recv.try_recv().ok()? {
+                    InterrupterMessage::SendEvent(event_trb) => Some(event_trb),
+                    InterrupterMessage::UpdateInterruptLine(_) => None,
+                }
+            }
+        }
+
+        mod tests {
+            use super::*;
+
+            #[test]
+            fn build_normal_trb_as_raw_trb() {
+                let (event_sender, mut interrupter) = DummyInterrupter::new();
+
+                let event = EventTrb::new_port_status_change_event_trb(1);
+                matches!(event_sender.send(event), Ok(()));
+
+                assert_eq!(
+                    interrupter.next_event(),
+                    Some(EventTrb::new_port_status_change_event_trb(1))
+                );
+            }
+        }
+    }
+}

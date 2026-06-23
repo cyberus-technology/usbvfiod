@@ -31,7 +31,7 @@ pub trait EndpointHandle: BaseEndpointHandle {
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrbProcessingResult {
     Ok,
     Stall,
