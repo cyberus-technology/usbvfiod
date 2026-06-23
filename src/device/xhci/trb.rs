@@ -11,7 +11,7 @@ use super::super::pci::constants::xhci::rings::trb_types::{self, *};
 /// of a Transfer Request Block.
 pub type RawTrbBuffer = [u8; 16];
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RawTrb {
     pub address: u64,
     pub buffer: RawTrbBuffer,
@@ -25,7 +25,7 @@ pub const fn zeroed_trb_buffer() -> RawTrbBuffer {
 /// Represents a TRB that the XHCI controller can place on the event ring.
 ///
 /// See XHCI specification Section 6.4.2 for detailed event TRB type descriptions.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum EventTrb {
     Transfer(TransferEventTrbData),
     CommandCompletion(CommandCompletionEventTrbData),
@@ -65,7 +65,7 @@ impl EventTrb {
 ///
 /// Do not use this struct directly, use EventTrb::new_command_completion_event_trb
 /// instead.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct CommandCompletionEventTrbData {
     command_trb_pointer: u64,
     command_completion_parameter: u32,
@@ -132,7 +132,7 @@ impl CommandCompletionEventTrbData {
 ///
 /// Do not use this struct directly, use EventTrb::new_port_status_change_event_trb
 /// instead.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PortStatusChangeEventTrbData {
     port_id: u8,
 }
@@ -164,14 +164,14 @@ impl PortStatusChangeEventTrbData {
 }
 
 /// Stores the relevant data for a Transfer Event.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TransferEventTrbData {
-    trb_pointer: u64,
-    trb_transfer_length: u32,
-    completion_code: CompletionCode,
-    event_data: bool,
-    endpoint_id: u8,
-    slot_id: u8,
+    pub trb_pointer: u64,
+    pub trb_transfer_length: u32,
+    pub completion_code: CompletionCode,
+    pub event_data: bool,
+    pub endpoint_id: u8,
+    pub slot_id: u8,
 }
 
 impl EventTrb {
@@ -227,7 +227,7 @@ impl TransferEventTrbData {
 ///
 /// Refer to Table 6-90 in the XHCI specification for detailed descriptions of each code.
 #[allow(dead_code)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CompletionCode {
     Invalid = 0,
     Success,
@@ -1090,6 +1090,197 @@ pub enum TrbParseError {
     UnknownTrbType(u8),
     #[error("Detected a non-zero value in a RsvdZ field.")]
     RsvdZViolation,
+}
+
+#[cfg(test)]
+pub mod testutils {
+    use super::*;
+
+    /// This Builder simplifies creating RawTrb and prevents some easy mistakes when
+    /// manually writing the correct value at the corresponding index of the buffers.
+    pub struct RawTrbBuilder {
+        pub address: u64,
+        pub buffer: RawTrbBuffer,
+    }
+    impl RawTrbBuilder {
+        const CH: u8 = 0x10;
+        const IOC: u8 = 0x20;
+        const IDT: u8 = 0x40;
+        const DIR: u8 = 0x1;
+
+        pub fn new(address: u64) -> Self {
+            Self {
+                address,
+                buffer: [0; 16],
+            }
+        }
+
+        /// setup stage trb exclusive field bmRequestType
+        pub fn with_bm_request_type(mut self, value: u8) -> Self {
+            self.buffer[0] = value;
+            self
+        }
+
+        /// setup stage trb exclusive field wLength
+        pub fn with_w_length(mut self, value: u16) -> Self {
+            let value_bytes: [u8; 2] = value.to_le_bytes();
+            self.buffer[6..(2 + 6)].copy_from_slice(&value_bytes);
+            self
+        }
+
+        /// first 8 bytes of the trb
+        pub fn with_data_field(mut self, value: u64) -> Self {
+            let value_bytes: [u8; 8] = value.to_le_bytes();
+            self.buffer[..8].copy_from_slice(&value_bytes);
+            self
+        }
+
+        /// byte index 8 & 9
+        pub fn with_transfer_length(mut self, length: u16) -> Self {
+            let length_bytes: [u8; 2] = length.to_le_bytes();
+            self.buffer[8..(2 + 8)].copy_from_slice(&length_bytes);
+            self
+        }
+
+        /// chain bit
+        pub fn with_ch(mut self) -> Self {
+            self.buffer[12] |= Self::CH;
+            self
+        }
+
+        /// interrupt on completion bit
+        pub fn with_ioc(mut self) -> Self {
+            self.buffer[12] |= Self::IOC;
+            self
+        }
+
+        /// immediate data bit
+        pub fn with_idt(mut self) -> Self {
+            self.buffer[12] |= Self::IDT;
+            self
+        }
+
+        /// trb type field
+        pub fn with_trb_type(mut self, trb_type: u8) -> Self {
+            self.buffer[13] |= trb_type << 2;
+            self
+        }
+
+        /// direction bit
+        ///
+        /// for data stage and status stage trb
+        ///
+        /// if DIR { IN } else { OUT }
+        pub fn with_dir(mut self) -> Self {
+            self.buffer[14] |= Self::DIR;
+            self
+        }
+
+        /// absolute write to an arbitrary byte index
+        pub fn with_byte(mut self, index: usize, value: u8) -> Self {
+            assert!(index < self.buffer.len());
+            self.buffer[index] = value;
+            self
+        }
+
+        pub fn build(self) -> RawTrb {
+            RawTrb {
+                address: self.address,
+                buffer: self.buffer,
+            }
+        }
+    }
+
+    //TODO    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn build_normal_trb_as_raw_trb() {
+            let normal = RawTrbBuilder::new(0x10)
+                .with_data_field(0x1122334455667788)
+                .with_transfer_length(2048)
+                .with_ioc()
+                .with_ch()
+                .with_trb_type(0x1)
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [
+                    0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0, 0x8, 0, 0, 0x30, 0x4, 0, 0,
+                ],
+            };
+            assert_eq!(normal, expect);
+        }
+
+        #[test]
+        fn build_control_in_setup_stage_as_raw_trb() {
+            let setup_stage = RawTrbBuilder::new(0x10)
+                .with_bm_request_type(0x80)
+                .with_w_length(512)
+                .with_transfer_length(1024)
+                .with_idt()
+                .with_ioc()
+                .with_trb_type(0x2)
+                .with_byte(14, 0x3) // TRT: IN Data Stage
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [0x80, 0, 0, 0, 0, 0, 0, 0x2, 0, 0x4, 0, 0, 0x60, 0x8, 0x3, 0],
+            };
+            assert_eq!(setup_stage, expect);
+        }
+
+        #[test]
+        fn build_control_in_data_stage_as_raw_trb() {
+            let data_stage = RawTrbBuilder::new(0x10)
+                .with_data_field(0x112233445566)
+                .with_idt()
+                .with_ioc()
+                .with_trb_type(0x3)
+                .with_dir()
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [
+                    0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0, 0, 0, 0, 0, 0, 0x60, 0xc, 0x1, 0,
+                ],
+            };
+            assert_eq!(data_stage, expect);
+        }
+
+        #[test]
+        fn build_control_in_status_stage_as_raw_trb() {
+            let status_stage = RawTrbBuilder::new(0x10)
+                .with_ioc()
+                .with_ch()
+                .with_trb_type(0x4)
+                .with_dir()
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x30, 0x10, 0x1, 0],
+            };
+            assert_eq!(status_stage, expect);
+        }
+
+        #[test]
+        fn build_event_data_as_raw_trb() {
+            let event_data = RawTrbBuilder::new(0x10)
+                .with_data_field(0xe4e117da7a)
+                .with_ioc()
+                .with_trb_type(0x7)
+                .with_dir()
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [
+                    0x7a, 0xda, 0x17, 0xe1, 0xe4, 0, 0, 0, 0, 0, 0, 0, 0x20, 0x1c, 0x1, 0,
+                ],
+            };
+            assert_eq!(event_data, expect);
+        }
+    }
 }
 
 #[cfg(test)]

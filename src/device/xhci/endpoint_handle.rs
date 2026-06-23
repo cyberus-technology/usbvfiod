@@ -27,7 +27,7 @@ pub trait EndpointHandle: BaseEndpointHandle {
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrbProcessingResult {
     Ok,
     Stall,
@@ -722,7 +722,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ControlTransferState {
     pub state: ControlTransferStage, // upcoming or current stage of a control transfer to be handled
     pub direction: ControlTransferDirection, // holding the UsbRequest -> all things data
