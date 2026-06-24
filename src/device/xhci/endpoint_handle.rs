@@ -1315,3 +1315,1039 @@ impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for InEndpointHandle<RIEH> {
         Box::pin(async { self.real_ep.clear_halt().await })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::device::xhci::interrupter::InterrupterMessage;
+    use crate::device::{bus::testutils::TestBusDevice, xhci::trb::testutils::RawTrbBuilder};
+    use crate::dynamic_bus::DynamicBus;
+
+    use std::sync::Arc;
+
+    use tokio::sync::mpsc::{self, UnboundedReceiver};
+
+    const FIRST_ADDRESS: u64 = 0x10;
+    const SECOND_ADDRESS: u64 = 0x20;
+    const THIRD_ADDRESS: u64 = 0x30;
+    const FOURTH_ADDRESS: u64 = 0x40;
+    const FIFTH_ADDRESS: u64 = 0x50;
+    const SIXTH_ADDRESS: u64 = 0x60;
+
+    const DMA_POINTER_1: u64 = 0x200;
+    const DMA_POINTER_2: u64 = 0x400;
+    const DMA_POINTER_3: u64 = 0x600;
+    const DMA_POINTER_4: u64 = 0x800;
+
+    const TRANSFER_LENGTH: u16 = 512;
+    const EVENT_DATA_FIELD: u64 = 0xda7a;
+
+    const BM_REQUEST_TYPE_IN: u8 = 0x80;
+    const BM_REQUEST_TYPE_OUT: u8 = 0;
+
+    const TRB_TYPE_NORMAL: u8 = 0x1;
+    const TRB_TYPE_SETUP_STAGE: u8 = 0x2;
+    const TRB_TYPE_DATA_STAGE: u8 = 0x3;
+    const TRB_TYPE_STATUS_STAGE: u8 = 0x4;
+    const TRB_TYPE_EVENT_DATA: u8 = 0x7;
+
+    const TRT_OUT_DATA: u8 = 0x2;
+    const TRT_IN_DATA: u8 = 0x3;
+
+    // will return  the requested length of bytes with a value of 42
+    #[derive(Debug)]
+    pub struct DummyRealControlEndpointReadStatic {
+        data_length: u16,
+        direction: bool,
+    }
+    impl DummyRealControlEndpointReadStatic {
+        fn new() -> Self {
+            Self {
+                data_length: 0,
+                direction: false,
+            }
+        }
+    }
+
+    impl RealControlEndpointHandle for DummyRealControlEndpointReadStatic {
+        type TrbCompletionFuture<'a> = Pin<
+            Box<dyn Future<Output = anyhow::Result<ControlRequestProcessingResult>> + Send + 'a>,
+        >;
+
+        fn submit_control_request(&mut self, request: UsbRequest) -> anyhow::Result<()> {
+            // fake request is instantly submitted but we need to remember the direction for next_complete
+            const IN: u8 = 0b10000000;
+            self.direction = (request.request_type & IN) == IN;
+            self.data_length = request.length;
+
+            Ok(())
+        }
+
+        fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+            Box::pin(async {
+                let result = match self.direction {
+                    true => {
+                        let data = vec![42; self.data_length as usize];
+                        ControlRequestProcessingResult::SuccessfulControlIn(data)
+                    }
+                    false => ControlRequestProcessingResult::SuccessfulControlOut,
+                };
+                Ok(result)
+            })
+        }
+    }
+
+    impl BaseEndpointHandle for DummyRealControlEndpointReadStatic {
+        type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+        fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+            // nothing we want to do
+            Box::pin(async { Ok(()) })
+        }
+
+        fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+            // nothing we want to do
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    // Initialize test environment using the DummyRealControlEndpointReadStatic
+    //
+    // Use the ControlEndpointHandle to submit some TransferTrb.
+    // Use the UnboundedReceiver to directly check events meant for a EventRing.
+    fn init_control_endpoint_handle_test() -> (
+        UnboundedReceiver<InterrupterMessage>,
+        ControlEndpointHandle<DummyRealControlEndpointReadStatic>,
+    ) {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::control(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = DummyRealControlEndpointReadStatic::new();
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("");
+
+        let (event_sender, event_receiver) = mpsc::unbounded_channel();
+        let event_sender = EventSender::new_with_sender(event_sender);
+
+        let control_endpoint = ControlEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+        (event_receiver, control_endpoint)
+    }
+
+    #[tokio::test]
+    async fn submit_shortest_possible_control_in_request() {
+        let (mut event_receiver, mut control_endpoint) = init_control_endpoint_handle_test();
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_bm_request_type(BM_REQUEST_TYPE_IN)
+            .with_idt()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_dir()
+            .build();
+
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .next_completion()
+            .await
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this dummy hardware request should never fail");
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FIRST_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, SECOND_ADDRESS);
+    }
+
+    #[tokio::test]
+    async fn submit_shortest_possible_control_in_request_with_data_stage() {
+        let (mut event_receiver, mut control_endpoint) = init_control_endpoint_handle_test();
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_bm_request_type(BM_REQUEST_TYPE_IN)
+            .with_w_length(TRANSFER_LENGTH)
+            .with_idt()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, TRT_IN_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_field(DMA_POINTER_1)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_dir()
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_dir()
+            .build();
+
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .next_completion()
+            .await
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(data_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this dummy hardware request should never fail");
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FIRST_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, SECOND_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, THIRD_ADDRESS);
+    }
+
+    #[tokio::test]
+    async fn submit_control_in_request_with_event_data_at_the_end_of_the_data_stage() {
+        let (mut event_receiver, mut control_endpoint) = init_control_endpoint_handle_test();
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_bm_request_type(BM_REQUEST_TYPE_IN)
+            .with_w_length(TRANSFER_LENGTH)
+            .with_idt()
+            .with_ioc()
+            .with_trb_type(0x2)
+            .with_byte(14, TRT_IN_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_field(DMA_POINTER_1)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_ch()
+            .with_trb_type(0x3)
+            .with_dir()
+            .build();
+        let event_data = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_field(EVENT_DATA_FIELD)
+            .with_ioc()
+            .with_trb_type(0x7)
+            .with_dir()
+            .build();
+        let status_stage = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_ioc()
+            .with_trb_type(0x4)
+            .with_dir()
+            .build();
+
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .next_completion()
+            .await
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(data_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(event_data)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this dummy hardware request should never fail");
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FIRST_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_ne!(trb_data.trb_pointer, SECOND_ADDRESS);
+        assert_eq!(trb_data.trb_pointer, EVENT_DATA_FIELD);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, THIRD_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FOURTH_ADDRESS);
+    }
+
+    #[tokio::test]
+    async fn submit_control_in_request_with_event_data_between_two_data_stage_trb() {
+        let (mut event_receiver, mut control_endpoint) = init_control_endpoint_handle_test();
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_bm_request_type(BM_REQUEST_TYPE_IN)
+            .with_w_length(TRANSFER_LENGTH * 2)
+            .with_idt()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, TRT_IN_DATA)
+            .build();
+        let data_stage_1 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_field(DMA_POINTER_1)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_ch()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_dir()
+            .build();
+        let event_data = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_field(EVENT_DATA_FIELD)
+            .with_ch()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_dir()
+            .build();
+        let data_stage_2 = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_data_field(DMA_POINTER_2)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_dir()
+            .build();
+        let status_stage = RawTrbBuilder::new(FIFTH_ADDRESS)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_dir()
+            .build();
+
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .next_completion()
+            .await
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(data_stage_1)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(event_data)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(data_stage_2)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this dummy hardware request should never fail");
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FIRST_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_ne!(trb_data.trb_pointer, SECOND_ADDRESS);
+        assert_eq!(trb_data.trb_pointer, EVENT_DATA_FIELD);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, THIRD_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FOURTH_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FIFTH_ADDRESS);
+    }
+
+    #[tokio::test]
+    async fn submit_control_in_request_with_event_data_after_status_stage_trb() {
+        let (mut event_receiver, mut control_endpoint) = init_control_endpoint_handle_test();
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_bm_request_type(BM_REQUEST_TYPE_IN)
+            .with_idt()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_ch()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_dir()
+            .build();
+        let event_data = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_field(EVENT_DATA_FIELD)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_dir()
+            .build();
+
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .next_completion()
+            .await
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(event_data)
+            .expect("this dummy hardware request should never fail");
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FIRST_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_ne!(trb_data.trb_pointer, SECOND_ADDRESS);
+        assert_eq!(trb_data.trb_pointer, EVENT_DATA_FIELD);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, THIRD_ADDRESS);
+    }
+
+    // expecting to receive 0xda7a via an out request
+    #[derive(Debug)]
+    pub struct DummyRealControlEndpointExpectDataPattern {}
+    impl DummyRealControlEndpointExpectDataPattern {
+        fn new() -> Self {
+            Self {}
+        }
+    }
+
+    impl RealControlEndpointHandle for DummyRealControlEndpointExpectDataPattern {
+        type TrbCompletionFuture<'a> = Pin<
+            Box<dyn Future<Output = anyhow::Result<ControlRequestProcessingResult>> + Send + 'a>,
+        >;
+
+        fn submit_control_request(&mut self, request: UsbRequest) -> anyhow::Result<()> {
+            let Some(data) = request.data else {
+                self::panic!("expected SendEvent(Transfer(_)), got {:?}", request.data);
+            };
+
+            assert_eq!(data, 0xda7a_u64.to_le_bytes()[..2]);
+            Ok(())
+        }
+
+        fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+            Box::pin(async {
+                let result = ControlRequestProcessingResult::SuccessfulControlOut;
+                Ok(result)
+            })
+        }
+    }
+
+    impl BaseEndpointHandle for DummyRealControlEndpointExpectDataPattern {
+        type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+        fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+            // nothing we want to do
+            Box::pin(async { Ok(()) })
+        }
+
+        fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+            // nothing we want to do
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_control_out_request_with_data_stage_using_immediate_data() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::control(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = DummyRealControlEndpointExpectDataPattern::new();
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("");
+
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let event_sender = EventSender::new_with_sender(event_sender);
+
+        let mut control_endpoint = ControlEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        const DMA_POINTER: u64 = 0xeb8bda7a;
+        const TRANSFER_LENGTH: u16 = 2;
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_bm_request_type(BM_REQUEST_TYPE_OUT)
+            .with_w_length(TRANSFER_LENGTH)
+            .with_idt()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, TRT_OUT_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_field(DMA_POINTER)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_ioc()
+            .with_idt()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(data_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .next_completion()
+            .await
+            .expect("this dummy hardware request should never fail");
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FIRST_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, SECOND_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, THIRD_ADDRESS);
+    }
+
+    #[tokio::test]
+    async fn submitting_out_of_order_or_unfinished_sequence_does_not_prevent_the_following_valid_sequence_of_trb(
+    ) {
+        let (mut event_receiver, mut control_endpoint) = init_control_endpoint_handle_test();
+
+        let status_stage_out_of_order = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_dir()
+            .build();
+        let setup_stage_incomplete_sequence = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_bm_request_type(BM_REQUEST_TYPE_IN)
+            .with_idt()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let setup_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_bm_request_type(BM_REQUEST_TYPE_IN)
+            .with_idt()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_dir()
+            .build();
+
+        control_endpoint
+            .submit_trb(status_stage_out_of_order)
+            .expect("this dummy hardware request should never fail");
+
+        // To initialize a Control Transfer a Setup Stage TRB is needed. We expect
+        // this Status Stage TRB to be ignored.
+        assert!(event_receiver.is_empty());
+
+        control_endpoint
+            .submit_trb(setup_stage_incomplete_sequence)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .next_completion()
+            .await
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .next_completion()
+            .await
+            .expect("this dummy hardware request should never fail");
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this dummy hardware request should never fail");
+
+        // The incomplete sequence (the second trb; a lone setup stage) is valid
+        // and we expect an event.
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, SECOND_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, THIRD_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FOURTH_ADDRESS);
+    }
+
+    // dummy for bulk in real endpoint returning `vec![42; requested length]`
+    #[derive(Debug)]
+    struct DummyRealInEndpoint {
+        data_length: usize,
+    }
+    impl DummyRealInEndpoint {
+        fn new() -> Self {
+            Self { data_length: 0 }
+        }
+    }
+    impl RealInEndpointHandle for DummyRealInEndpoint {
+        type TrbCompletionFuture<'a> =
+            Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
+
+        fn submit(&mut self, data: usize) -> anyhow::Result<()> {
+            self.data_length = data;
+            Ok(())
+        }
+
+        fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+            Box::pin(async {
+                let data = vec![42; self.data_length];
+                let result = InTrbProcessingResult::Success(data);
+                Ok(result)
+            })
+        }
+    }
+    impl BaseEndpointHandle for DummyRealInEndpoint {
+        type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+        fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+            // nothing we want to do
+            Box::pin(async { Ok(()) })
+        }
+
+        fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+            // nothing we want to do
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_multi_trb_bulk_in_transfer_with_event_data() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = DummyRealInEndpoint::new();
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("");
+
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let event_sender = EventSender::new_with_sender(event_sender);
+
+        let mut bulk_in_endpoint = InEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        let normal_1 = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_field(DMA_POINTER_1)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x8) // remaining TD Size: 2048
+            .with_ch()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_2 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_field(DMA_POINTER_2)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x6) // remaining TD Size: 1536
+            .with_ch()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_3 = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_field(DMA_POINTER_3)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x4) // remaining TD Size: 1024
+            .with_ch()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data_1 = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_data_field(EVENT_DATA_FIELD)
+            .with_ch()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_dir()
+            .build();
+        let normal_4 = RawTrbBuilder::new(FIFTH_ADDRESS)
+            .with_data_field(DMA_POINTER_4)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x2) // remaining TD Size: 512
+            .with_ch()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data_2 = RawTrbBuilder::new(SIXTH_ADDRESS)
+            .with_data_field(EVENT_DATA_FIELD)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_dir()
+            .build();
+
+        let input_trb = vec![
+            normal_1,
+            normal_2,
+            normal_3,
+            event_data_1,
+            normal_4,
+            event_data_2,
+        ];
+
+        for trb in input_trb {
+            bulk_in_endpoint
+                .submit_trb(trb)
+                .expect("this dummy hardware request should never fail");
+            assert_eq!(
+                bulk_in_endpoint
+                    .next_completion()
+                    .await
+                    .expect("this dummy hardware request should never fail"),
+                TrbProcessingResult::Ok
+            );
+        }
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FIRST_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, SECOND_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_ne!(trb_data.trb_pointer, THIRD_ADDRESS);
+        assert_eq!(trb_data.trb_pointer, EVENT_DATA_FIELD);
+        assert_eq!(trb_data.trb_transfer_length, 1536);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FOURTH_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_ne!(trb_data.trb_pointer, FIFTH_ADDRESS);
+        assert_eq!(trb_data.trb_pointer, EVENT_DATA_FIELD);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, SIXTH_ADDRESS);
+    }
+
+    // dummy for bulk out real endpoint returning success while discarding the data
+    #[derive(Debug)]
+    struct DummyRealOutEndpoint {}
+    impl DummyRealOutEndpoint {
+        fn new() -> Self {
+            Self {}
+        }
+    }
+    impl RealOutEndpointHandle for DummyRealOutEndpoint {
+        type TrbCompletionFuture<'a> =
+            Pin<Box<dyn Future<Output = anyhow::Result<OutTrbProcessingResult>> + Send + 'a>>;
+
+        fn submit(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
+            println!("consumed data of length: {}", data.len());
+            Ok(())
+        }
+
+        fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+            Box::pin(async {
+                let result = OutTrbProcessingResult::Success;
+                Ok(result)
+            })
+        }
+    }
+    impl BaseEndpointHandle for DummyRealOutEndpoint {
+        type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+        fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+            // nothing we want to do
+            Box::pin(async { Ok(()) })
+        }
+
+        fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+            // nothing we want to do
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_multi_trb_bulk_out_transfer_with_event_data() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = DummyRealOutEndpoint::new();
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("");
+
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let event_sender = EventSender::new_with_sender(event_sender);
+
+        let mut bulk_out_endpoint = OutEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        let normal_1 = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_field(DMA_POINTER_1)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x8) // remaining TD Size: 2048
+            .with_ch()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_2 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_field(DMA_POINTER_2)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x6) // remaining TD Size: 1536
+            .with_ch()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_3 = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_field(DMA_POINTER_3)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x4) // remaining TD Size: 1024
+            .with_ch()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data_1 = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_data_field(EVENT_DATA_FIELD)
+            .with_ch()
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .build();
+        let normal_4 = RawTrbBuilder::new(FIFTH_ADDRESS)
+            .with_data_field(DMA_POINTER_4)
+            .with_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x2) // remaining TD Size: 512
+            .with_ch()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data_2 = RawTrbBuilder::new(SIXTH_ADDRESS)
+            .with_data_field(EVENT_DATA_FIELD)
+            .with_ioc()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .build();
+
+        let input_trb = vec![
+            normal_1,
+            normal_2,
+            normal_3,
+            event_data_1,
+            normal_4,
+            event_data_2,
+        ];
+
+        for trb in input_trb {
+            bulk_out_endpoint
+                .submit_trb(trb)
+                .expect("this dummy hardware request should never fail");
+            assert_eq!(
+                bulk_out_endpoint
+                    .next_completion()
+                    .await
+                    .expect("this dummy hardware request should never fail"),
+                TrbProcessingResult::Ok
+            );
+        }
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FIRST_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, SECOND_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_ne!(trb_data.trb_pointer, THIRD_ADDRESS);
+        assert_eq!(trb_data.trb_pointer, EVENT_DATA_FIELD);
+        assert_eq!(trb_data.trb_transfer_length, 1536);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, FOURTH_ADDRESS);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_ne!(trb_data.trb_pointer, FIFTH_ADDRESS);
+        assert_eq!(trb_data.trb_pointer, EVENT_DATA_FIELD);
+
+        assert!(!event_receiver.is_empty());
+        let message = event_receiver.recv().await;
+        let Some(InterrupterMessage::SendEvent(EventTrb::Transfer(trb_data))) = &message else {
+            self::panic!("expected SendEvent(Transfer(_)), got {:?}", message);
+        };
+        assert_eq!(trb_data.trb_pointer, SIXTH_ADDRESS);
+    }
+}
