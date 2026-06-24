@@ -55,7 +55,7 @@ struct EventWorker {
 }
 
 #[derive(Debug)]
-enum InterrupterMessage {
+pub enum InterrupterMessage {
     SendEvent(EventTrb),
     UpdateInterruptLine(Arc<dyn InterruptLine>),
 }
