@@ -4,7 +4,10 @@
 //! to the vfio-user [Backend Program
 //! Conventions](https://www.qemu.org/docs/master/interop/vfio-user.html#backend-program-conventions).
 use std::{
-    os::fd::RawFd,
+    os::{
+        fd::{FromRawFd, OwnedFd, RawFd},
+        unix::net::UnixListener,
+    },
     path::{Path, PathBuf},
 };
 
@@ -27,14 +30,14 @@ pub struct Cli {
     /// Provide the vfio-user socket as file descriptor.
     ///
     /// This option is mutually exclusive with --socket-path.
-    #[arg(long, conflicts_with = "socket_path")]
+    #[arg(long, value_name = "FDNUM", conflicts_with = "socket_path")]
     fd: Option<RawFd>,
 
     /// The path where to create a listening Unix domain socket.
     ///
     /// This is the path where Cloud Hypervisor will connect to
     /// usbvfiod. This option is mutually exclusive with --fd.
-    #[arg(long, required_unless_present = "fd")]
+    #[arg(long, value_name = "PATH", required_unless_present = "fd")]
     socket_path: Option<PathBuf>,
 
     /// Path to a USB device to be attached from VM boot. Can be
@@ -50,6 +53,9 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub hotplug_socket_path: Option<PathBuf>,
 
+    #[arg(long, value_name = "FDNUM", conflicts_with = "hotplug_socket_path")]
+    pub hotplug_fd: Option<RawFd>,
+
     /// Enable PCAP logging and write captured USB traffic to this file.
     /// The file will be created when the first packet is logged.
     #[arg(long, value_name = "PATH")]
@@ -64,7 +70,6 @@ pub struct Cli {
 #[derive(Debug)]
 pub enum ServerSocket<'a> {
     /// The socket is already open.
-    #[allow(dead_code)]
     Fd(RawFd),
 
     /// We need to create the socket at this path.
@@ -73,9 +78,35 @@ pub enum ServerSocket<'a> {
 
 impl Cli {
     pub fn server_socket(&self) -> ServerSocket<'_> {
-        self.socket_path.as_ref().map_or_else(
-            || unreachable!(),
-            |socket_path| ServerSocket::Path(socket_path),
+        // The clap configuration above ensures always only one of those two options is Some().
+        self.fd.map_or_else(
+            || {
+                let path = self.socket_path.as_ref().unwrap().as_path();
+                ServerSocket::Path(path)
+            },
+            ServerSocket::Fd,
+        )
+    }
+
+    pub fn hotplug_socket(&self) -> Option<UnixListener> {
+        // The clap configuration above ensures that maximum of one of the two hotplug options is used.
+        self.hotplug_fd.map_or_else(
+            || {
+                self.hotplug_socket_path.as_ref().map_or_else(
+                    || None,
+                    |path| {
+                        Some(
+                            UnixListener::bind(path.as_path())
+                                .expect("failed to use provided hotplug socket path"),
+                        )
+                    },
+                )
+            },
+            |hotplug_fd| {
+                // SAFETY: we have to assume the given fd is valid, there is not much else we can do
+                let owned_fd_hotplug: OwnedFd = unsafe { OwnedFd::from_raw_fd(hotplug_fd) };
+                Some(UnixListener::from(owned_fd_hotplug))
+            },
         )
     }
 }
