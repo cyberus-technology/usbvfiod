@@ -10,7 +10,10 @@ mod one_indexed_array;
 mod oneshot_anyhow;
 mod xhci_backend;
 
-use std::{os::unix::net::UnixListener, thread};
+use std::{
+    os::fd::{FromRawFd, OwnedFd},
+    thread,
+};
 
 use anyhow::{Context, Result};
 use async_runtime::init_runtime;
@@ -57,17 +60,20 @@ fn main() -> Result<()> {
         }
     }
 
-    let server = if let cli::ServerSocket::Path(socket_path) = args.server_socket() {
-        Server::new(socket_path, true, backend.irqs(), backend.regions())
-            .context("Failed to create vfio-user server")?
-    } else {
-        unimplemented!("Using a file descriptor as vfio-user connection is not implemented")
+    let server = match args.server_socket() {
+        cli::ServerSocket::Path(socket_path) => {
+            Server::new(socket_path, true, backend.irqs(), backend.regions())
+                .context("Failed to create vfio-user server")?
+        }
+        cli::ServerSocket::Fd(fd) => {
+            // SAFETY: we have to assume the given fd is valid, there is not much else we can do
+            let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
+            Server::from_owned_fd(owned_fd, true, backend.irqs(), backend.regions())
+        }
     };
 
-    // listen on socket for hot-attach fds
-    if let Some(hotplug_socket_path) = args.hotplug_socket_path.clone() {
+    if let Some(socket) = args.hotplug_socket() {
         let hotplug_control = backend.hotplug_control();
-        let socket = UnixListener::bind(hotplug_socket_path.as_path()).unwrap();
         thread::Builder::new()
             .name("hot-attach-socket listener".to_string())
             .spawn(move || run_hotplug_server(socket, hotplug_control, runtime.clone()))
