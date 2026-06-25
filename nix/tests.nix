@@ -170,6 +170,7 @@ let
             with vm_host.nested(f"must succeed in cloud-hypervisor: {command}"):
                 (status, out) = vm_host.execute("ssh -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 '" + command + "'", timeout=timeout)
                 if status != 0:
+                    print('\nnested.succeed() FAILED')
 
                     (guest_status, guest_out) = vm_host.execute("cat ${guestLogFile}")
                     print(f'\n<<<<<GUEST LOGS>>>>>\n\n{guest_out}\n\n<<<<<END GUEST LOGS>>>>>\n')
@@ -191,7 +192,16 @@ let
           return status == 0
 
         with vm_host.nested(f"waiting for success in cloud-hypervisor: {command}"):
-          retry(check_success, timeout)
+          try:
+            retry(check_success, timeout)
+          except Exception as e:
+            print('\nnested.wait_until_succeeds() FAILED')
+
+            print(f'\n<<<<<LATEST COMMAND OUTPUT>>>>>\n\n{output}\n\n<<<<<END LATEST COMMAND OUTPUT>>>>>\n')
+
+            (guest_status, guest_out) = vm_host.execute("cat ${guestLogFile}")
+            print(f'\n<<<<<GUEST LOGS>>>>>\n\n{guest_out}\n\n<<<<<END GUEST LOGS>>>>>\n')
+            raise Exception(f"cloud-hypervisor command failed/timed out: {command}") from e
           return(output)
 
     def search(pattern: str, string: str):
