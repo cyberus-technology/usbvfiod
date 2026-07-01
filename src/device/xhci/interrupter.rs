@@ -55,7 +55,7 @@ struct EventWorker {
 }
 
 #[derive(Debug)]
-enum InterrupterMessage {
+pub enum InterrupterMessage {
     SendEvent(EventTrb),
     UpdateInterruptLine(Arc<dyn InterruptLine>),
 }
@@ -66,6 +66,11 @@ pub struct EventSender {
 }
 
 impl EventSender {
+    #[cfg(test)]
+    pub const fn new_with_sender(sender: mpsc::UnboundedSender<InterrupterMessage>) -> Self {
+        Self { sender }
+    }
+
     pub fn send(&self, event: EventTrb) -> anyhow::Result<()> {
         let msg = InterrupterMessage::SendEvent(event);
         self.sender.send(msg).context("event channel closed")?;
