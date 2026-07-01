@@ -64,7 +64,7 @@ fn main() -> Result<()> {
     };
 
     // listen on socket for hot-attach fds
-    if let Some(hotplug_socket_path) = args.hotplug_socket_path {
+    if let Some(hotplug_socket_path) = args.hotplug_socket_path.clone() {
         let hotplug_control = backend.hotplug_control();
         let socket = UnixListener::bind(hotplug_socket_path.as_path()).unwrap();
         thread::Builder::new()
@@ -78,5 +78,12 @@ fn main() -> Result<()> {
     server
         .run(&mut backend)
         .context("Failed to start vfio-user server")?;
+
+    if let Some(hotplug_socket_path) = args.hotplug_socket_path {
+        if hotplug_socket_path.exists() {
+            let _ = std::fs::remove_file(&hotplug_socket_path);
+        }
+    }
+
     Ok(())
 }
