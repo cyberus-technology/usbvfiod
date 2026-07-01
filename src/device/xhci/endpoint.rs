@@ -191,6 +191,9 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender);
                     }
+                    EndpointMessage::Stop(completion) => {
+                        completion.send_anyhow(CompletionCode::Success)?;
+                    }
                     msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
                 },
                 WorkerState::SettingTrDequeuePointer(ptr, cs, completion) => {
