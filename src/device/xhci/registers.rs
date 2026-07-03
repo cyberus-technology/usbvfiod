@@ -159,6 +159,10 @@ impl ConfigureRegister {
         self.value.store(value, Ordering::Relaxed);
     }
 
+    pub fn reset(&self) {
+        self.value.store(0, Ordering::Relaxed);
+    }
+
     pub fn num_slots_enabled(&self) -> u8 {
         (self.read() & 0xff) as u8
     }
@@ -176,6 +180,10 @@ impl DcbaapRegister {
 
     pub fn write(&self, new_value: u64) {
         self.value.store(new_value & !0x1f, Ordering::Relaxed);
+    }
+
+    pub fn reset(&self) {
+        self.value.store(0, Ordering::Relaxed);
     }
 }
 
@@ -278,6 +286,10 @@ impl ErstbaRegister {
     pub fn write(&self, new_value: u64) {
         self.value.store(new_value, Ordering::Relaxed);
         self.notify.notify_waiters();
+    }
+
+    pub fn reset(&self) {
+        self.value.store(0, Ordering::Relaxed);
     }
 
     pub async fn write_notification(&self) {
