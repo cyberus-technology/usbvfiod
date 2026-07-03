@@ -68,6 +68,14 @@ impl EventRing {
         }
     }
 
+    pub const fn reset(&mut self) {
+        // The driver configures a fresh event ring after reset by writing ERSTBA.
+        self.enqueue_pointer = 0;
+        self.trb_count = 0;
+        self.erst_count = 0;
+        self.cycle_state = false;
+    }
+
     /// Configure the Event Ring.
     ///
     /// Call this function when the driver writes to the ERSTBA register (as
