@@ -58,6 +58,7 @@ struct EventWorker {
 enum InterrupterMessage {
     SendEvent(EventTrb),
     UpdateInterruptLine(Arc<dyn InterruptLine>),
+    Reset,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +116,19 @@ impl Interrupter {
             sender: self.msg_sender.clone(),
         }
     }
+
+    pub fn reset(&self) -> anyhow::Result<()> {
+        self.registers.interrupt_management.write(0);
+        self.registers
+            .interrupt_moderation_interval
+            .write(IMOD_DEFAULT);
+        self.registers.erst_base_address.reset();
+        self.registers.erst_size.write(0);
+        self.registers.eventring_dequeue_pointer.write(0);
+        self.msg_sender.send(InterrupterMessage::Reset)?;
+
+        Ok(())
+    }
 }
 
 impl EventWorker {
@@ -134,29 +148,41 @@ impl EventWorker {
         }
     }
 
-    // function only returns on error, but cannot use ! in Result
     async fn run_loop(&mut self) -> anyhow::Result<()> {
-        // first ERSTBA write starts the event ring.
-        // drop all events that happen before.
-        // interrupt line updates should be processed.
+        // Each ERSTBA write configures a new event ring. A host controller reset
+        // clears that configuration and sends us back to waiting for ERSTBA.
+        loop {
+            self.wait_for_event_ring_configuration().await?;
+            self.event_ring.configure(
+                self.registers.erst_base_address.erstba(),
+                self.registers.erst_size.read() as u32,
+            );
+
+            self.run_configured().await?;
+        }
+    }
+
+    // The first ERSTBA write starts the event ring. Drop events that happen
+    // before configuration, but keep processing control messages.
+    async fn wait_for_event_ring_configuration(&mut self) -> anyhow::Result<()> {
         loop {
             select! {
-                _ = self.registers.erst_base_address.write_notification() => break,
+                _ = self.registers.erst_base_address.write_notification() => return Ok(()),
                 // we cannot use self.next_msg() here because it borrows self mutable, clashing
                 // with the borrow of self.registers above
                 msg = self.msg_recv.recv() => match msg.ok_or_else(|| anyhow!("event channel closed"))? {
                     InterrupterMessage::SendEvent(_) => {}
                     InterrupterMessage::UpdateInterruptLine(interrupt_line) => self.interrupt_line = interrupt_line,
+                    InterrupterMessage::Reset => self.event_ring.reset(),
                 },
             }
         }
-        self.event_ring.configure(
-            self.registers.erst_base_address.erstba(),
-            self.registers.erst_size.read() as u32,
-        );
+    }
 
+    // Process messages while the event ring is configured. A reset clears the
+    // current configuration and returns to the outer loop to wait for ERSTBA.
+    async fn run_configured(&mut self) -> anyhow::Result<()> {
         loop {
-            // process TRB
             match self.next_msg().await? {
                 InterrupterMessage::SendEvent(event_trb) => {
                     self.event_ring.enqueue(
@@ -172,7 +198,13 @@ impl EventWorker {
                     self.interrupt_line = interrupt_line;
                     debug!("Updated interrupt line");
                 }
+                InterrupterMessage::Reset => {
+                    self.event_ring.reset();
+                    break;
+                }
             }
         }
+
+        Ok(())
     }
 }
