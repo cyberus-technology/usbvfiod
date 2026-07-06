@@ -20,6 +20,9 @@
 
     git-hooks.url = "github:cachix/git-hooks.nix";
     git-hooks.inputs.nixpkgs.follows = "nixpkgs";
+
+    hercules-ci-effects.url = "github:hercules-ci/hercules-ci-effects";
+    hercules-ci-effects.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -170,6 +173,8 @@
           );
         };
 
+        hercules-ci.github-pages.settings.contents = self.packages.usbvfiod-llvm-coverage-html;
+
         apps = {
           default = self.apps.usbvfiod;
           usbvfiod = {
@@ -193,11 +198,20 @@
           inherit (self.checks.pre-commit-check) shellHook;
         };
 
-        herculesCI = {
-          ciSystems = [
+        herculesCI = inputs.hercules-ci-effects.lib.mkHerculesCI { inherit inputs; } {
+          herculesCI.ciSystems = [
             "x86_64-linux"
             "aarch64-linux"
           ];
+          hercules-ci.github-pages.branch = "Noi0103/llvm-coverage";
+          perSystem =
+            {
+              self',
+              ...
+            }:
+            {
+              hercules-ci.github-pages.settings.contents = self'.packages.usbvfiod-llvm-coverage-html;
+            };
         };
 
         # Use `nix fmt` like you would `cargo fmt`.

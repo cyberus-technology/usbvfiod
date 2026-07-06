@@ -83,6 +83,26 @@
         "type": "github"
       }
     },
+    "flake-parts": {
+      "inputs": {
+        "nixpkgs-lib": [
+          "hercules-ci-effects",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1790898470,
+        "narHash": "sha256-zTwuwezD0w3hpga6a6P8emidzAZFyWqlNeRBlpWOOl8=",
+        "owner": "hercules-ci",
+        "repo": "flake-parts",
+        "rev": "024633cd702b10285db5cb19b40ad48d2399ba60",
+        "type": "github"
+      },
+      "original": {
+        "id": "flake-parts",
+        "type": "indirect"
+      }
+    },
     "git-hooks": {
       "inputs": {
         "flake-compat": "flake-compat",
@@ -101,6 +121,27 @@
       "original": {
         "owner": "cachix",
         "repo": "git-hooks.nix",
+        "type": "github"
+      }
+    },
+    "hercules-ci-effects": {
+      "inputs": {
+        "flake-parts": "flake-parts",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1792325769,
+        "narHash": "sha256-KFxHbC1136pwBOxdqRQzVSdY7rw+8clqcWysMLHqq88=",
+        "owner": "hercules-ci",
+        "repo": "hercules-ci-effects",
+        "rev": "9eecf40bc88648c7b5474b476a7b325fa78b5606",
+        "type": "github"
+      },
+      "original": {
+        "owner": "hercules-ci",
+        "repo": "hercules-ci-effects",
         "type": "github"
       }
     },
@@ -127,6 +168,7 @@
         "dried-nix-flakes": "dried-nix-flakes",
         "fenix": "fenix",
         "git-hooks": "git-hooks",
+        "hercules-ci-effects": "hercules-ci-effects",
         "nixpkgs": "nixpkgs"
       }
     }
