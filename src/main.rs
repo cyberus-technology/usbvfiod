@@ -33,6 +33,7 @@ fn main() -> Result<()> {
             1 => Level::DEBUG,
             _ => Level::TRACE,
         })
+        .with_ansi(!args.no_color)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber)
