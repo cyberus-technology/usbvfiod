@@ -20,6 +20,9 @@
 
     git-hooks.url = "github:cachix/git-hooks.nix";
     git-hooks.inputs.nixpkgs.follows = "nixpkgs";
+
+    hercules-ci-effects.url = "github:hercules-ci/hercules-ci-effects";
+    hercules-ci-effects.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -167,7 +170,16 @@
               inherit cargoArtifacts;
             }
           );
+          usbvfiod-llvm-coverage-html = craneLibLLvmTools.cargoLlvmCov (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoLlvmCovExtraArgs = "--html --output-dir $out";
+            }
+          );
         };
+
+        hercules-ci.github-pages.settings.contents = self.packages.usbvfiod-llvm-coverage-html;
 
         apps = {
           default = self.apps.usbvfiod;
@@ -195,11 +207,20 @@
           '';
         };
 
-        herculesCI = {
-          ciSystems = [
+        herculesCI = inputs.hercules-ci-effects.lib.mkHerculesCI { inherit inputs; } {
+          herculesCI.ciSystems = [
             "x86_64-linux"
             "aarch64-linux"
           ];
+          hercules-ci.github-pages.branch = "Noi0103/llvm-coverage";
+          perSystem =
+            {
+              self',
+              ...
+            }:
+            {
+              hercules-ci.github-pages.settings.contents = self'.packages.usbvfiod-llvm-coverage-html;
+            };
         };
 
         # Use `nix fmt` like you would `cargo fmt`.
