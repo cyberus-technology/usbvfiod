@@ -51,6 +51,18 @@ pub enum EndpointMessage {
     Terminate(oneshot::Sender<()>),
 }
 
+impl EndpointMessage {
+    fn try_get_completion_code_sender(self) -> Option<oneshot::Sender<CompletionCode>> {
+        match self {
+            Self::Doorbell => None,
+            Self::SetTrDequeuePointer(_, _, sender) => Some(sender),
+            Self::Reset(sender) => Some(sender),
+            Self::Stop(sender) => Some(sender),
+            Self::Terminate(_) => None,
+        }
+    }
+}
+
 impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
     pub fn launch(
         async_runtime: &runtime::Handle,
@@ -98,7 +110,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender);
                     }
-                    msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                    msg => self.context_state_error(msg)?,
                 },
                 WorkerState::LookForTrb => {
                     if let Some(trb) = self.transfer_ring.next_trb() {
@@ -141,7 +153,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                             completion.send_anyhow(CompletionCode::Success)?;
                         }
                         EndpointMessage::Doorbell => {}
-                        msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                        msg => self.context_state_error(msg)?,
                     }
                 },
                 WorkerState::Halted => match self.next_msg().await? {
@@ -158,13 +170,13 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                         // the Completion Code set to Context State Error.
                         completion.send_anyhow(CompletionCode::ContextStateError)?;
                     }
-                    msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                    msg => self.context_state_error(msg)?,
                 },
                 WorkerState::Error => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
                     }
-                    msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                    msg => self.context_state_error(msg)?,
                 },
                 WorkerState::StoppedWithContinuableTrb => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
@@ -178,7 +190,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender);
                     }
-                    msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                    msg => self.context_state_error(msg)?,
                 },
                 WorkerState::Stopped => match self.next_msg().await? {
                     EndpointMessage::Doorbell => {
@@ -191,7 +203,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender);
                     }
-                    msg => warn!("invalid endpoint action: {msg:?} in state {:?}", self.state),
+                    msg => self.context_state_error(msg)?,
                 },
                 WorkerState::SettingTrDequeuePointer(ptr, cs, completion) => {
                     // we might be transitioning from Error/Halted;
@@ -223,6 +235,14 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
         trace!("endpoint received: {msg:?}");
 
         Ok(msg)
+    }
+
+    fn context_state_error(&self, msg: EndpointMessage) -> anyhow::Result<()> {
+        warn!("invalid endpoint action: {msg:?} in state {:?}", self.state);
+        if let Some(sender) = msg.try_get_completion_code_sender() {
+            sender.send_anyhow(CompletionCode::ContextStateError)?;
+        }
+        Ok(())
     }
 }
 
