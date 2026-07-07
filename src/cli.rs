@@ -54,6 +54,10 @@ pub struct Cli {
     /// The file will be created when the first packet is logged.
     #[arg(long, value_name = "PATH")]
     pub pcap_path: Option<PathBuf>,
+
+    /// Do not use ANSI color codes in the output.
+    #[arg(long)]
+    pub no_color: bool,
 }
 
 /// The location of the server socket for the vfio-user client connection.
