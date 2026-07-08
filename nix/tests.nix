@@ -310,10 +310,10 @@ let
       filepath = "${imagePathPart}-${testname}-${device.udevRule.symlink}.img";
     in
     ''
-      import os
-      os.system("rm ${filepath}")
+      import subprocess
+      subprocess.run(["rm", "${filepath}"])
       print("Creating file image at ${filepath}")
-      os.system("dd bs=1  count=1 seek=${imageSize} if=/dev/zero of=${filepath}")
+      subprocess.run(["dd", "bs=1", "count=1", "seek=${imageSize}", "if=/dev/zero", "of=${filepath}"])
     '';
 
   # Decide if a virtual device needs a backing image file.
@@ -747,7 +747,7 @@ let
           }
         ];
         testScript = ''
-          import os
+          import subprocess
           import time
           import threading
 
@@ -755,10 +755,12 @@ let
           def create_input():
             for i in range(1, 4):
               time.sleep(1)
-              os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
-          {"execute": "qmp_capabilities"}
-          {"execute": "send-key", "arguments": {"keys": [ { "type": "qcode", "data": "ctrl" } ]}}
-          EOF""")
+              subprocess.run(
+                ["${pkgs.socat}/bin/socat", "-", "UNIX-CONNECT:/tmp/qmp.sock"],
+                input='{"execute":"qmp_capabilities"}\n{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"ctrl"}]}}',
+                text=True,
+                stdout=subprocess.DEVNULL
+              )
               print(f"input loop `{i}` done")
 
           # Check the Keyboard is in detected in the guest.
@@ -854,16 +856,17 @@ blockdeviceTests
       }
     ];
     testScript = ''
-      import os
-      import textwrap
+      import subprocess
 
-      os.system("dd bs=1  count=1 seek=${imageSize} if=/dev/zero of=/tmp/hotplug.img")
+      subprocess.run(["dd", "bs=1", "count=1", "seek=${imageSize}", "if=/dev/zero", "of=/tmp/hotplug.img"])
 
       # create a blockdevice
-      os.system("""${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
-      {"execute": "qmp_capabilities"}
-      {"execute": "blockdev-add", "arguments": {"driver": "file", "node-name": "hotplug", "filename": "/tmp/hotplug.img"} }
-      EOF""")
+      subprocess.run(
+        ["${pkgs.socat}/bin/socat", "-", "UNIX-CONNECT:/tmp/qmp.sock"],
+        input='{"execute":"qmp_capabilities"}\n{"execute":"blockdev-add","arguments":{"driver":"file","node-name":"hotplug","filename":"/tmp/hotplug.img"}}',
+        text=True,
+        stdout=subprocess.DEVNULL
+      )
 
       for i in range(1,20):
         print(f"ATTACH DETACH LOOP {i}")
@@ -873,11 +876,12 @@ blockdeviceTests
         search("No attached devices", out)
 
         # plug in a blockdevice
-        os.system(textwrap.dedent("""
-        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
-        {"execute": "qmp_capabilities"}
-        {"execute": "device_add", "arguments": {"driver": "usb-storage", "id": "hotplug", "bus": "${usbVersions."3".busName}.0", "drive": "hotplug", "port": "1"} }
-        EOF"""))
+        subprocess.run(
+          ["${pkgs.socat}/bin/socat", "-", "UNIX-CONNECT:/tmp/qmp.sock"],
+          input='{"execute":"qmp_capabilities"}\n{"execute":"device_add","arguments":{"driver":"usb-storage","id":"hotplug","bus":"${usbVersions."3".busName}.0","drive":"hotplug","port":"1"}}',
+          text=True,
+          stdout=subprocess.DEVNULL
+        )
 
         # wait for qemu host to find the blockdevice
         machine.wait_until_succeeds("lsusb | grep 'QEMU QEMU USB HARDDRIVE'", timeout=120)
@@ -913,11 +917,12 @@ blockdeviceTests
           cloud_hypervisor.wait_until_succeeds("lsblk /dev/sd*", timeout=120)
 
         # Plug out a blockdevice.
-        os.system(textwrap.dedent("""
-        ${pkgs.socat}/bin/socat - UNIX-CONNECT:/tmp/qmp.sock >> /dev/null <<EOF
-        {"execute": "qmp_capabilities"}
-        {"execute": "device_del", "arguments": { "id": "hotplug" } }
-        EOF"""))
+        subprocess.run(
+          ["${pkgs.socat}/bin/socat", "-", "UNIX-CONNECT:/tmp/qmp.sock"],
+          input='{"execute":"qmp_capabilities"}\n{"execute":"device_del","arguments": {"id":"hotplug"}}',
+          text=True,
+          stdout=subprocess.DEVNULL
+        )
 
         # Wait for the qemu host to realize the missing usb device.
         machine.wait_until_fails("lsusb | grep 'QEMU QEMU USB HARDDRIVE'")
