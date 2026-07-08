@@ -161,10 +161,11 @@
           default = usbvfiod;
         }
         // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
-          usbvfiod-llvm-coverage = craneLibLLvmTools.cargoLlvmCov (
+          usbvfiod-llvm-coverage-html = craneLibLLvmTools.cargoLlvmCov (
             commonArgs
             // {
               inherit cargoArtifacts;
+              cargoLlvmCovExtraArgs = "--html --output-dir $out";
             }
           );
         };
