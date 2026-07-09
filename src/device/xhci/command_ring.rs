@@ -54,6 +54,7 @@ enum WorkerMessage {
     SetDequeuePointerAndCS(u64, bool),
     Doorbell,
     Stop,
+    Reset,
 }
 
 impl CommandRing {
@@ -144,6 +145,10 @@ impl CommandRing {
         }
     }
 
+    pub fn reset(&self) -> anyhow::Result<()> {
+        self.send_to_worker(WorkerMessage::Reset)
+    }
+
     fn send_to_worker(&self, msg: WorkerMessage) -> anyhow::Result<()> {
         self.sender_to_worker.send(msg)?;
 
@@ -166,6 +171,9 @@ impl CommandWorker {
         loop {
             match &self.state {
                 WorkerState::Stopped => match self.next_msg().await? {
+                    WorkerMessage::Reset => {
+                        self.commandring_running.store(false, Ordering::Relaxed);
+                    }
                     WorkerMessage::SetDequeuePointerAndCS(dp, cs) => {
                         debug!("Updating command ring parameters: dp={dp:#x}, cs={cs}");
                         self.ring.set_dequeue_pointer(dp, cs);
@@ -183,6 +191,10 @@ impl CommandWorker {
                     msg => warn!("Unexpected message: msg={msg:?}, state={:?}", self.state),
                 },
                 WorkerState::Idle => match self.next_msg().await? {
+                    WorkerMessage::Reset => {
+                        self.commandring_running.store(false, Ordering::Relaxed);
+                        self.state = WorkerState::Stopped;
+                    }
                     WorkerMessage::Doorbell => {
                         self.state = WorkerState::LookingForNewCommand;
                     }
@@ -198,6 +210,11 @@ impl CommandWorker {
                         };
 
                         match msg {
+                            WorkerMessage::Reset => {
+                                self.commandring_running.store(false, Ordering::Relaxed);
+                                self.state = WorkerState::Stopped;
+                                break;
+                            }
                             WorkerMessage::Doorbell => {
                                 // we are already active and running, silently consume
                             }
