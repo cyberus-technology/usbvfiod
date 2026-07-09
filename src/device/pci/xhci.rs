@@ -5,13 +5,14 @@
 use std::sync::{Arc, Mutex};
 
 use tokio::runtime;
+use tracing::{error, info};
 
 use crate::device::{
     bus::{BusDeviceRef, SingleThreadedBusDevice},
     interrupt_line::InterruptLine,
     pci::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
-        constants::xhci::{offset, MAX_INTRS, RUN_BASE},
+        constants::xhci::{offset, operational::usbcmd, MAX_INTRS, RUN_BASE},
         traits::PciDevice,
     },
     xhci::{
@@ -114,7 +115,24 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
 
         match req.addr {
             // xHC Operational Registers
-            offset::USBCMD => self.usbcmd.write(value),
+            offset::USBCMD => {
+                self.usbcmd.write(value);
+                if value & usbcmd::HCRST == usbcmd::HCRST {
+                    info!("Host Controller Reset requested");
+                    self.command_ring
+                        .reset()
+                        .map_err(|err| error!("failed to reset command ring: {err}"))
+                        .ok();
+                    self.interrupter
+                        .reset()
+                        .map_err(|err| error!("failed to reset event ring: {err}"))
+                        .ok();
+                    self.slot_manager
+                        .reset()
+                        .map_err(|err| error!("failed to reset slots: {err}"))
+                        .ok();
+                }
+            }
             offset::DNCTL => assert_eq!(value, 2, "debug notifications not supported"),
             offset::CRCR => self
                 .command_ring
