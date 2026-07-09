@@ -814,12 +814,12 @@ pub struct TransferTrb {
 /// See XHCI specification Section 6.4.1 for detailed transfer TRB type descriptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferTrbVariant {
-    Normal(NormalTrbData),
-    SetupStage(SetupStageTrbData),
-    DataStage(DataStageTrbData),
-    StatusStage(StatusStageTrbData),
+    Normal(NormalTrb),
+    SetupStage(SetupStageTrb),
+    DataStage(DataStageTrb),
+    StatusStage(StatusStageTrb),
     Isoch,
-    EventData(EventDataTrbData),
+    EventData(EventDataTrb),
     NoOp,
     #[allow(unused)]
     Unrecognized(RawTrbBuffer, TrbParseError),
@@ -858,8 +858,9 @@ impl TransferTrbVariant {
 /// This struct contains only the commonly used fields from the Normal TRB.
 /// See XHCI specification Section 6.4.1.1 for the complete TRB layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NormalTrbData {
+pub struct NormalTrb {
     pub data_pointer: u64,
+    /// 17 Bit
     pub transfer_length: u32,
     pub chain: bool,
     pub interrupt_on_completion: bool,
@@ -867,7 +868,7 @@ pub struct NormalTrbData {
     pub immediate_data: bool,
 }
 
-impl TrbData for NormalTrbData {
+impl TrbData for NormalTrb {
     /// Parse data of a Normal TRB.
     ///
     /// Only `TransferTrb::try_from` should call this function.
@@ -911,16 +912,17 @@ impl TrbData for NormalTrbData {
 ///
 /// See XHCI specification Section 6.4.1.2.1 for detailed field descriptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SetupStageTrbData {
+pub struct SetupStageTrb {
     pub request_type: u8,
     pub request: u8,
     pub value: u16,
     pub index: u16,
+    /// wLength
     pub length: u16,
     pub interrupt_on_completion: bool,
 }
 
-impl TrbData for SetupStageTrbData {
+impl TrbData for SetupStageTrb {
     /// Parse data of a Setup Stage TRB.
     ///
     /// Only `TransferTrb::try_from` should call this function.
@@ -959,16 +961,17 @@ impl TrbData for SetupStageTrbData {
 ///
 /// See XHCI specification Section 6.4.1.2.2 for detailed field descriptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DataStageTrbData {
+pub struct DataStageTrb {
     pub data_pointer: u64,
-    pub transfer_length: u16,
+    /// 17 Bit
+    pub transfer_length: u32,
     pub chain: bool,
     pub interrupt_on_completion: bool,
     pub immediate_data: bool,
     pub direction: bool,
 }
 
-impl TrbData for DataStageTrbData {
+impl TrbData for DataStageTrb {
     /// Parse data of a Data Stage TRB.
     ///
     /// Only `TransferTrb::try_from` should call this function.
@@ -989,8 +992,8 @@ impl TrbData for DataStageTrbData {
         let dp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
         let data_pointer = u64::from_le_bytes(dp_bytes);
 
-        let tl_bytes: [u8; 2] = trb_bytes[8..10].try_into().unwrap();
-        let transfer_length = u16::from_le_bytes(tl_bytes);
+        let tl_bytes: [u8; 4] = [trb_bytes[8], trb_bytes[9], trb_bytes[10] & 0x01, 0];
+        let transfer_length = u32::from_le_bytes(tl_bytes);
 
         let chain = trb_bytes[12] & 0x10 != 0;
         let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
@@ -1012,13 +1015,13 @@ impl TrbData for DataStageTrbData {
 ///
 /// See XHCI specification Section 6.4.1.2.3 for detailed field descriptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusStageTrbData {
+pub struct StatusStageTrb {
     pub chain: bool,
     pub interrupt_on_completion: bool,
     pub direction: bool,
 }
 
-impl TrbData for StatusStageTrbData {
+impl TrbData for StatusStageTrb {
     /// Parse data of a Status Stage TRB.
     ///
     /// Only `TransferTrb::try_from` should call this function.
@@ -1051,13 +1054,13 @@ impl TrbData for StatusStageTrbData {
 ///
 /// See XHCI specification Section 6.4.4.2 for detailed field descriptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EventDataTrbData {
+pub struct EventDataTrb {
     pub event_data: u64,
     pub chain: bool,
     pub interrupt_on_completion: bool,
 }
 
-impl TrbData for EventDataTrbData {
+impl TrbData for EventDataTrb {
     /// Parse data of a Event Data TRB.
     ///
     /// Only `TransferTrb::try_from` should call this function.
@@ -1427,7 +1430,7 @@ mod tests {
             0x11, 0x22, 0x44, 0x33, 0x66, 0x55, 0x88, 0x77, 0x12, 0x34, 0x00, 0x00, 0x34, 0x04,
             0x00, 0x00,
         ];
-        let expected = TransferTrbVariant::Normal(NormalTrbData {
+        let expected = TransferTrbVariant::Normal(NormalTrb {
             data_pointer: 0x7788556633442211,
             transfer_length: 0x3412,
             chain: true,
@@ -1444,7 +1447,7 @@ mod tests {
             0x11, 0x22, 0x44, 0x33, 0x66, 0x55, 0x88, 0x77, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08,
             0x00, 0x00,
         ];
-        let expected = TransferTrbVariant::SetupStage(SetupStageTrbData {
+        let expected = TransferTrbVariant::SetupStage(SetupStageTrb {
             request_type: 0x11,
             request: 0x22,
             value: 0x3344,
@@ -1461,7 +1464,7 @@ mod tests {
             0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x10, 0x00, 0x00, 0x00, 0x00, 0x0c,
             0x00, 0x00,
         ];
-        let expected = TransferTrbVariant::DataStage(DataStageTrbData {
+        let expected = TransferTrbVariant::DataStage(DataStageTrb {
             data_pointer: 0x1122334455667788,
             transfer_length: 0x0010,
             chain: false,
@@ -1478,7 +1481,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x10,
             0x01, 0x00,
         ];
-        let expected = TransferTrbVariant::StatusStage(StatusStageTrbData {
+        let expected = TransferTrbVariant::StatusStage(StatusStageTrb {
             chain: true,
             interrupt_on_completion: true,
             direction: true,
@@ -1492,7 +1495,7 @@ mod tests {
             0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x10, 0x00, 0x00, 0x00, 0x30, 0x1c,
             0x00, 0x00,
         ];
-        let expected = TransferTrbVariant::EventData(EventDataTrbData {
+        let expected = TransferTrbVariant::EventData(EventDataTrb {
             event_data: 0x1122334455667788,
             chain: true,
             interrupt_on_completion: true,

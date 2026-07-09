@@ -22,7 +22,7 @@ use crate::device::{
             RealOutEndpointHandle,
         },
         trb::{
-            CompletionCode, EventDataTrbData, EventTrb, NormalTrbData, RawTrb, TransferTrb,
+            CompletionCode, EventDataTrb, EventTrb, NormalTrb, RawTrb, TransferTrb,
             TransferTrbVariant,
         },
         usbrequest::UsbRequest,
@@ -609,8 +609,8 @@ struct SupportedInEndpointTrb {
 
 #[derive(Debug)]
 enum SupportedInEndpointTrbVariant {
-    Normal(NormalTrbData),
-    EventData(EventDataTrbData),
+    Normal(NormalTrb),
+    EventData(EventDataTrb),
 }
 
 impl TryFrom<TransferTrbVariant> for SupportedInEndpointTrbVariant {
@@ -848,7 +848,7 @@ impl<'a> TdProcessingInfo<'a> {
         &mut self,
         addr: u64,
         cs: bool,
-        trb_data: NormalTrbData,
+        trb_data: NormalTrb,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         match self.state {
             TdProcessingState::Default => {
