@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use tokio::sync::Notify;
-use tracing::{info, trace, warn};
+use tracing::{trace, warn};
 
 use crate::device::{
     pci::constants::xhci::{
@@ -208,10 +208,8 @@ impl UsbcmdRegister {
     pub fn write(&self, value: u64) {
         // Currently writable bits ...
         const BITMASK_PRESERVED: u64 = usbcmd::RS | usbcmd::INTE;
-        // ... ignoring any other bits and printing a warning when attempted.
-        if value & usbcmd::HCRST == usbcmd::HCRST {
-            info!("Host Controller Reset attempted; no action");
-        }
+        // ... ignoring any other bits and printing a warning when anything but a reset is attempted.
+        // The MMIO write path handles the `HCRST` bit already.
         if value & !(BITMASK_PRESERVED | usbcmd::HCRST) != 0 {
             warn!(
                 "received at least one bit that is ignored for USBCMD: {}",
