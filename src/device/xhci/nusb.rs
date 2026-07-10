@@ -252,13 +252,20 @@ async fn control_endpoint_worker(
                     }
                 }
                 false => {
+                    let length = match u16::try_from(request.length) {
+                        Ok(length) => length,
+                        Err(_) => {
+                            warn!("Control Transfer Request size larger than the nusb provided 16bit field size (data loss).");
+                            request.length as u16
+                        }
+                    };
                     let control = ControlIn {
                         control_type,
                         recipient,
                         request: request.request,
                         value: request.value,
                         index: request.index,
-                        length: request.length,
+                        length,
                     };
                     match device
                         .control_in(control, Duration::from_millis(2000))
