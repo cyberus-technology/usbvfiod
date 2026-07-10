@@ -281,7 +281,7 @@ pub fn log_control_submission(
         meta,
         Some(control_direction),
         request.address,
-        u32::from(request.length),
+        request.length,
         Some(build_setup_bytes(request)),
         payload,
     );
