@@ -11,7 +11,7 @@ use super::super::pci::constants::xhci::rings::trb_types::{self, *};
 /// of a Transfer Request Block.
 pub type RawTrbBuffer = [u8; 16];
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTrb {
     pub address: u64,
     pub buffer: RawTrbBuffer,
@@ -856,6 +856,13 @@ impl TransferTrbVariant {
     }
 }
 
+/// All necessary information of a data source/target for DMA or immediate data.
+pub trait TrbDmaInfo {
+    fn data_pointer(&self) -> u64;
+    fn transfer_length(&self) -> u32;
+    fn has_immediate_data(&self) -> bool;
+}
+
 /// Normal TRB data structure (simplified representation).
 ///
 /// This struct contains only the commonly used fields from the Normal TRB.
@@ -908,6 +915,18 @@ impl TrbData for NormalTrb {
             interrupt_on_short,
             immediate_data,
         })
+    }
+}
+
+impl TrbDmaInfo for NormalTrb {
+    fn data_pointer(&self) -> u64 {
+        self.data_pointer
+    }
+    fn transfer_length(&self) -> u32 {
+        self.transfer_length
+    }
+    fn has_immediate_data(&self) -> bool {
+        self.immediate_data
     }
 }
 
@@ -1011,6 +1030,18 @@ impl TrbData for DataStageTrb {
             immediate_data,
             direction,
         })
+    }
+}
+
+impl TrbDmaInfo for DataStageTrb {
+    fn data_pointer(&self) -> u64 {
+        self.data_pointer
+    }
+    fn transfer_length(&self) -> u32 {
+        self.transfer_length
+    }
+    fn has_immediate_data(&self) -> bool {
+        self.immediate_data
     }
 }
 
