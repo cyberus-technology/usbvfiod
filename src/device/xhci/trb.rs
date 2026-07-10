@@ -227,7 +227,7 @@ impl TransferEventTrbData {
 ///
 /// Refer to Table 6-90 in the XHCI specification for detailed descriptions of each code.
 #[allow(dead_code)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CompletionCode {
     Invalid = 0,
     Success,
