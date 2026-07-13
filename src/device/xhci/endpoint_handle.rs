@@ -351,7 +351,7 @@ impl ControlRequestParser {
                             index: setup_trb_data.index,
                             length: setup_trb_data.length,
                             data_pointer: None,
-                            data: None,
+                            data: vec![],
                         };
                         self.request_builder = request;
                         self.state = ControlRequestParserState::SetupStageConsumed;
@@ -375,7 +375,7 @@ impl ControlRequestParser {
                             data
                         };
 
-                        self.request_builder.data = Some(data);
+                        self.request_builder.data = data;
                         self.request_builder.data_pointer = Some(data_trb_data.data_pointer);
                         self.state = ControlRequestParserState::DataStageConsumed;
                         return ControlFlow::Continue(());
