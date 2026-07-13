@@ -133,7 +133,38 @@ fn interrupt_on_completion(
     Ok(())
 }
 
-// Track how far we are with parsing the Control Transfer (chain of TRB).
+/// Track how far we are with parsing the Control Transfer (chain of TRB).
+///
+/// ```mermaid
+/// graph TD;
+///
+///     expect_setup_stage_trb((expect_setup_stage_trb))
+///     maybe_data((maybe_data))
+///     more_data((more_data))
+///     expect_status_stage_trb((expect_status_stage_trb))
+///     expect_event_data_as_final_trb((expect_event_data_as_final_trb))
+///
+///     expect_setup_stage_trb--(received setup_stage_trb)-->maybe_data
+///     expect_setup_stage_trb--(any other trb)-->expect_setup_stage_trb
+///
+///     maybe_data--(received setup_stage_trb)-->maybe_data
+///     maybe_data--(status_stage, with chain)-->expect_event_data_as_final_trb
+///     maybe_data--(status_stage, no chain or any other trb)-->expect_setup_stage_trb
+///     maybe_data--(data_stage, no chain)-->expect_status_stage_trb
+///     maybe_data--(data_stage, with chain)-->more_data
+///
+///     more_data--(received setup_stage_trb)-->maybe_data
+///     more_data--(any other trb)-->expect_setup_stage_trb
+///     more_data--(normal or event_data, with chain)-->more_data
+///     more_data--(normal or event_data, no chain)-->expect_status_stage_trb
+///
+///     expect_status_stage_trb--(received setup_stage)-->maybe_data
+///     expect_status_stage_trb--(status_stage, with chain)-->expect_event_data_as_final_trb
+///     expect_status_stage_trb--(status_stage, no chain or any other trb)-->expect_setup_stage_trb
+///
+///     expect_event_data_as_final_trb--(received setup_stage)-->maybe_data
+///     expect_event_data_as_final_trb--(event_data, no chain or any other trb)-->expect_setup_stage_trb
+/// ```
 #[derive(Debug, PartialEq, Eq)]
 pub enum ControlTransferStage {
     /// Nothing happened yet. Awaiting a Setup Stage Trb and dropping any other
