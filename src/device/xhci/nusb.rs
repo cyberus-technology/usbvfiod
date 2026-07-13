@@ -235,7 +235,7 @@ async fn control_endpoint_worker(
 
             let processing_result = match is_out_request {
                 true => {
-                    let data = request.data.unwrap_or(Vec::new());
+                    let data = request.data;
                     let control = ControlOut {
                         control_type,
                         recipient,

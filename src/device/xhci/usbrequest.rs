@@ -22,7 +22,7 @@ pub struct UsbRequest {
     pub index: u16,
     pub length: u16,
     pub data_pointer: Option<u64>,
-    pub data: Option<Vec<u8>>,
+    pub data: Vec<u8>,
 }
 
 impl UsbRequest {
@@ -37,7 +37,7 @@ impl UsbRequest {
             index: self.index,
             length: self.length,
             data_pointer: self.data_pointer,
-            data: None,
+            data: vec![],
         }
     }
 }
