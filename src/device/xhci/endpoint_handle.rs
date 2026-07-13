@@ -135,6 +135,7 @@ fn interrupt_on_completion(
     Ok(())
 }
 
+#[cfg_attr(doc, aquamarine::aquamarine)]
 /// Track how far we are with parsing the Control Transfer (chain of TRB).
 ///
 /// ```mermaid

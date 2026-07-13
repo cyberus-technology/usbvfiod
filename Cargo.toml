@@ -14,6 +14,7 @@ readme = "README.md"
 
 [dependencies]
 anyhow = { version = "1.0.97", default-features = false, features = ["std"] }
+aquamarine = "0.6.0"
 arc-swap = "1.7.1"
 clap = { version = "4.5.35", features = [
   "cargo",
