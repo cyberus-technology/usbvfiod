@@ -1150,7 +1150,10 @@ pub enum TrbParseError {
 }
 
 #[derive(Debug, Clone)]
-pub struct SupportedEndpointTrb<T> {
+pub struct SupportedEndpointTrb<T>
+where
+    T: TryFrom<TransferTrbVariant, Error = TransferTrbVariant>,
+{
     pub variant: T,
     pub addr: u64,
     pub cycle_bit: bool,
