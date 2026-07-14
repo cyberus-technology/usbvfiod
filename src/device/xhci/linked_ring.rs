@@ -116,7 +116,7 @@ impl LinkedRing {
 
 #[cfg(test)]
 mod tests {
-    use crate::device::bus::testutils::TestBusDevice;
+    use crate::device::{bus::testutils::TestBusDevice, xhci::trb::testutils::RawTrbBuilder};
     use std::sync::Arc;
 
     use super::*;
@@ -249,5 +249,61 @@ mod tests {
         expected_data[12] &= 0xfe;
 
         assert_eq!(actual_data, expected_data);
+    }
+
+    #[test]
+    fn get_and_set_dequeue_pointer_to_skip_trb() {
+        const DMA_SEGMENT_LENGTH: usize = TRB_SIZE * 5;
+
+        const FIRST_ADDRESS: u64 = 0x10;
+        const SECOND_ADDRESS: u64 = 0x20;
+        const THIRD_ADDRESS: u64 = 0x30;
+
+        const DMA_POINTER_1: u64 = 0x200;
+
+        const SETUP_WLENGTH: u16 = 512;
+        const TRANSFER_LENGTH: u32 = SETUP_WLENGTH as u32;
+
+        const TRB_TYPE_SETUP_STAGE: u8 = 0x2;
+        const TRB_TYPE_DATA_STAGE: u8 = 0x3;
+        const TRB_TYPE_STATUS_STAGE: u8 = 0x4;
+
+        const SETUP_BM_REQUEST_TYPE_IN: u8 = 0x80;
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_idt()
+            .with_ioc()
+            .with_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_field(DMA_POINTER_1)
+            .with_length(TRANSFER_LENGTH)
+            .with_ioc()
+            .with_type(TRB_TYPE_DATA_STAGE)
+            .with_dir()
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_ioc()
+            .with_type(TRB_TYPE_STATUS_STAGE)
+            .with_dir()
+            .build();
+
+        // construct memory segment for a ring that can contain 5 TRBs and an endpoint context
+        let ram = Arc::new(TestBusDevice::new(&[0; DMA_SEGMENT_LENGTH]));
+        let mut ring = LinkedRing::new(ram.clone(), FIRST_ADDRESS, false);
+
+        ram.write_bulk(FIRST_ADDRESS, &setup_stage.buffer);
+        ram.write_bulk(SECOND_ADDRESS, &data_stage.buffer);
+        ram.write_bulk(THIRD_ADDRESS, &status_stage.buffer);
+
+        assert_eq!(ring.get_dequeue_pointer(), (FIRST_ADDRESS, false));
+
+        assert_eq!(ring.next_trb(), Some(setup_stage));
+
+        // skipping data_stage
+        ring.set_dequeue_pointer(THIRD_ADDRESS, false);
+
+        assert_eq!(ring.next_trb(), Some(status_stage));
     }
 }
