@@ -170,6 +170,9 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                         // the Completion Code set to Context State Error.
                         completion.send_anyhow(CompletionCode::ContextStateError)?;
                     }
+                    EndpointMessage::Terminate(sender) => {
+                        self.state = WorkerState::Terminating(sender);
+                    }
                     msg => self.context_state_error(msg)?,
                 },
                 WorkerState::Error => match self.next_msg().await? {
