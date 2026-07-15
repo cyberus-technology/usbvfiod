@@ -413,3 +413,307 @@ impl CommandWorker {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::{runtime::Handle, sync::mpsc::UnboundedReceiver};
+
+    use crate::{
+        device::{
+            bus::{testutils::TestBusDevice, BusDevice},
+            pci::constants::xhci::{
+                operational::crcr::{self},
+                rings::trb_types,
+            },
+            xhci::{
+                interrupter::tests::testutils::MockInterrupter,
+                registers::UsbcmdRegister,
+                slot_manager::{test::testutils::MockSlotManager, SlotMessage},
+                trb::testutils::RawTrbBuilder,
+            },
+        },
+        dynamic_bus::DynamicBus,
+    };
+
+    use super::*;
+
+    // We can never set a 64 bit Dequeu Pointers lowest 6 bits:
+    // "This field defines high order bits of the initial value of the 64-bit Command Ring Dequeue Pointer."
+    const FIRST_ADDRESS: u64 = 0x10 << 6;
+    const SECOND_ADDRESS: u64 = FIRST_ADDRESS + 0x10;
+    const THIRD_ADDRESS: u64 = SECOND_ADDRESS + 0x10;
+    const FOURTH_ADDRESS: u64 = THIRD_ADDRESS + 0x10;
+
+    const SLOT_ID: u8 = 0;
+
+    /// the ring is not running
+    /// dequeue_pointer points to FIRST_ADDRESS
+    fn init_test() -> (
+        CommandRing,
+        MockInterrupter,
+        UnboundedReceiver<SlotMessage>,
+        Arc<DynamicBus>,
+        UsbcmdRegister,
+    ) {
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 16384];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .unwrap();
+        let async_runtime = Handle::current();
+
+        let (event_sender, interrupter) = MockInterrupter::new();
+
+        let (slot_manager, receiver) = MockSlotManager::new();
+
+        let usbcmd = UsbcmdRegister::new();
+
+        let command_ring = CommandRing::new(
+            dma_bus.clone(),
+            &async_runtime,
+            event_sender,
+            slot_manager.create_slot_worker_handle(),
+            usbcmd.value_reference(),
+        );
+
+        assert!(interrupter.is_empty());
+        assert!(!command_ring.running.load(Ordering::Relaxed));
+
+        // write a dequeue pointer value so the first command trb is next in line
+        command_ring.control(FIRST_ADDRESS).unwrap();
+
+        (command_ring, interrupter, receiver, dma_bus, usbcmd)
+    }
+
+    #[tokio::test]
+    async fn process_many_command_trb_with_one_doorbell() {
+        let (command_ring, mut interrupter, mut receiver, dma_bus, usbcmd) = init_test();
+
+        // place command trb on a ring segment
+        let command_1 = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_type(trb_types::NO_OP_COMMAND)
+            .build();
+        let command_2 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_type(trb_types::ENABLE_SLOT_COMMAND)
+            .build();
+        let command_3 = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_type(trb_types::DISABLE_SLOT_COMMAND)
+            .with_byte(15, SLOT_ID)
+            .build();
+        let command_4 = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_data_field(0x1 << 4)
+            .with_type(trb_types::ADDRESS_DEVICE_COMMAND)
+            .with_byte(15, SLOT_ID)
+            .build();
+
+        let commands = vec![command_1, command_2, command_3, command_4];
+
+        for command in &commands {
+            dma_bus.write_bulk(command.address, &command.buffer);
+        }
+
+        // start the ring through usbcmd and doorbell
+        usbcmd.write(usbcmd::RS);
+        command_ring.doorbell().unwrap();
+
+        // expected outcome of the command chain
+
+        // command_1
+        let event = interrupter.await_event().await.unwrap();
+        let expected_event = EventTrb::new_command_completion_event_trb(
+            FIRST_ADDRESS,
+            0,
+            CompletionCode::Success,
+            SLOT_ID,
+        );
+        assert_eq!(event, expected_event);
+
+        // command ring running can be checked here without race condition since
+        // await above acted as "wait until succeeded"
+        assert_eq!(command_ring.status(), crcr::CRR);
+
+        // command_2
+        assert!(!receiver.is_empty());
+        match receiver.recv().await.unwrap() {
+            SlotMessage::EnableSlot(sender) => {
+                sender.send(Ok(SLOT_ID)).unwrap();
+            }
+            unexpected => {
+                panic!("unexpected SlotMessage {unexpected:?}");
+            }
+        }
+        let event = interrupter.await_event().await.unwrap();
+        let expected_event = EventTrb::new_command_completion_event_trb(
+            SECOND_ADDRESS,
+            0,
+            CompletionCode::Success,
+            SLOT_ID,
+        );
+        assert_eq!(event, expected_event);
+
+        // command_3
+        assert!(!receiver.is_empty());
+        match receiver.recv().await.unwrap() {
+            SlotMessage::DisableSlot(id, sender) => {
+                assert_eq!(id, SLOT_ID);
+                sender.send(CompletionCode::Success).unwrap();
+            }
+            unexpected => {
+                panic!("unexpected SlotMessage {unexpected:?}");
+            }
+        }
+        let event = interrupter.await_event().await.unwrap();
+        let expected_event = EventTrb::new_command_completion_event_trb(
+            THIRD_ADDRESS,
+            0,
+            CompletionCode::Success,
+            SLOT_ID,
+        );
+        assert_eq!(event, expected_event);
+
+        // command_4
+        assert!(!receiver.is_empty());
+        match receiver.recv().await.unwrap() {
+            SlotMessage::AddressDevice(data, sender) => {
+                assert_eq!(data.input_context_pointer, 0x1 << 4);
+                assert!(!data.block_set_address_request);
+                assert_eq!(data.slot_id, SLOT_ID);
+                sender.send(CompletionCode::Success).unwrap();
+            }
+            unexpected => {
+                panic!("unexpected SlotMessage {unexpected:?}");
+            }
+        }
+        let event = interrupter.await_event().await.unwrap();
+        let expected_event = EventTrb::new_command_completion_event_trb(
+            FOURTH_ADDRESS,
+            0,
+            CompletionCode::Success,
+            SLOT_ID,
+        );
+        assert_eq!(event, expected_event);
+
+        assert!(interrupter.is_empty());
+        assert!(receiver.is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_to_command_stop_bit_and_restart_with_initial_dequeue_pointer_value() {
+        let (command_ring, mut interrupter, _receiver, dma_bus, usbcmd) = init_test();
+
+        let command = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_type(trb_types::NO_OP_COMMAND)
+            .build();
+
+        dma_bus.write_bulk(command.address, &command.buffer);
+
+        // start the ring through usbcmd and doorbell
+        usbcmd.write(usbcmd::RS);
+        command_ring.doorbell().unwrap();
+
+        // verify running state by waiting for the first command completion event
+        let event = interrupter.await_event().await.unwrap();
+        let expected_event = EventTrb::new_command_completion_event_trb(
+            FIRST_ADDRESS,
+            0,
+            CompletionCode::Success,
+            SLOT_ID,
+        );
+        assert_eq!(event, expected_event);
+
+        assert_eq!(command_ring.status(), crcr::CRR);
+
+        // we likely can expect idle state (without sleep(1) here) and transition to stopped
+        command_ring.control(crcr::CS).unwrap();
+        let event = interrupter.await_event().await.unwrap();
+        let expected_event = EventTrb::new_command_completion_event_trb(
+            SECOND_ADDRESS,
+            0,
+            CompletionCode::CommandRingStopped,
+            SLOT_ID,
+        );
+        assert_eq!(event, expected_event);
+
+        // check it is stopped
+        assert_eq!(command_ring.status() & crcr::CRR, 0);
+
+        // write a dequeue pointer value so the first command trb is next in line
+        command_ring.control(FIRST_ADDRESS).unwrap();
+
+        // restart
+        command_ring.doorbell().unwrap();
+
+        // verify running state by waiting for the first command completion event
+        let event = interrupter.await_event().await.unwrap();
+        let expected_event = EventTrb::new_command_completion_event_trb(
+            FIRST_ADDRESS,
+            0,
+            CompletionCode::Success,
+            SLOT_ID,
+        );
+        assert_eq!(event, expected_event);
+
+        assert_eq!(command_ring.status(), crcr::CRR);
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_to_command_abort_bit() {
+        let (command_ring, mut interrupter, _receiver, dma_bus, usbcmd) = init_test();
+
+        let command = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_type(trb_types::NO_OP_COMMAND)
+            .build();
+
+        dma_bus.write_bulk(command.address, &command.buffer);
+        dma_bus.write_bulk(SECOND_ADDRESS, &command.buffer);
+        dma_bus.write_bulk(THIRD_ADDRESS, &command.buffer);
+        dma_bus.write_bulk(FOURTH_ADDRESS, &command.buffer);
+
+        // start the ring through usbcmd and doorbell
+        usbcmd.write(usbcmd::RS);
+        command_ring.doorbell().unwrap();
+
+        // verify running state by waiting for the first command completion event
+        let event = interrupter.await_event().await.unwrap();
+        let expected_event = EventTrb::new_command_completion_event_trb(
+            FIRST_ADDRESS,
+            0,
+            CompletionCode::Success,
+            SLOT_ID,
+        );
+        assert_eq!(event, expected_event);
+
+        assert_eq!(command_ring.status(), crcr::CRR);
+
+        // abort ring operations
+        //
+        // As time of writing I have not found a surefire way to stop in between
+        // the No Op Command TRB's. So we can not be sure if we are still processing
+        // or are already done and switched to idle.
+        command_ring.control(crcr::CA).unwrap();
+        loop {
+            let event = interrupter.await_event().await.unwrap();
+            debug!("{:?}", event);
+            match event {
+                EventTrb::CommandCompletion(event_trb) => match event_trb.get_completion_code() {
+                    CompletionCode::Success => {
+                        assert_eq!(command_ring.status() & crcr::CRR, crcr::CRR);
+                    }
+                    CompletionCode::CommandRingStopped => {
+                        assert_eq!(command_ring.status() & crcr::CRR, 0);
+                        break;
+                    }
+                    unexpected => {
+                        panic!("unexpected completion code in event trb: {unexpected:?}");
+                    }
+                },
+                unexpected => {
+                    panic!("unexpected event trb: {unexpected:?}");
+                }
+            }
+        }
+
+        assert!(interrupter.is_empty());
+    }
+}

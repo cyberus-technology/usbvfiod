@@ -126,6 +126,11 @@ impl CommandCompletionEventTrbData {
 
         trb
     }
+
+    #[cfg(test)]
+    pub const fn get_completion_code(&self) -> CompletionCode {
+        self.completion_code
+    }
 }
 
 /// Stores the relevant data for a Port Status Change Event.
@@ -378,11 +383,12 @@ impl CommandTrbVariant {
     /// While this function can parse all available Command TRB types, it does
     /// not parse all of them in full detail. If the function returns only the
     /// enum variant without an associated struct, the parsing for the
-    /// particular command is not yet implemented. EnableSlotCommand is an
-    /// exception, because the TRB does not contain any additional information.
+    /// particular command is not yet implemented. NoOpCommand and EnableSlotCommand
+    /// are exceptions, because the TRB does not contain any additional information.
     pub fn parse(bytes: RawTrbBuffer) -> Self {
         let trb_type = bytes[13] >> 2;
         match trb_type {
+            trb_types::NO_OP_COMMAND => Self::NoOp,
             // EnableSlotCommand does not contain information apart from the
             // type; thus, no further parsing is necessary and we can just
             // return the enum variant.
@@ -421,7 +427,6 @@ impl CommandTrbVariant {
                 ),
             ),
             trb_types::FORCE_HEADER_COMMAND => Self::ForceHeader,
-            trb_types::NO_OP_COMMAND => Self::NoOp,
             trb_type => Self::Unrecognized(bytes, TrbParseError::UnknownTrbType(trb_type)),
         }
     }
