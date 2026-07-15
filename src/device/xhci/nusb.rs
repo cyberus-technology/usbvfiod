@@ -428,7 +428,9 @@ impl<EpType: BulkOrInterrupt, Dir: EndpointDirection> BaseEndpointHandle
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async {
-            self.endpoint().clear_halt().await?;
+            if let Err(error) = self.endpoint().clear_halt().await {
+                warn!("clear_halt failed on non-control endpoint: {error}");
+            }
             Ok(())
         })
     }
