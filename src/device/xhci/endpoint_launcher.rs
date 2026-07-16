@@ -13,7 +13,7 @@ use crate::{
         xhci::{
             endpoint::{EndpointSender, EndpointWorker},
             endpoint_handle::{
-                ControlEndpointHandle, EndpointHandle, InEndpointHandle, OutEndpointHandle,
+                ControlEndpointHandle, EndpointHandle, OutEndpointHandle, TdBasedInEndpointHandle,
             },
             hotplug_endpoint_handle::HotplugEndpointHandleImpl,
             interrupter::EventSender,
@@ -163,7 +163,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                             .realdevice_ref()
                             .bulk_in_endpoint_handle(request.endpoint_id);
                         self.launch_helper(
-                            InEndpointHandle::new,
+                            TdBasedInEndpointHandle::new,
                             launch_args,
                             pcap_meta,
                             real_endpoint,
@@ -195,7 +195,7 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                             .realdevice_ref()
                             .interrupt_in_endpoint_handle(request.endpoint_id);
                         self.launch_helper(
-                            InEndpointHandle::new,
+                            TdBasedInEndpointHandle::new,
                             launch_args,
                             pcap_meta,
                             real_endpoint,
