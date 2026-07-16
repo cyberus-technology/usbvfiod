@@ -9,8 +9,9 @@ use crate::device::{
         hotplug_endpoint_handle::BaseEndpointHandle,
         interrupter::EventSender,
         real_endpoint_handle::{
-            ControlRequestProcessingResult, InTrbProcessingResult, OutTrbProcessingResult,
-            RealControlEndpointHandle, RealInEndpointHandle, RealOutEndpointHandle,
+            ControlRequestProcessingResult, InTrbProcessingResult, InTrbProcessingStatus,
+            OutTrbProcessingResult, RealControlEndpointHandle, RealInEndpointHandle,
+            RealOutEndpointHandle,
         },
         trb::{CompletionCode, EventTrb, RawTrb, TransferTrb, TransferTrbVariant},
         usbrequest::UsbRequest,
@@ -643,42 +644,40 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for InEndpointHandle<RIEH> {
                     TrbProcessingResult::TrbError
                 }
                 NormalSubmissionState::AwaitingRealTransfer(ref transfer_trb) => {
-                    let (completion_code, processing_result) = match self
-                        .real_ep
-                        .next_completion()
-                        .await?
-                    {
-                        InTrbProcessingResult::Disconnect => {
+                    let InTrbProcessingResult { status, data } =
+                        self.real_ep.next_completion().await?;
+                    let (completion_code, processing_result) = match status {
+                        InTrbProcessingStatus::Disconnect => {
                             pcap::in_error(
                                 self.pcap_meta,
                                 transfer_trb.address,
-                                &InTrbProcessingResult::Disconnect,
+                                &InTrbProcessingStatus::Disconnect,
                             );
                             (
                                 Some(CompletionCode::UsbTransactionError),
                                 TrbProcessingResult::Disconnect,
                             )
                         }
-                        InTrbProcessingResult::Stall => {
+                        InTrbProcessingStatus::Stall => {
                             pcap::in_error(
                                 self.pcap_meta,
                                 transfer_trb.address,
-                                &InTrbProcessingResult::Stall,
+                                &InTrbProcessingStatus::Stall,
                             );
                             (Some(CompletionCode::StallError), TrbProcessingResult::Stall)
                         }
-                        InTrbProcessingResult::TransactionError => {
+                        InTrbProcessingStatus::TransactionError => {
                             pcap::in_error(
                                 self.pcap_meta,
                                 transfer_trb.address,
-                                &InTrbProcessingResult::TransactionError,
+                                &InTrbProcessingStatus::TransactionError,
                             );
                             (
                                 Some(CompletionCode::UsbTransactionError),
                                 TrbProcessingResult::TransactionError,
                             )
                         }
-                        InTrbProcessingResult::Success(data) => {
+                        InTrbProcessingStatus::Success => {
                             pcap::in_completion(self.pcap_meta, transfer_trb.address, &data);
                             let completion_code = if let TransferTrbVariant::Normal(
                                 ref normal_data,
