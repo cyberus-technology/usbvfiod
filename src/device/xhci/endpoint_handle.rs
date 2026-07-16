@@ -36,12 +36,20 @@ pub trait EndpointHandle: BaseEndpointHandle {
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
 }
 
+/// Possible result cases for processing of a TRB.
+///
+/// Stall and TransactionError carry an Option to support TD-aggregation-based approaches.
+/// - None indicates that the stall/error happened on the current TRB; the endpoint state machine
+///   then reports the current dequeue pointer through the endpoint context.
+/// - Some((addr, cs)) indicates that the stall/error happened on an earlier TRB but we notice it only
+///   now because we aggregated all TRBs of a TD before talking to the real device; the endpoint
+///   state machine should wind the dequeue pointer (and associated cycle state) back to this TRB.
 #[derive(Debug, Clone, Copy)]
 pub enum TrbProcessingResult {
     Ok,
-    Stall,
+    Stall(Option<(u64, bool)>),
     TrbError,
-    TransactionError,
+    TransactionError(Option<(u64, bool)>),
     Disconnect,
 }
 
@@ -278,7 +286,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     self.slot_id,
                 );
                 self.event_sender.send(event)?;
-                TrbProcessingResult::Stall
+                TrbProcessingResult::Stall(None)
             }
             ControlRequestProcessingResult::TransactionError => {
                 let event = EventTrb::new_transfer_event_trb(
@@ -290,7 +298,7 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     self.slot_id,
                 );
                 self.event_sender.send(event)?;
-                TrbProcessingResult::TransactionError
+                TrbProcessingResult::TransactionError(None)
             }
             ControlRequestProcessingResult::SuccessfulControlIn(_) => {
                 panic!("SuccessfulControlIn should be handled elsewhere")
@@ -505,7 +513,10 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                                     &OutTrbProcessingResult::Stall,
                                     &[],
                                 );
-                                (Some(CompletionCode::StallError), TrbProcessingResult::Stall)
+                                (
+                                    Some(CompletionCode::StallError),
+                                    TrbProcessingResult::Stall(None),
+                                )
                             }
                             OutTrbProcessingResult::TransactionError => {
                                 pcap::out_error(
@@ -516,7 +527,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                                 );
                                 (
                                     Some(CompletionCode::UsbTransactionError),
-                                    TrbProcessingResult::TransactionError,
+                                    TrbProcessingResult::TransactionError(None),
                                 )
                             }
                             OutTrbProcessingResult::Success => {
@@ -849,11 +860,11 @@ impl<'a> TdProcessingInfo<'a> {
                                     TrbProcessingResult::Disconnect,
                                 ),
                                 InTrbProcessingStatus::Stall => {
-                                    (CompletionCode::StallError, TrbProcessingResult::Stall)
+                                    (CompletionCode::StallError, TrbProcessingResult::Stall(None))
                                 }
                                 InTrbProcessingStatus::TransactionError => (
                                     CompletionCode::UsbTransactionError,
-                                    TrbProcessingResult::TransactionError,
+                                    TrbProcessingResult::TransactionError(None),
                                 ),
                                 InTrbProcessingStatus::Success => {
                                     unreachable!("handled by outer match")
