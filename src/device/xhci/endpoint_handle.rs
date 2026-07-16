@@ -622,8 +622,8 @@ impl SupportedTrbsOnInEndpoint {
 
 #[derive(Debug)]
 enum TdBasedNormalSubmissionState {
-    CollectingTd(Vec<(u64, SupportedTrbsOnInEndpoint)>),
-    AwaitingRealTransfer(Vec<(u64, SupportedTrbsOnInEndpoint)>),
+    CollectingTd(Vec<(u64, bool, SupportedTrbsOnInEndpoint)>),
+    AwaitingRealTransfer(Vec<(u64, bool, SupportedTrbsOnInEndpoint)>),
     UnsupportedTrb,
 }
 
@@ -692,11 +692,12 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
             }
         };
         let end_of_td = !supported_trb.chain();
-        trbs.push((trb.address, supported_trb));
+        let cycle_bit = trb.buffer[12] & 0x1 != 0;
+        trbs.push((trb.address, cycle_bit, supported_trb));
         if end_of_td {
             let td_request_length = trbs
                 .iter()
-                .map(|(_, data)| data)
+                .map(|(_, _, data)| data)
                 .map(SupportedTrbsOnInEndpoint::transfer_length)
                 .sum::<usize>();
             debug!("Submitting real request for {td_request_length} bytes");
@@ -743,7 +744,7 @@ fn process_real_transfer_response(
     endpoint_id: u8,
     slot_id: u8,
     completion: InTrbProcessingResult,
-    trbs: Vec<(u64, SupportedTrbsOnInEndpoint)>,
+    trbs: Vec<(u64, bool, SupportedTrbsOnInEndpoint)>,
     event_sender: &EventSender,
     dma_bus: &BusDeviceRef,
     pcap_meta: EndpointPcapMeta,
@@ -764,8 +765,8 @@ fn process_real_transfer_response(
         slot_id,
     };
 
-    for (addr, trb_data) in trbs {
-        if let Some(early_return_result) = td_info.process_trb(addr, trb_data)? {
+    for (addr, cs, trb_data) in trbs {
+        if let Some(early_return_result) = td_info.process_trb(addr, cs, trb_data)? {
             return Ok(early_return_result);
         }
     }
@@ -805,11 +806,14 @@ impl<'a> TdProcessingInfo<'a> {
     fn process_trb(
         &mut self,
         address: u64,
+        cycle_state: bool,
         trb_data: SupportedTrbsOnInEndpoint,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         // assumption: Only normal TRBs
         match trb_data {
-            SupportedTrbsOnInEndpoint::Normal(data) => self.process_normal_trb(address, data),
+            SupportedTrbsOnInEndpoint::Normal(data) => {
+                self.process_normal_trb(address, cycle_state, data)
+            }
             SupportedTrbsOnInEndpoint::EventData(_data) => todo!(),
         }
     }
@@ -817,6 +821,7 @@ impl<'a> TdProcessingInfo<'a> {
     fn process_normal_trb(
         &mut self,
         addr: u64,
+        cs: bool,
         trb_data: NormalTrbData,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         match self.state {
@@ -859,12 +864,13 @@ impl<'a> TdProcessingInfo<'a> {
                                     CompletionCode::UsbTransactionError,
                                     TrbProcessingResult::Disconnect,
                                 ),
-                                InTrbProcessingStatus::Stall => {
-                                    (CompletionCode::StallError, TrbProcessingResult::Stall(None))
-                                }
+                                InTrbProcessingStatus::Stall => (
+                                    CompletionCode::StallError,
+                                    TrbProcessingResult::Stall(Some((addr, cs))),
+                                ),
                                 InTrbProcessingStatus::TransactionError => (
                                     CompletionCode::UsbTransactionError,
-                                    TrbProcessingResult::TransactionError(None),
+                                    TrbProcessingResult::TransactionError(Some((addr, cs))),
                                 ),
                                 InTrbProcessingStatus::Success => {
                                     unreachable!("handled by outer match")
