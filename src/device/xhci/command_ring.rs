@@ -8,7 +8,10 @@ use std::sync::{
 use anyhow::anyhow;
 use tokio::{
     runtime,
-    sync::mpsc::{self, error::TryRecvError},
+    sync::{
+        mpsc::{self, error::TryRecvError},
+        oneshot,
+    },
 };
 use tracing::{debug, info, trace, warn};
 
@@ -16,6 +19,7 @@ use crate::device::{
     bus::BusDeviceRef,
     pci::constants::xhci::operational::{crcr, usbcmd},
     xhci::{
+        controller_reset::ResetSender,
         interrupter::EventSender,
         linked_ring::LinkedRing,
         slot_manager::SlotWorkerHandle,
@@ -27,6 +31,20 @@ use crate::device::{
 pub struct CommandRing {
     running: Arc<AtomicBool>,
     sender_to_worker: mpsc::UnboundedSender<WorkerMessage>,
+}
+
+#[derive(Debug)]
+pub struct CommandRingResetSender {
+    sender_to_worker: mpsc::UnboundedSender<WorkerMessage>,
+}
+
+impl ResetSender for CommandRingResetSender {
+    fn send_reset(&self, completion_notifier: oneshot::Sender<()>) -> anyhow::Result<()> {
+        self.sender_to_worker
+            .send(WorkerMessage::Reset(completion_notifier))?;
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -54,7 +72,7 @@ enum WorkerMessage {
     SetDequeuePointerAndCS(u64, bool),
     Doorbell,
     Stop,
-    Reset,
+    Reset(oneshot::Sender<()>),
 }
 
 impl CommandRing {
@@ -145,8 +163,10 @@ impl CommandRing {
         }
     }
 
-    pub fn reset(&self) -> anyhow::Result<()> {
-        self.send_to_worker(WorkerMessage::Reset)
+    pub fn reset_sender(&self) -> CommandRingResetSender {
+        CommandRingResetSender {
+            sender_to_worker: self.sender_to_worker.clone(),
+        }
     }
 
     fn send_to_worker(&self, msg: WorkerMessage) -> anyhow::Result<()> {
@@ -171,8 +191,9 @@ impl CommandWorker {
         loop {
             match &self.state {
                 WorkerState::Stopped => match self.next_msg().await? {
-                    WorkerMessage::Reset => {
+                    WorkerMessage::Reset(completion) => {
                         self.commandring_running.store(false, Ordering::Relaxed);
+                        completion.send(()).ok();
                     }
                     WorkerMessage::SetDequeuePointerAndCS(dp, cs) => {
                         debug!("Updating command ring parameters: dp={dp:#x}, cs={cs}");
@@ -191,9 +212,10 @@ impl CommandWorker {
                     msg => warn!("Unexpected message: msg={msg:?}, state={:?}", self.state),
                 },
                 WorkerState::Idle => match self.next_msg().await? {
-                    WorkerMessage::Reset => {
+                    WorkerMessage::Reset(completion) => {
                         self.commandring_running.store(false, Ordering::Relaxed);
                         self.state = WorkerState::Stopped;
+                        completion.send(()).ok();
                     }
                     WorkerMessage::Doorbell => {
                         self.state = WorkerState::LookingForNewCommand;
@@ -210,9 +232,10 @@ impl CommandWorker {
                         };
 
                         match msg {
-                            WorkerMessage::Reset => {
+                            WorkerMessage::Reset(completion) => {
                                 self.commandring_running.store(false, Ordering::Relaxed);
                                 self.state = WorkerState::Stopped;
+                                completion.send(()).ok();
                                 break;
                             }
                             WorkerMessage::Doorbell => {

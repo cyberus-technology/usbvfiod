@@ -5,17 +5,17 @@
 use std::sync::{Arc, Mutex};
 
 use tokio::runtime;
-use tracing::{error, info};
 
 use crate::device::{
     bus::{BusDeviceRef, SingleThreadedBusDevice},
     interrupt_line::InterruptLine,
     pci::{
         config_space::{ConfigSpace, ConfigSpaceBuilder},
-        constants::xhci::{offset, operational::usbcmd, MAX_INTRS, RUN_BASE},
+        constants::xhci::{offset, MAX_INTRS, RUN_BASE},
         traits::PciDevice,
     },
     xhci::{
+        controller_reset::ResetCoordinator,
         endpoint_launcher::EndpointLauncher,
         port::{get_portli_id, get_portpmsc_id, get_portsc_id, HotplugControl, PortArray},
         real_device::CompleteRealDevice,
@@ -60,6 +60,15 @@ impl<CRD: CompleteRealDevice> XhciController<CRD> {
             interrupter.create_event_sender(),
             slot_manager.create_slot_worker_handle(),
             usbcmd.value_reference(),
+        );
+        ResetCoordinator::start(
+            usbcmd.clone(),
+            [
+                Box::new(command_ring.reset_sender()),
+                Box::new(interrupter.reset_sender()),
+                Box::new(slot_manager.reset_sender()),
+            ],
+            &async_runtime,
         );
 
         Self {
@@ -115,24 +124,7 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
 
         match req.addr {
             // xHC Operational Registers
-            offset::USBCMD => {
-                self.usbcmd.write(value);
-                if value & usbcmd::HCRST == usbcmd::HCRST {
-                    info!("Host Controller Reset requested");
-                    self.command_ring
-                        .reset()
-                        .map_err(|err| error!("failed to reset command ring: {err}"))
-                        .ok();
-                    self.interrupter
-                        .reset()
-                        .map_err(|err| error!("failed to reset event ring: {err}"))
-                        .ok();
-                    self.slot_manager
-                        .reset()
-                        .map_err(|err| error!("failed to reset slots: {err}"))
-                        .ok();
-                }
-            }
+            offset::USBCMD => self.usbcmd.write(value),
             offset::DNCTL => assert_eq!(value, 2, "debug notifications not supported"),
             offset::CRCR => self
                 .command_ring

@@ -1,14 +1,16 @@
 use anyhow::{anyhow, Context};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::{runtime, select};
 use tracing::{debug, info};
 
 use crate::device::bus::BusDeviceRef;
 use crate::device::interrupt_line::{DummyInterruptLine, InterruptLine};
 use crate::device::pci::constants::xhci::runtime::IMOD_DEFAULT;
+use crate::device::xhci::controller_reset::ResetSender;
 use crate::device::xhci::event_ring::EventRing;
 use crate::device::xhci::registers::{ErstbaRegister, GenericRwRegister};
 use crate::device::xhci::trb::EventTrb;
+use crate::oneshot_anyhow::SendWithAnyhowError;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -16,6 +18,20 @@ pub struct Interrupter {
     pub registers: InterrupterRegisters,
     /// Transmits events to send to the worker
     msg_sender: mpsc::UnboundedSender<InterrupterMessage>,
+}
+
+#[derive(Debug)]
+pub struct InterrupterResetSender {
+    msg_sender: mpsc::UnboundedSender<InterrupterMessage>,
+}
+
+impl ResetSender for InterrupterResetSender {
+    fn send_reset(&self, completion_notifier: oneshot::Sender<()>) -> anyhow::Result<()> {
+        self.msg_sender
+            .send(InterrupterMessage::Reset(completion_notifier))?;
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -58,7 +74,7 @@ struct EventWorker {
 enum InterrupterMessage {
     SendEvent(EventTrb),
     UpdateInterruptLine(Arc<dyn InterruptLine>),
-    Reset,
+    Reset(oneshot::Sender<()>),
 }
 
 #[derive(Debug, Clone)]
@@ -117,17 +133,10 @@ impl Interrupter {
         }
     }
 
-    pub fn reset(&self) -> anyhow::Result<()> {
-        self.registers.interrupt_management.write(0);
-        self.registers
-            .interrupt_moderation_interval
-            .write(IMOD_DEFAULT);
-        self.registers.erst_base_address.reset();
-        self.registers.erst_size.write(0);
-        self.registers.eventring_dequeue_pointer.write(0);
-        self.msg_sender.send(InterrupterMessage::Reset)?;
-
-        Ok(())
+    pub fn reset_sender(&self) -> InterrupterResetSender {
+        InterrupterResetSender {
+            msg_sender: self.msg_sender.clone(),
+        }
     }
 }
 
@@ -173,7 +182,10 @@ impl EventWorker {
                 msg = self.msg_recv.recv() => match msg.ok_or_else(|| anyhow!("event channel closed"))? {
                     InterrupterMessage::SendEvent(_) => {}
                     InterrupterMessage::UpdateInterruptLine(interrupt_line) => self.interrupt_line = interrupt_line,
-                    InterrupterMessage::Reset => self.event_ring.reset(),
+                    InterrupterMessage::Reset(completion) => {
+                        self.reset();
+                        completion.send_anyhow(())?;
+                    }
                 },
             }
         }
@@ -198,13 +210,25 @@ impl EventWorker {
                     self.interrupt_line = interrupt_line;
                     debug!("Updated interrupt line");
                 }
-                InterrupterMessage::Reset => {
-                    self.event_ring.reset();
+                InterrupterMessage::Reset(completion) => {
+                    self.reset();
+                    completion.send_anyhow(())?;
                     break;
                 }
             }
         }
 
         Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.registers.interrupt_management.write(0);
+        self.registers
+            .interrupt_moderation_interval
+            .write(IMOD_DEFAULT);
+        self.registers.erst_base_address.reset();
+        self.registers.erst_size.write(0);
+        self.registers.eventring_dequeue_pointer.write(0);
+        self.event_ring.reset();
     }
 }

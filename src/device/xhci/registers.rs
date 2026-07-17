@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use tokio::sync::Notify;
-use tracing::{trace, warn};
+use tracing::{info, trace, warn};
 
 use crate::device::{
     pci::constants::xhci::{
@@ -188,15 +188,17 @@ impl DcbaapRegister {
 }
 
 /// USB Command Register (chapter 5.4.1)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UsbcmdRegister {
     value: Arc<AtomicU32>,
+    reset_notify: Arc<Notify>,
 }
 
 impl UsbcmdRegister {
     pub fn new() -> Self {
         Self {
             value: Arc::new(AtomicU32::new(0)),
+            reset_notify: Default::default(),
         }
     }
 
@@ -206,25 +208,41 @@ impl UsbcmdRegister {
 
     /// A simple write with a very limited list of allowed bits (RsvdP is also not written).
     pub fn write(&self, value: u64) {
-        // Currently writable bits ...
-        const BITMASK_PRESERVED: u64 = usbcmd::RS | usbcmd::INTE;
-        // ... ignoring any other bits and printing a warning when anything but a reset is attempted.
-        // The MMIO write path handles the `HCRST` bit already.
-        if value & !(BITMASK_PRESERVED | usbcmd::HCRST) != 0 {
+        // Currently writable bits, ignoring any other bits and printing a warning.
+        const BITMASK_PRESERVED: u64 = usbcmd::RS | usbcmd::INTE | usbcmd::HCRST;
+        if value & !BITMASK_PRESERVED != 0 {
             warn!(
                 "received at least one bit that is ignored for USBCMD: {}",
                 value & !BITMASK_PRESERVED
             );
         }
 
-        let value = value & BITMASK_PRESERVED;
-        // SAFETY: USBCMD is defined as 32 bit and the masks used above enforce it.
+        // Preserve an ongoing reset until the reset coordinator clears HCRST.
         self.value
-            .store(value.try_into().unwrap(), Ordering::Relaxed);
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                let hcrst = current as u64 & usbcmd::HCRST;
+                let value = (value & BITMASK_PRESERVED) | hcrst;
+                // SAFETY: USBCMD is defined as 32 bit and the masks used above enforce it.
+                Some(value.try_into().unwrap())
+            })
+            .unwrap();
+        if value & usbcmd::HCRST == usbcmd::HCRST {
+            info!("Host Controller Reset requested");
+            self.reset_notify.notify_waiters();
+        }
     }
 
     pub fn value_reference(&self) -> Arc<AtomicU32> {
         self.value.clone()
+    }
+
+    pub async fn hcrst_notification(&self) {
+        self.reset_notify.notified().await;
+    }
+
+    pub fn clear_hcrst(&self) {
+        self.value
+            .fetch_and(!(usbcmd::HCRST as u32), Ordering::Relaxed);
     }
 }
 
