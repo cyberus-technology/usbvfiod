@@ -587,12 +587,19 @@ impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for OutEndpointHandle<ROEH>
 }
 
 #[derive(Debug)]
-enum SupportedTrbsOnInEndpoint {
+struct SupportedInEndpointTrb {
+    variant: SupportedInEndpointTrbVariant,
+    addr: u64,
+    cycle_bit: bool,
+}
+
+#[derive(Debug)]
+enum SupportedInEndpointTrbVariant {
     Normal(NormalTrbData),
     EventData(EventDataTrbData),
 }
 
-impl TryFrom<TransferTrbVariant> for SupportedTrbsOnInEndpoint {
+impl TryFrom<TransferTrbVariant> for SupportedInEndpointTrbVariant {
     type Error = TransferTrbVariant;
 
     fn try_from(value: TransferTrbVariant) -> Result<Self, Self::Error> {
@@ -604,26 +611,28 @@ impl TryFrom<TransferTrbVariant> for SupportedTrbsOnInEndpoint {
     }
 }
 
-impl SupportedTrbsOnInEndpoint {
+impl SupportedInEndpointTrb {
     const fn chain(&self) -> bool {
-        match self {
-            Self::Normal(normal_trb_data) => normal_trb_data.chain,
-            Self::EventData(event_data_trb_data) => event_data_trb_data.chain,
+        match &self.variant {
+            SupportedInEndpointTrbVariant::Normal(normal_trb_data) => normal_trb_data.chain,
+            SupportedInEndpointTrbVariant::EventData(event_data_trb_data) => {
+                event_data_trb_data.chain
+            }
         }
     }
 
     const fn transfer_length(&self) -> usize {
-        match self {
-            Self::Normal(data) => data.transfer_length as usize,
-            Self::EventData(_) => 0,
+        match &self.variant {
+            SupportedInEndpointTrbVariant::Normal(data) => data.transfer_length as usize,
+            SupportedInEndpointTrbVariant::EventData(_) => 0,
         }
     }
 }
 
 #[derive(Debug)]
 enum TdBasedNormalSubmissionState {
-    CollectingTd(Vec<(u64, bool, SupportedTrbsOnInEndpoint)>),
-    AwaitingRealTransfer(Vec<(u64, bool, SupportedTrbsOnInEndpoint)>),
+    CollectingTd(Vec<SupportedInEndpointTrb>),
+    AwaitingRealTransfer(Vec<SupportedInEndpointTrb>),
     UnsupportedTrb,
 }
 
@@ -679,26 +688,31 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
             }
         };
 
-        let transfer_trb = TransferTrbVariant::parse(trb.buffer);
-        let supported_trb = match SupportedTrbsOnInEndpoint::try_from(transfer_trb) {
-            Ok(supported_trb) => supported_trb,
-            Err(transfer_trb) => {
-                warn!(
+        let transfer_trb_variant = TransferTrbVariant::parse(trb.buffer);
+        let supported_trb_variant =
+            match SupportedInEndpointTrbVariant::try_from(transfer_trb_variant) {
+                Ok(supported_trb) => supported_trb,
+                Err(transfer_trb) => {
+                    warn!(
                     "Encountered unsupported TRB on In Endpoint (slot {}, ep {}): {transfer_trb:?}",
                     self.slot_id, self.endpoint_id
                 );
-                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
-                return Ok(());
-            }
+                    self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
+                    return Ok(());
+                }
+            };
+        let cycle_bit = trb.buffer[12] & 0x1 != 0;
+        let supported_trb = SupportedInEndpointTrb {
+            variant: supported_trb_variant,
+            addr: trb.address,
+            cycle_bit,
         };
         let end_of_td = !supported_trb.chain();
-        let cycle_bit = trb.buffer[12] & 0x1 != 0;
-        trbs.push((trb.address, cycle_bit, supported_trb));
+        trbs.push(supported_trb);
         if end_of_td {
             let td_request_length = trbs
                 .iter()
-                .map(|(_, _, data)| data)
-                .map(SupportedTrbsOnInEndpoint::transfer_length)
+                .map(SupportedInEndpointTrb::transfer_length)
                 .sum::<usize>();
             debug!("Submitting real request for {td_request_length} bytes");
             self.real_ep.submit(td_request_length)?;
@@ -744,7 +758,7 @@ fn process_real_transfer_response(
     endpoint_id: u8,
     slot_id: u8,
     completion: InTrbProcessingResult,
-    trbs: Vec<(u64, bool, SupportedTrbsOnInEndpoint)>,
+    trbs: Vec<SupportedInEndpointTrb>,
     event_sender: &EventSender,
     dma_bus: &BusDeviceRef,
     pcap_meta: EndpointPcapMeta,
@@ -765,8 +779,8 @@ fn process_real_transfer_response(
         slot_id,
     };
 
-    for (addr, cs, trb_data) in trbs {
-        if let Some(early_return_result) = td_info.process_trb(addr, cs, trb_data)? {
+    for trb in trbs {
+        if let Some(early_return_result) = td_info.process_trb(trb)? {
             return Ok(early_return_result);
         }
     }
@@ -805,16 +819,14 @@ enum TdProcessingState {
 impl<'a> TdProcessingInfo<'a> {
     fn process_trb(
         &mut self,
-        address: u64,
-        cycle_state: bool,
-        trb_data: SupportedTrbsOnInEndpoint,
+        trb: SupportedInEndpointTrb,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         // assumption: Only normal TRBs
-        match trb_data {
-            SupportedTrbsOnInEndpoint::Normal(data) => {
-                self.process_normal_trb(address, cycle_state, data)
+        match trb.variant {
+            SupportedInEndpointTrbVariant::Normal(data) => {
+                self.process_normal_trb(trb.addr, trb.cycle_bit, data)
             }
-            SupportedTrbsOnInEndpoint::EventData(_data) => todo!(),
+            SupportedInEndpointTrbVariant::EventData(_data) => todo!(),
         }
     }
 
