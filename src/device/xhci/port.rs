@@ -6,7 +6,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use usbvfiod::hotplug_protocol::response::Response;
 
 use crate::{
@@ -162,8 +162,10 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
 
     fn attach(&mut self, device: CRD) -> anyhow::Result<Response> {
         if self.attached_devices().contains(&device.identifier()) {
-            warn!("Failed to attach device: A device with the same identifier is already attached");
-            return Ok(Response::AlreadyAttached);
+            info!(
+                "A device with the same identifier is already attached and will be detached first"
+            );
+            self.detach(device.identifier())?;
         }
 
         let speed = match device.realdevice_ref().speed() {

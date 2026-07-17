@@ -12,7 +12,6 @@ pub enum Response {
     NoFreePort,
     CouldNotDetermineSpeed,
     FailedToOpenFd,
-    AlreadyAttached,
     NoSuchDevice,
     Invalid,
 }
@@ -90,8 +89,7 @@ impl TryFrom<u8> for Response {
             2 => Self::NoFreePort,
             3 => Self::CouldNotDetermineSpeed,
             4 => Self::FailedToOpenFd,
-            5 => Self::AlreadyAttached,
-            6 => Self::NoSuchDevice,
+            5 => Self::NoSuchDevice,
             _ => Self::Invalid,
         })
     }
