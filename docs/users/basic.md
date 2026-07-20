@@ -8,11 +8,6 @@ The server communicates via two Unix sockets:
 * a `vfio-user` socket for communication between `usbvfiod` and the VMM (Cloud Hypervisor)
 * a `hotplug` socket to attach/detach/list devices exposed by `usbvfiod` from the host (optional)
 
-> [!TODO]
-> Currently, the server creates both sockets. The `vfio-user` standard
-> requires that a server can also accept the `vfio-user` socket as a file
-> descriptor, but we have not yet implemented this functionality.
-
 ## Obtaining the Package
 
 The software is available through the [GitHub
@@ -58,7 +53,7 @@ nix run github:cyberus-technology/usbvfiod#remote -- \
 No attached devices
 ```
 
-Attach a USB device to the controller through the `hotplug` socket. The 
+Attach a USB device to the controller through the `hotplug` socket. The
 example uses a keyboard recognized at `/dev/bus/usb/009/003`.
 
 ```
