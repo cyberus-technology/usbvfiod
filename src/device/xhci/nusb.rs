@@ -3,8 +3,8 @@ use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc, time::Duration};
 use anyhow::{anyhow, Error};
 use nusb::{
     transfer::{
-        Buffer, Bulk, BulkOrInterrupt, ControlIn, ControlOut, ControlType, EndpointDirection,
-        EndpointType, In, Interrupt, Out, Recipient, TransferError,
+        Buffer, Bulk, BulkOrInterrupt, Completion, ControlIn, ControlOut, ControlType,
+        EndpointDirection, EndpointType, In, Interrupt, Out, Recipient, TransferError,
     },
     Endpoint, Interface, MaybeFuture,
 };
@@ -16,8 +16,8 @@ use crate::device::xhci::{
     hotplug_endpoint_handle::BaseEndpointHandle,
     real_device::{RealDevice, Speed},
     real_endpoint_handle::{
-        ControlRequestProcessingResult, InTrbProcessingResult, RealControlEndpointHandle,
-        RealInEndpointHandle, RealOutEndpointHandle,
+        ControlRequestProcessingResult, InTrbProcessingResult, InTrbProcessingStatus,
+        RealControlEndpointHandle, RealInEndpointHandle, RealOutEndpointHandle,
     },
     usbrequest::UsbRequest,
 };
@@ -386,21 +386,30 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
-            let completion = self.endpoint().next_complete().await.into_result();
-            let result = match completion {
-                Ok(buf) => InTrbProcessingResult::Success(buf.into_vec()),
-                Err(err) => match err {
-                    TransferError::Cancelled => InTrbProcessingResult::TransactionError,
-                    TransferError::Stall => InTrbProcessingResult::Stall,
-                    TransferError::Disconnected => InTrbProcessingResult::Disconnect,
-                    TransferError::Fault => InTrbProcessingResult::TransactionError,
-                    TransferError::InvalidArgument => InTrbProcessingResult::TransactionError,
-                    TransferError::Unknown(_) => InTrbProcessingResult::TransactionError,
-                },
-            };
+            let Completion {
+                buffer: data,
+                actual_len: _,
+                status,
+            } = self.endpoint().next_complete().await;
+            let data = data.into_vec();
+            let status = map_status(status);
 
-            Ok(result)
+            Ok(InTrbProcessingResult { status, data })
         })
+    }
+}
+
+const fn map_status(nusb_status: Result<(), TransferError>) -> InTrbProcessingStatus {
+    match nusb_status {
+        Ok(_) => InTrbProcessingStatus::Success,
+        Err(err) => match err {
+            TransferError::Cancelled => InTrbProcessingStatus::TransactionError,
+            TransferError::Stall => InTrbProcessingStatus::Stall,
+            TransferError::Disconnected => InTrbProcessingStatus::Disconnect,
+            TransferError::Fault => InTrbProcessingStatus::TransactionError,
+            TransferError::InvalidArgument => InTrbProcessingStatus::TransactionError,
+            TransferError::Unknown(_) => InTrbProcessingStatus::TransactionError,
+        },
     }
 }
 

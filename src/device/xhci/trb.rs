@@ -858,6 +858,7 @@ pub struct NormalTrbData {
     pub transfer_length: u32,
     pub chain: bool,
     pub interrupt_on_completion: bool,
+    pub interrupt_on_short: bool,
     pub immediate_data: bool,
 }
 
@@ -886,6 +887,7 @@ impl TrbData for NormalTrbData {
         let transfer_length = u32::from_le_bytes(tl_bytes);
 
         let chain = trb_bytes[12] & 0x10 != 0;
+        let interrupt_on_short = trb_bytes[12] & 0x04 != 0;
         let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
         let immediate_data = trb_bytes[12] & 0x40 != 0;
 
@@ -894,6 +896,7 @@ impl TrbData for NormalTrbData {
             transfer_length,
             chain,
             interrupt_on_completion,
+            interrupt_on_short,
             immediate_data,
         })
     }
@@ -1205,7 +1208,7 @@ mod tests {
     #[test]
     fn test_parse_normal_trb() {
         let trb_bytes = [
-            0x11, 0x22, 0x44, 0x33, 0x66, 0x55, 0x88, 0x77, 0x12, 0x34, 0x00, 0x00, 0x30, 0x04,
+            0x11, 0x22, 0x44, 0x33, 0x66, 0x55, 0x88, 0x77, 0x12, 0x34, 0x00, 0x00, 0x34, 0x04,
             0x00, 0x00,
         ];
         let expected = TransferTrbVariant::Normal(NormalTrbData {
@@ -1213,6 +1216,7 @@ mod tests {
             transfer_length: 0x3412,
             chain: true,
             interrupt_on_completion: true,
+            interrupt_on_short: true,
             immediate_data: false,
         });
         assert_eq!(TransferTrbVariant::parse(trb_bytes), expected);

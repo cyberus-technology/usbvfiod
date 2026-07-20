@@ -126,13 +126,19 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                             self.transfer_ring.advance();
                             self.state = WorkerState::LookForTrb;
                         }
-                        HotplugTrbProcessingResult::Stall => {
+                        HotplugTrbProcessingResult::Stall(addr) => {
+                            if let Some((addr, cs)) = addr {
+                                self.transfer_ring.set_dequeue_pointer(addr, cs);
+                            }
                             self.context.set_state(endpoint_state::HALTED);
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
                             self.state = WorkerState::Halted;
                         }
-                        HotplugTrbProcessingResult::TransactionError => {
+                        HotplugTrbProcessingResult::TransactionError(addr) => {
+                            if let Some((addr, cs)) = addr {
+                                self.transfer_ring.set_dequeue_pointer(addr, cs);
+                            }
                             self.context.set_state(endpoint_state::HALTED);
                             let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);

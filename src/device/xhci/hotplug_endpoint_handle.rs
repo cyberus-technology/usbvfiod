@@ -17,20 +17,20 @@ use crate::device::xhci::{
 #[derive(Debug, Clone, Copy)]
 pub enum HotplugTrbProcessingResult {
     Ok,
-    Stall,
+    Stall(Option<(u64, bool)>),
     TrbError,
-    TransactionError,
+    TransactionError(Option<(u64, bool)>),
 }
 
 impl HotplugTrbProcessingResult {
     const fn map_result(value: TrbProcessingResult) -> Self {
         match value {
             TrbProcessingResult::Ok => Self::Ok,
-            TrbProcessingResult::Stall => Self::Stall,
+            TrbProcessingResult::Stall(addr) => Self::Stall(addr),
             TrbProcessingResult::TrbError => Self::TrbError,
-            TrbProcessingResult::TransactionError => Self::TransactionError,
+            TrbProcessingResult::TransactionError(addr) => Self::TransactionError(addr),
             // A device disconnect looks like a failed transaction for the endpoint state machine
-            TrbProcessingResult::Disconnect => Self::TransactionError,
+            TrbProcessingResult::Disconnect => Self::TransactionError(None),
         }
     }
 }
@@ -182,18 +182,18 @@ impl<EH: EndpointHandle> HotplugEndpointHandle for HotplugEndpointHandleImpl<EH>
                     result = ep.next_completion() => match result? {
                         TrbProcessingResult::Disconnect => {
                             self.notify_detach.cancel();
-                            HotplugTrbProcessingResult::TransactionError
+                            HotplugTrbProcessingResult::TransactionError(None)
                         },
                         result => HotplugTrbProcessingResult::map_result(result),
                     },
                     _ = self.notify_detach.cancelled() => {
                         self.event_sender.send(event())?;
-                        HotplugTrbProcessingResult::TransactionError
+                        HotplugTrbProcessingResult::TransactionError(None)
                     },
                 },
                 None => {
                     self.event_sender.send(event())?;
-                    HotplugTrbProcessingResult::TransactionError
+                    HotplugTrbProcessingResult::TransactionError(None)
                 }
             };
 

@@ -6,7 +6,7 @@ pub use packet::{UsbDirection, UsbEventType, UsbPcapManager};
 
 use crate::device::xhci::{
     real_endpoint_handle::{
-        ControlRequestProcessingResult, InTrbProcessingResult, OutTrbProcessingResult,
+        ControlRequestProcessingResult, InTrbProcessingStatus, OutTrbProcessingResult,
     },
     usbrequest::UsbRequest,
 };
@@ -80,7 +80,7 @@ pub fn in_completion(base: EndpointPcapMeta, urb_id: u64, data: &[u8]) {
     packet::log_completion(base, None, urb_id, 0, data.len() as u32, data);
 }
 
-pub fn in_error(meta: EndpointPcapMeta, urb_id: u64, error: &InTrbProcessingResult) {
+pub fn in_error(meta: EndpointPcapMeta, urb_id: u64, error: &InTrbProcessingStatus) {
     packet::log_error(
         meta,
         None,

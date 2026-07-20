@@ -45,9 +45,15 @@ pub trait RealInEndpointHandle: BaseEndpointHandle {
 }
 
 #[derive(Debug)]
-pub enum InTrbProcessingResult {
+pub enum InTrbProcessingStatus {
     Disconnect,
     Stall,
     TransactionError,
-    Success(Vec<u8>),
+    Success,
+}
+
+#[derive(Debug)]
+pub struct InTrbProcessingResult {
+    pub status: InTrbProcessingStatus,
+    pub data: Vec<u8>,
 }
