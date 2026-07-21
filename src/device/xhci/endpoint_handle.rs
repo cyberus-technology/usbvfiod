@@ -853,7 +853,7 @@ impl<'a> TdProcessingInfo<'a> {
                 self.dma_bus.write_bulk(trb_data.data_pointer, bytes);
 
                 if bytes_available < bytes_requested {
-                    let bytes_missing = bytes_available - bytes_requested;
+                    let bytes_missing = bytes_requested - bytes_available;
                     match self.status {
                         InTrbProcessingStatus::Success => {
                             // short transfer
