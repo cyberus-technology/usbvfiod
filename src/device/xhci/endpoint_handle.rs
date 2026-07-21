@@ -361,12 +361,19 @@ impl ControlRequestParser {
                 },
                 ControlRequestParserState::SetupStageConsumed => match transfer_trb {
                     TransferTrbVariant::DataStage(data_trb_data) => {
-                        if data_trb_data.immediate_data {
-                            todo!("immediate data on data stage trb")
-                        }
-                        let mut data = vec![0; self.request_builder.length as usize];
-                        self.dma_bus
-                            .read_bulk(data_trb_data.data_pointer, &mut data);
+                        let data = if data_trb_data.immediate_data {
+                            if self.request_builder.length > 8 {
+                                todo!("using IDT with length > 8");
+                            }
+                            data_trb_data.data_pointer.to_le_bytes()
+                                [..self.request_builder.length as usize]
+                                .to_vec()
+                        } else {
+                            let mut data = vec![0; self.request_builder.length as usize];
+                            self.dma_bus
+                                .read_bulk(data_trb_data.data_pointer, &mut data);
+                            data
+                        };
 
                         self.request_builder.data = Some(data);
                         self.request_builder.data_pointer = Some(data_trb_data.data_pointer);
@@ -447,11 +454,18 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
         let transfer_trb = TransferTrbVariant::parse(trb.buffer);
         match &transfer_trb {
             TransferTrbVariant::Normal(normal_data) => {
-                if normal_data.immediate_data {
-                    todo!("immediate data on normal trb")
-                }
-                let mut data = vec![0; normal_data.transfer_length as usize];
-                self.dma_bus.read_bulk(normal_data.data_pointer, &mut data);
+                let data = if normal_data.immediate_data {
+                    if normal_data.transfer_length > 8 {
+                        todo!("using IDT with length > 8");
+                    }
+                    normal_data.data_pointer.to_le_bytes()[..normal_data.transfer_length as usize]
+                        .to_vec()
+                } else {
+                    let mut data = vec![0; normal_data.transfer_length as usize];
+                    self.dma_bus.read_bulk(normal_data.data_pointer, &mut data);
+                    data
+                };
+
                 pcap::out_submission(
                     self.pcap_meta,
                     trb.address,
