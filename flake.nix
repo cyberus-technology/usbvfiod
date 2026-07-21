@@ -152,7 +152,7 @@
             }
           );
         }
-        // (import ./nix/tests.nix {
+        // (import ./nix/checks {
           inherit lib pkgs;
           usbvfiod = self.packages.default;
         });

@@ -1,10 +1,7 @@
-/**
-  This file contains integration tests for usbvfiod.
-*/
 {
   lib,
   pkgs,
-  usbvfiod,
+  ...
 }:
 let
   # For the VM that we start in Cloud Hypervisor, we re-use the netboot image.
@@ -392,98 +389,19 @@ let
     in
     attrs;
 
-  /**
-    Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
-    The Functions purpose is to remove duplicated lines, make comparing tests easier and write new tests with less boilerplate.
-
-    # Inputs
-
-    `args`
-
-    : 1\. Function argument
-
-    # Type
-
-    ```
-    mkUsbTest :: {
-      name :: String
-      debug :: Bool
-      virtualDevices :: [
-        {
-        type :: "blockdevice" || "hid-device"
-        usbVersion :: "1.1" || "2" || "3"
-        usbPort :: Integer || String
-        udevRule.enable :: Bool
-        udevRule.symlink :: String
-        attachedOnStartup :: "host" || "guest" || "none"
-        }
-      ]
-      testScript :: String
-    } -> a
-    ```
-
-    # Examples
-    :::{.example}
-
-    When Using more than one device each device should define its usbPort and udevRule.symlink (the default value is static).
-
-    ## `mkUsbTest` usage example
-
-    ```nix
-    myTest = mkUsbTest {
-      name = "foo";
-      debug = true;
-      virtualDevices = [
-        {
-          type = "blockdevice";
-          usbVersion = "2";
-          usbPort = 1;
-          udevRule.enable = true;
-          udevRule.symlink = "teststorage";
-          attachedOnStartup = "guest";
-        }
-      ];
-      testScript = ''
-        # Confirm USB controller pops up in boot logs
-        out = cloud_hypervisor.succeed("journalctl -b", timeout=60)
-        search("usb usb1: Product: xHCI Host Controller", out)
-        search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
-
-        # Confirm some diagnostic information
-        out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=60)
-        search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
-        out = cloud_hypervisor.succeed("lsusb", timeout=60)
-        search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
-        out = cloud_hypervisor.succeed("sfdisk -l", timeout=60)
-        search("Disk /dev/sda:", out)
-
-        # Test partitioning
-        cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda", timeout=60)
-
-        # Test filesystem
-        cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=60)
-        cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
-        cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt", timeout=60)
-        cloud_hypervisor.succeed("umount /mnt", timeout=60)
-        cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
-        out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=60)
-        search("123TEST123", out)
-      '';
-    };
-    ```
-  */
-  mkUsbTest = args: mkUsbTestChecked (sanityCheckArgs (mkDefaults args));
-
   # See mkUsbTest (this runs without any arg checks).
   mkUsbTestChecked =
-    args:
+    args: systemd:
     pkgs.testers.runNixOSTest {
       inherit (args) name;
 
       inherit globalTimeout passthru;
 
       nodes.machine = _: {
-        imports = [ basicMachineConfig ];
+        imports = [
+          basicMachineConfig
+          (systemd args)
+        ];
 
         services = {
           # The framework automatically forwards all journal output to ttyS0,
@@ -544,50 +462,7 @@ let
           # Handle each entry of the args.virtualDevices list.
           ++ (builtins.map (mkUsbDevice args.name) args.virtualDevices);
         };
-
-        systemd.services = {
-          usbvfiod = {
-            wantedBy = [ "multi-user.target" ];
-            serviceConfig = {
-              User = "usbaccess";
-              Group = "usbaccess";
-              Restart = "on-failure";
-              RestartSec = "2s";
-              ExecStart = ''
-                ${lib.getExe usbvfiod} ${
-                  if args.debug then "-v" else ""
-                } --socket-path ${usbvfiodSocket} --hotplug-socket-path ${usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag args.virtualDevices)}
-              '';
-            };
-            environment = {
-              RUST_BACKTRACE = "full";
-            };
-          };
-
-          cloud-hypervisor =
-            let
-              netboot = mkNetboot args.debug;
-            in
-            {
-              wantedBy = [ "multi-user.target" ];
-              requires = [ "usbvfiod.service" ];
-              after = [ "usbvfiod.service" ];
-              serviceConfig = {
-                Restart = "on-failure";
-                RestartSec = "2s";
-                ExecStart = ''
-                  ${lib.getExe pkgs.cloud-hypervisor} --memory size=2G,shared=on --console file=${guestLogFile} --serial off \
-                    --kernel ${netboot.kernel} \
-                    --cmdline ${lib.escapeShellArg netboot.cmdline} \
-                    --initramfs ${netboot.initrd} \
-                    --user-device socket=${usbvfiodSocket} \
-                    --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
-                '';
-              };
-            };
-        };
       };
-
       testScript = ''
         ${nestedPythonClass}
 
@@ -619,298 +494,149 @@ let
       '';
     };
 
-  singleBlockDeviceTestScript = ''
-    # Confirm USB controller pops up in boot logs
-    out = cloud_hypervisor.succeed("journalctl -b", timeout=60)
-    search("usb usb1: Product: xHCI Host Controller", out)
-    search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
-
-    # Confirm some diagnostic information
-    out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=60)
-    search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
-
-    # Wait until the usb drive we expect is recognized.
-    out = cloud_hypervisor.wait_until_succeeds("lsusb -d ${blockdeviceVendorId}:${blockdeviceProductId}", timeout=120)
-    search("ID ${blockdeviceVendorId}:${blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
-    out = cloud_hypervisor.succeed("sfdisk -l", timeout=60)
-    search("Disk /dev/sda:", out)
-
-    # Test partitioning
-    cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda", timeout=60)
-
-    # The Script is sometimes too fast for the nested guest to detect the new partition.
-    cloud_hypervisor.wait_until_succeeds("lsblk /dev/sda1", timeout=60)
-
-    # Make a filesystem
-    out = cloud_hypervisor.succeed("mkfs.ext4 -v /dev/sda1", timeout=60)
-    print(out)
-    cloud_hypervisor.succeed("fsck -t ext4 -V -r /dev/sda1 -- -y", timeout=60)
-    cloud_hypervisor.wait_until_succeeds("mount /dev/sda1 /mnt", timeout=60)
-
-    # Create a file and compute a checksum
-    cloud_hypervisor.succeed("dd if=/dev/urandom of=/tmp/file count=32 bs=1M", timeout=60)
-    out = cloud_hypervisor.succeed("sha256sum /tmp/file", timeout=60)
-    hash_tmp = out.split()
-    print(f"hash_tmp: {hash_tmp}")
-
-    # Copy the file on the blockdevice
-    cloud_hypervisor.succeed("cp /tmp/file /mnt/file", timeout=60)
-    cloud_hypervisor.succeed("sync", timeout=60)
-    cloud_hypervisor.succeed("echo 3 > /proc/sys/vm/drop_caches", timeout=60)
-    cloud_hypervisor.succeed("umount /mnt", timeout=60)
-    cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
-
-    # Check if the file checksum changed
-    out = cloud_hypervisor.succeed("sha256sum /mnt/file", timeout=60)
-    hash_mnt = out.split()
-    print(f"hash_mnt: {hash_mnt}")
-    if (hash_tmp[0] != hash_mnt[0]):
-      raise RequestedAssertionFailed("The checksum changed after copying to the mounted USB blockdevice.")
-  '';
-
-  blockdeviceTests = builtins.listToAttrs (
-    builtins.map (usbVersion: {
-      name = "blockdevice-usb-${builtins.replaceStrings [ "." ] [ "_" ] usbVersion}";
-      value = mkUsbTest {
-        name = "blockdevice-usb-${usbVersion}";
-        virtualDevices = [
-          {
-            type = "blockdevice";
-            inherit usbVersion;
-          }
-        ];
-        testScript = singleBlockDeviceTestScript;
-      };
-    }) (builtins.attrNames usbVersions)
-  );
-
-  attachDetachTests = builtins.listToAttrs (
-    builtins.map (usbVersion: {
-      name = "attach-detach-usb-${builtins.replaceStrings [ "." ] [ "_" ] usbVersion}";
-      value = mkUsbTest {
-        name = "attach-detach-usb-${usbVersion}";
-        virtualDevices = [
-          {
-            type = "blockdevice";
-            inherit usbVersion;
-            udevRule.symlink = "usbdevice";
-            attachedOnStartup = "host";
-          }
-        ];
-        testScript = ''
-          # Run the attach-detach loop a few times.
-          for i in range(1,20):
-            print(f"ATTACH DETACH LOOP {i}")
-            # List and print all attached devices.
-            out = machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
-            search("No attached devices", out)
-
-            # Attach a device.
-            out = machine.succeed("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --attach /dev/bus/usb/usbdevice", timeout=60)
-            print(out)
-
-            # List attached devices.
-            out = machine.succeed("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
-            print(out)
-
-            # Get the bus and device numbers.
-            (bus_nr, device_nr) = re.search(r'(\d{3}):(\d{3})',out).groups()
-            print(f"Bus number: {bus_nr}, Device number: {device_nr}")
-
-            # Wait for the guest to find the usb device.
-            if (i % 2 == 0):
-              cloud_hypervisor.wait_until_succeeds("lsusb -d ${blockdeviceVendorId}:${blockdeviceProductId}", timeout=120)
-
-            # Wait for the guest to find the blockdevice.
-            if (i % 4 == 0):
-              cloud_hypervisor.wait_until_succeeds("lsblk /dev/sd*", timeout=120)
-
-            # Detach the device.
-            out = machine.succeed(f"${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --detach {bus_nr} {device_nr}", timeout=60)
-            print(out)
-        '';
-      };
-    }) (builtins.attrNames usbVersions)
-  );
-
-  interruptEndpointTests = builtins.listToAttrs (
-    builtins.map (usbVersion: {
-      name = "interrupt-endpoint-usb-${builtins.replaceStrings [ "." ] [ "_" ] usbVersion}";
-      value = mkUsbTest {
-        name = "interrupt-endpoint-usb-${usbVersion}";
-        virtualDevices = [
-          {
-            type = "hid-device";
-            inherit usbVersion; # note: this changes the /dev/input/by-id path used in the script (xhci/ehci bus number)
-            usbPort = 1; # note: this changes the /dev/input/by-id path used in the script
-            udevRule.symlink = "keyboard";
-          }
-        ];
-        testScript = ''
-          import time
-          import threading
-
-          # A function that can send input events in the background.
-          def create_input():
-            for i in range(1, 4):
-              time.sleep(1)
-              machine.send_key("ctrl")
-              print(f"input loop `{i}` done")
-
-          # Check the Keyboard is in detected in the guest.
-          cloud_hypervisor.succeed("lsusb -d ${hidVendorId}:${hidProductId}", timeout=60)
-
-          # Generate inputs in the background.
-          t1 = threading.Thread(target=create_input)
-          t1.start()
-          print("started sending input events")
-
-          # Catch one key down event and one key up event inputs.
-          # It is theoretically possible all events appear and are consumed by the input subsystem before we have the opportunity to listen.
-          out = cloud_hypervisor.succeed("hexdump --length 144 --two-bytes-hex /dev/input/by-id/usb-QEMU_QEMU_USB_Keyboard_68284-0000\\:00\\:${
-            usbVersions."${usbVersion}".addr
-          }.0-1-event-kbd", timeout=60)
-
-          # Check if the hexdump contains a ctrl event sequence
-          # https://docs.kernel.org/input/input.html#event-interface
-          search("0001    001d    0001", out) # EV_KEY KEY_LEFTCTRL pressed
-          search("0001    001d    0000", out) # EV_KEY KEY_LEFTCTRL released
-          print("done")
-
-          # Make a clean exit since the test will wait for thread termination either way.
-          t1.join()
-        '';
-      };
-    }) (builtins.attrNames usbVersions)
-  );
-
 in
-blockdeviceTests
-// attachDetachTests
-// interruptEndpointTests
-// {
-  multiple-blockdevices = mkUsbTest {
-    name = "multiple-blockdevices";
-    debug = false;
-    virtualDevices =
-      builtins.concatMap
-        (
-          usb:
-          builtins.map
-            (num: {
-              type = "blockdevice";
-              usbVersion = "${usb}";
-              usbPort = num;
-              udevRule.symlink = "usb-${usb}-device-${builtins.toString num}";
-            })
-            [
-              1
-              2
-              3
-              4
-            ]
-        )
-        [
-          "2"
-          "3"
-        ];
-    testScript = ''
-      out = cloud_hypervisor.succeed("lsusb --tree", timeout=60)
-      search(r'Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)
-      search(r'Port 002: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)
-      search(r'Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)
-      search(r'Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)
-      search(r'Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M', out)
-      search(r'Port 002: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M', out)
-      search(r'Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M', out)
-      search(r'Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M', out)
+{
+  # some simple const values
+  inherit
+    blockdeviceVendorId
+    blockdeviceProductId
+    hidVendorId
+    hidProductId
+    usbvfiodSocket
+    usbvfiodSocketHotplug
+    guestLogFile
+    imageSize
+    ;
 
-      out = cloud_hypervisor.succeed("lsblk", timeout=60)
-      search(r'sda\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
-      search(r'sdb\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
-      search(r'sdc\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
-      search(r'sdd\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
-      search(r'sde\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
-      search(r'sdf\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
-      search(r'sdg\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
-      search(r'sdh\s+\d+:\d+\s+0\s+${imageSize}\s+0\s+disk', out)
-    '';
-  };
+  # attrs to generate tests for all three usb version
+  inherit usbVersions;
 
-  forceful-removal = mkUsbTest {
-    name = "forceful removal";
-    virtualDevices = [
-      {
-        type = "blockdevice";
-        usbVersion = "3";
-        usbPort = 1;
-        udevRule.enable = true;
-        udevRule.symlink = "hotplug";
-        attachedOnStartup = "none";
-      }
-    ];
-    testScript = ''
-      import subprocess
+  # helper functions
+  inherit mkNetboot mkDeviceFlag;
 
-      # create a blockdevice
-      subprocess.run(["dd", "bs=1", "count=1", "seek=${imageSize}", "if=/dev/zero", "of=/tmp/hotplug.img"], timeout=30, check=True)
+  /**
+    Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
+    The Functions purpose is to remove duplicated lines, make comparing tests easier and write new tests with less boilerplate.
 
-      for i in range(1,17):
-        print(f"ATTACH DETACH LOOP {i}")
+    # Inputs
 
-        # Expect no attached devices.
-        out = machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
-        search("No attached devices", out)
+    `args`
 
-        # plug in a blockdevice
-        print(machine.send_monitor_command("drive_add 0 id=hotplug,if=none,file=/tmp/hotplug.img,format=raw"))
-        print(machine.send_monitor_command("device_add usb-storage,id=hotplug-dev,bus=${usbVersions."3".busName}.0,drive=hotplug,port=1"))
+    : 1\. Function argument
+    : 2\. Systemd NixOS config definition snippet
 
-        # wait for qemu host to find the blockdevice
-        machine.wait_until_succeeds("lsusb | grep 'QEMU QEMU USB HARDDRIVE'", timeout=120)
-        machine.wait_until_succeeds("lsblk /dev/sd*", timeout=120)
+    # Type
 
-        machine.wait_until_succeeds("ls /dev/bus/usb/hotplug", timeout=60)
+    ```
+    mkUsbTest :: {
+      name :: String
+      debug :: Bool
+      virtualDevices :: [
+        {
+        type :: "blockdevice" || "hid-device"
+        usbVersion :: "1.1" || "2" || "3"
+        usbPort :: Integer || String
+        udevRule.enable :: Bool
+        udevRule.symlink :: String
+        attachedOnStartup :: "host" || "guest" || "none"
+        }
+      ]
+      testScript :: String
+    }  { systemd = { ... } } -> a
+    ```
 
-        # Attach a device.
-        out = machine.succeed("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --attach /dev/bus/usb/hotplug", timeout=60)
-        print(out)
+    # Examples
+    :::{.example}
 
-        # List attached devices.
-        out = machine.succeed("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list", timeout=60)
-        print(out)
+    When Using more than one device each device should define its usbPort and udevRule.symlink (the default value is static).
 
-        # Check the list output is what we expect: one device
-        listed_devices_count = len(re.findall(r'(\d{3}):(\d{3})',out))
-        if listed_devices_count != 1:
-          raise RequestedAssertionFailed(
-            f"The `remote --list` output contains a wrong count of devices (expected 1, got {listed_devices_count})"
-          )
+    ## `mkUsbTest` usage example
 
-        # Get the bus and device numbers.
-        (bus_nr, device_nr) = re.search(r'(\d{3}):(\d{3})',out).groups()
-        print(f"Bus number: {bus_nr}, Device number: {device_nr}")
+    ```nix
+    myTest = mkUsbTest {
+      name = "foo";
+      debug = true;
+      virtualDevices = [
+        {
+          type = "blockdevice";
+          usbVersion = "2";
+          usbPort = 1;
+          udevRule.enable = true;
+          udevRule.symlink = "teststorage";
+          attachedOnStartup = "guest";
+        }
+      ] {
+        systemd.services = {
+          usbvfiod = {
+            wantedBy = [ "multi-user.target" ];
+            serviceConfig = {
+              User = "usbaccess";
+              Group = "usbaccess";
+              Restart = "on-failure";
+              RestartSec = "2s";
+              ExecStart = ''
+                ${lib.getExe usbvfiod} ${
+                  if args.debug then "-v" else ""
+                } --socket-path ${testutils.usbvfiodSocket} --hotplug-socket-path ${testutils.usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map testutils.mkDeviceFlag args.virtualDevices)}
+              '';
+            };
+            environment = {
+              RUST_BACKTRACE = "full";
+            };
+          };
 
-        # Wait for the guest to find the usb device.
-        if (i % 2 == 0):
-          cloud_hypervisor.wait_until_succeeds("lsusb -d ${blockdeviceVendorId}:${blockdeviceProductId}", timeout=120)
+          cloud-hypervisor =
+            let
+              netboot = testutils.mkNetboot args.debug;
+            in
+            {
+              wantedBy = [ "multi-user.target" ];
+              requires = [ "usbvfiod.service" ];
+              after = [ "usbvfiod.service" ];
+              serviceConfig = {
+                Restart = "on-failure";
+                RestartSec = "2s";
+                ExecStart = ''
+                  ${lib.getExe cloud-hypervisor} --memory size=2G,shared=on --console file=${testutils.guestLogFile} --serial off \
+                    --kernel ${netboot.kernel} \
+                    --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                    --initramfs ${netboot.initrd} \
+                    --user-device socket=${testutils.usbvfiodSocket} \
+                    --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+                '';
+              };
+            };
+        };
+      };
 
-        # Wait for the guest to find the blockdevice.
-        if (i % 4 == 0):
-          cloud_hypervisor.wait_until_succeeds("lsblk /dev/sd*", timeout=120)
+      testScript = ''
+        # Confirm USB controller pops up in boot logs
+        out = cloud_hypervisor.succeed("journalctl -b", timeout=60)
+        search("usb usb1: Product: xHCI Host Controller", out)
+        search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
 
-        # Plug out a blockdevice.
-        print(machine.send_monitor_command("device_del hotplug-dev"))
+        # Confirm some diagnostic information
+        out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=60)
+        search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
+        out = cloud_hypervisor.succeed("lsusb", timeout=60)
+        search("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
+        out = cloud_hypervisor.succeed("sfdisk -l", timeout=60)
+        search("Disk /dev/sda:", out)
 
-        # Wait for the qemu host to realize the missing usb device.
-        machine.wait_until_fails("lsusb | grep 'QEMU QEMU USB HARDDRIVE'")
+        # Test partitioning
+        cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda", timeout=60)
 
-        # Trigger the guest to access the device and get the nusb error that would otherwise come eventually.
-        # If it did not already happen the xHC should then start the detach process of the device.
-        cloud_hypervisor.wait_until_succeeds("lsusb -vvv", timeout=120)
-
-        # Wait until the xHC can confirm there is no device attached anymore.
-        machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${usbvfiodSocketHotplug} --list | grep 'No attached devices'", timeout=60)
-    '';
-  };
+        # Test filesystem
+        cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=60)
+        cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
+        cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt", timeout=60)
+        cloud_hypervisor.succeed("umount /mnt", timeout=60)
+        cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
+        out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=60)
+        search("123TEST123", out)
+      '';
+    };
+    ```
+  */
+  mkUsbTest = args: systemd: mkUsbTestChecked (sanityCheckArgs (mkDefaults args)) systemd;
 }
