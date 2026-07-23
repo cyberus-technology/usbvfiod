@@ -211,6 +211,7 @@ impl<EH: EndpointHandle> BaseEndpointHandle for HotplugEndpointHandleImpl<EH> {
             if let Ok(mut guard) = self.endpoint_handle.try_lock() {
                 if let Some(device) = guard.as_mut() {
                     device.cancel().await?;
+                    self.submission_state = HotplugSubmissionState::NoTrbSubmitted;
                 } else {
                     trace!("cancel for detached device");
                 }
