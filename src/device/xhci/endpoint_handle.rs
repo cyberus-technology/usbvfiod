@@ -744,14 +744,16 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
-            match mem::take(&mut self.submission_state) {
-                TdBasedNormalSubmissionState::CollectingTd(trbs) => {
-                    self.submission_state = TdBasedNormalSubmissionState::CollectingTd(trbs);
-                    Ok(TrbProcessingResult::Ok)
+            match &mut self.submission_state {
+                TdBasedNormalSubmissionState::CollectingTd(_) => Ok(TrbProcessingResult::Ok),
+                TdBasedNormalSubmissionState::UnsupportedTrb => {
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    Ok(TrbProcessingResult::TrbError)
                 }
-                TdBasedNormalSubmissionState::UnsupportedTrb => Ok(TrbProcessingResult::TrbError),
                 TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs) => {
                     let completion = self.real_ep.next_completion().await?;
+                    let trbs = mem::take(trbs);
+                    self.submission_state = TdBasedNormalSubmissionState::default();
                     let processing_result = process_real_transfer_response(
                         self.endpoint_id,
                         self.slot_id,
