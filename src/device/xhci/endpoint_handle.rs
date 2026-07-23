@@ -882,6 +882,7 @@ impl<'a> TdProcessingInfo<'a> {
                                 self.event_sender.send(transfer_event)?;
                             }
                             self.state = TdProcessingState::ShortTransfer;
+                            return Ok(None);
                         }
                         _ => {
                             let (completion_code, processing_result) = match self.status {
@@ -938,6 +939,13 @@ impl<'a> TdProcessingInfo<'a> {
             TdProcessingState::ShortTransfer => {
                 // Skip all Normal TRBs.
                 // We will need more handling here once we support EventData TRBs.
+
+                // We do need to handle the case from xhci specification page 193 in chapter 4.10.1.1.2:
+                // > If the Short Packet occurred while processing a Transfer TRB with only an ISP
+                // > flag set, then two events shall be generated for the transfer; one for the Transfer
+                // > TRB that the Short Packet occurred on, and a second for the last TRB with the
+                // > IOC flag set.
+
                 Ok(None)
             }
         }
