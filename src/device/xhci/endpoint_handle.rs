@@ -829,7 +829,7 @@ struct TdProcessingInfo<'a> {
 enum TdProcessingState {
     Default,
     // no more data, skip forward to next TD
-    ShortTransfer,
+    ShortTransfer(usize),
 }
 
 impl<'a> TdProcessingInfo<'a> {
@@ -884,7 +884,11 @@ impl<'a> TdProcessingInfo<'a> {
                                 );
                                 self.event_sender.send(transfer_event)?;
                             }
-                            self.state = TdProcessingState::ShortTransfer;
+                            self.state = TdProcessingState::ShortTransfer(bytes_missing);
+
+                            pcap::in_completion(self.pcap_meta, addr, bytes);
+
+                            return Ok(None);
                         }
                         _ => {
                             let (completion_code, processing_result) = match self.status {
@@ -938,9 +942,22 @@ impl<'a> TdProcessingInfo<'a> {
 
                 Ok(None)
             }
-            TdProcessingState::ShortTransfer => {
+            TdProcessingState::ShortTransfer(bytes_missing) => {
                 // Skip all Normal TRBs.
                 // We will need more handling here once we support EventData TRBs.
+
+                if trb_data.interrupt_on_completion {
+                    let transfer_event = EventTrb::new_transfer_event_trb(
+                        addr,
+                        bytes_missing as u32,
+                        CompletionCode::Success,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(transfer_event)?;
+                }
+
                 Ok(None)
             }
         }
