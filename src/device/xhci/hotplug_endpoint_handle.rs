@@ -219,6 +219,8 @@ impl<EH: EndpointHandle> BaseEndpointHandle for HotplugEndpointHandleImpl<EH> {
                 // After the lock release, the device will be gone, so no need to actually acquire the lock.
             }
 
+            self.submission_state = HotplugSubmissionState::NoTrbSubmitted;
+
             Ok(())
         })
     }
