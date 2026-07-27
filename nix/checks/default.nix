@@ -17,6 +17,7 @@ in
 {
   multiple-blockdevices = mkNixosIntegrationTest ./multiple-blockdevices.nix;
   forceful-removal = mkNixosIntegrationTest ./forceful-removal.nix;
+  serial = mkNixosIntegrationTest ./usb-serial.nix;
 }
 // import ./controller-reset.nix {
   inherit testutils;
