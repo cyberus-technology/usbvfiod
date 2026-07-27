@@ -60,6 +60,7 @@ let
               pciutils
               usbutils
               e2fsprogs
+              lsof
             ];
 
             # network configuration for interactive debugging
