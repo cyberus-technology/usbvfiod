@@ -6,7 +6,7 @@ testutils.mkUsbTest {
   name = "forceful removal";
   virtualDevices = [
     {
-      type = "blockdevice";
+      type = "block";
       usbVersion = "3";
       usbPort = 1;
       udevRule.enable = true;
