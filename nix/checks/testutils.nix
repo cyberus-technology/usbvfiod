@@ -344,7 +344,12 @@ let
   # Fill in a template for the qemu.options list for a USB keyboard.
   mkQemuKeyboard = deviceBus: devicePort: "-device usb-kbd,bus=${deviceBus}.0,port=${devicePort}";
 
-  # Create a blockdevice or USB keyboard on our QEMU bus-id corresponding with the declared usb version.
+  # Add a usb to serial adapter.
+  mkQemuSerialAdapter =
+    deviceId: deviceSocket: deviceBus: devicePort:
+    "-chardev socket,id=char${deviceId},path=/tmp/${deviceSocket}.sock,server=on,wait=off -device usb-serial,chardev=char${deviceId},id=${deviceId},bus=${deviceBus}.0,port=${devicePort}";
+
+  # Create a usb device on our QEMU bus-id corresponding with the declared usb version.
   mkUsbDeviceType =
     testname: device:
     let
@@ -352,15 +357,19 @@ let
     in
     if (!device.udevRule.enable || device.udevRule.symlink == "") then
       abort "udevRule is necessary to attach create qemu device before/on startup"
-    else if (device.type == "blockdevice") then
+    else if (device.type == "block") then
       mkQemuBlockdevice "${deviceBus}-${device.udevRule.symlink}"
         "${imagePathPart}-${testname}-${device.udevRule.symlink}.img"
         "${deviceBus}"
         "${builtins.toString device.usbPort}"
-    else if (device.type == "hid-device") then
+    else if (device.type == "hid") then
       mkQemuKeyboard "${deviceBus}" "${builtins.toString device.usbPort}"
+    else if (device.type == "serial") then
+      mkQemuSerialAdapter "${device.udevRule.symlink}" "${testname}-${device.udevRule.symlink}" "${
+        deviceBus
+      }" "${builtins.toString device.usbPort}"
     else
-      builtins.abort ''wrong device type; types supported are "blockdevice" and "hid-device"'';
+      builtins.abort ''wrong device type; types supported are "block", "hid" and "serial"'';
 
   # Respect if attached at host on boot option is true to create the QEMU device option.
   mkUsbDevice =
@@ -383,15 +392,26 @@ let
       subprocess.run(["dd", "bs=1", "count=1", "seek=${imageSize}", "if=/dev/zero", "of=${filepath}"], timeout=30, check=True)
     '';
 
-  # Decide if a virtual device needs a backing image file.
-  mkPrepareBlockdeviceImages =
+  # Create a testScript snippet to connect to the socket of the sub-serial chardev.
+  mkPrepareOneSerialdevice =
     testname: device:
-    if
-      device.type == "blockdevice" # for now only blockdevices need a backing file
-    then
-      mkPrepareOneBlockdeviceImage testname device
-    else
-      "";
+    let
+      socket = "${device.udevRule.symlink}";
+    in
+    ''
+      import socket
+      ${socket} = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+      ${socket}.connect("/tmp/${testname}-${device.udevRule.symlink}.sock")
+    '';
+
+  # Decide if a virtual device needs to be prepared before qemu starts.
+  mkPrepareDevicePreQemu =
+    testname: device:
+    if device.type == "block" then mkPrepareOneBlockdeviceImage testname device else "";
+
+  # Decide if a virtual device needs to be prepared after qemu starts.
+  mkPrepareDevicePostQemu =
+    testname: device: if device.type == "serial" then mkPrepareOneSerialdevice testname device else "";
 
   # Generate usbvfiod argument flags to hand over the device through their udev generated symlink.
   mkDeviceFlag =
@@ -408,7 +428,7 @@ let
   # Input type check for list of virtualDevices in the attrs.
   sanityCheckDevice =
     device:
-    assert (device.type == "blockdevice" || device.type == "hid-device");
+    assert (device.type == "block" || device.type == "hid" || device.type == "serial");
     assert (device.usbVersion == "1.1" || device.usbVersion == "2" || device.usbVersion == "3");
     assert (builtins.typeOf device.usbPort == "int" || builtins.typeOf device.usbPort == "string");
     assert (builtins.typeOf device.udevRule.enable == "bool");
@@ -438,7 +458,7 @@ let
 
       # The defined default values to generate a test argument attrs.
       virtualDevice = {
-        type = "blockdevice";
+        type = "block";
         usbVersion = "3";
         usbPort = 1;
         udevRule.enable = true;
@@ -526,7 +546,7 @@ let
             "-chardev file,id=charvirtcon,path=${qemuLogFile}"
             "-device virtconsole,chardev=charvirtcon,bus=virtserial.0"
 
-            # Enable the QEMU QMP interface to trigger HID events or plug blockdevices at runtime.
+            # Enable the QEMU QMP interface to trigger HID events or hotplug devices at runtime.
             "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
             "-mon chardev=qmp,mode=control,pretty=on"
           ]
@@ -537,12 +557,13 @@ let
       testScript = ''
         ${nestedPythonClass}
 
-        # prepare blockdevice images if necessary
-        ${lib.concatStringsSep "\n" (
-          builtins.map (mkPrepareBlockdeviceImages args.name) args.virtualDevices
-        )}
+        # prepare devices before qemu is started
+        ${lib.concatStringsSep "\n" (builtins.map (mkPrepareDevicePreQemu args.name) args.virtualDevices)}
 
         start_all()
+
+        # prepare devices that depend on qemu already being started
+        ${lib.concatStringsSep "\n" (builtins.map (mkPrepareDevicePostQemu args.name) args.virtualDevices)}
 
         machine.wait_for_unit("cloud-hypervisor.service")
 
@@ -587,7 +608,21 @@ in
 
   /**
     Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
-    The Functions purpose is to remove duplicated lines, make comparing tests easier and write new tests with less boilerplate.
+    The Functions purpose is to remove duplicated lines, make comparing tests easier
+    and write new tests with less boilerplate.
+
+    For the testscript this function provides an object from the nested running
+    `cloud_hypervisor` vm, that can use `.succeed()` and `.wait_until_succeeds()`
+    just like the qemu nixos test `machine` object can.
+
+    When using more than one device, each shall define its `usbPort` and
+    `udevRule.symlink` (the default value is static).
+
+    For each serial device this function provides a python socket object with the
+    name equal to the symlink. Use this object to send and receive data over the
+    usb-serial adapter.
+    Note: Serial devices cannot use `attachedOnStartup = "none";`.
+    Note: Serial symlink strings have to follow python variable naming restrictions.
 
     # Inputs
 
@@ -604,7 +639,7 @@ in
       useFileDescriptor :: Bool
       virtualDevices :: [
         {
-        type :: "blockdevice" || "hid-device"
+        type :: "block" || "hid" || "serial"
         usbVersion :: "1.1" || "2" || "3"
         usbPort :: Integer || String
         udevRule.enable :: Bool
@@ -619,9 +654,23 @@ in
     # Examples
     :::{.example}
 
-    When Using more than one device each device should define its usbPort and udevRule.symlink (the default value is static).
+    ## `mkUsbTest` minimal example
 
-    ## `mkUsbTest` usage example
+    ```nix
+    myTest = mkUsbTest {
+      name = "foo";
+      virtualDevices = [
+        {
+          type = "block";
+        }
+      ];
+      testScript = ''
+        cloud_hypervisor.succeed("echo hello", timeout=60)
+      '';
+    };
+    ```
+
+    ## `mkUsbTest` full example
 
     ```nix
     myTest = mkUsbTest {
@@ -630,7 +679,7 @@ in
       useFileDescriptor = false;
       virtualDevices = [
         {
-          type = "blockdevice";
+          type = "block";
           usbVersion = "2";
           usbPort = 1;
           udevRule.enable = true;
