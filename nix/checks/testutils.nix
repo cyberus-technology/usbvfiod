@@ -108,7 +108,7 @@ let
   # Putting the socket in a world-readable location is obviously not a
   # good choice for a production setup, but for this test it works
   # well.
-  usbvfiodSocket = "/tmp/usbvfio";
+  usbvfiodSocket = "/tmp/usbvfiod";
   usbvfiodSocketHotplug = "/tmp/hotplug";
 
   guestLogFile = "/tmp/console.log";
@@ -274,6 +274,11 @@ let
   # Fill in a template for the qemu.options list for a USB keyboard.
   mkQemuKeyboard = deviceBus: devicePort: "-device usb-kbd,bus=${deviceBus}.0,port=${devicePort}";
 
+  # Add a usb to serial adapter
+  mkQemuSerialAdapter =
+    deviceId: deviceBus: devicePort:
+    "-chardev pipe,id=charusbserial,path=/tmp/usbserial -device usb-serial,chardev=charusbserial,id=${deviceId},bus=${deviceBus}.0,port=${devicePort}";
+
   # Create a blockdevice or USB keyboard on our QEMU bus-id corresponding with the declared usb version.
   mkUsbDeviceType =
     testname: device:
@@ -289,8 +294,10 @@ let
         "${builtins.toString device.usbPort}"
     else if (device.type == "hid-device") then
       mkQemuKeyboard "${deviceBus}" "${builtins.toString device.usbPort}"
+    else if (device.type == "serial") then
+      mkQemuSerialAdapter "usbserial" "${deviceBus}" "${builtins.toString device.usbPort}"
     else
-      builtins.abort ''wrong device type; types supported are "blockdevice" and "hid-device"'';
+      builtins.abort ''wrong device type; types supported are "blockdevice", "hid-device" and "serial"'';
 
   # Respect if attached at host on boot option is true to create the QEMU device option.
   mkUsbDevice =
@@ -338,7 +345,7 @@ let
   # Input type check for list of virtualDevices in the attrs.
   sanityCheckDevice =
     device:
-    assert (device.type == "blockdevice" || device.type == "hid-device");
+    assert (device.type == "blockdevice" || device.type == "hid-device" || device.type == "serial");
     assert (device.usbVersion == "1.1" || device.usbVersion == "2" || device.usbVersion == "3");
     assert (builtins.typeOf device.usbPort == "int" || builtins.typeOf device.usbPort == "string");
     assert (builtins.typeOf device.udevRule.enable == "bool");
@@ -471,6 +478,10 @@ let
           builtins.map (mkPrepareBlockdeviceImages args.name) args.virtualDevices
         )}
 
+        import subprocess
+        # prepare serial device communication (even if not used)
+        subprocess.run(["mkfifo", "/tmp/usbserial.in", "/tmp/usbserial.out"])
+
         start_all()
 
         machine.wait_for_unit("cloud-hypervisor.service")
@@ -533,7 +544,7 @@ in
       debug :: Bool
       virtualDevices :: [
         {
-        type :: "blockdevice" || "hid-device"
+        type :: "blockdevice" || "hid-device" || "serial"
         usbVersion :: "1.1" || "2" || "3"
         usbPort :: Integer || String
         udevRule.enable :: Bool
@@ -549,6 +560,30 @@ in
     :::{.example}
 
     When Using more than one device each device should define its usbPort and udevRule.symlink (the default value is static).
+
+    # 'mkUsbTest' can default some values
+
+    Some values in the top level and some for each of the added `virtualDevices`
+    can default to a value and do not have to be provided. The below function call
+    is an example where all missing inputs show non optional values while all
+    filled in values are what will be used as the default.
+
+    mkUsbTest {
+      name = <required>;
+      debug = true;
+      virtualDevices = [
+        {
+          type = <required>;
+          usbVersion = "3";
+          usbPort = 1;
+          udevRule.enable = true;
+          udevRule.symlink = "testdevice";
+          attachedOnStartup = "guest";
+        }
+      ];
+      testScript = <required>;
+    }  { systemd = <required> }
+    ```
 
     ## `mkUsbTest` usage example
 
@@ -635,7 +670,48 @@ in
         out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=60)
         search("123TEST123", out)
       '';
-    };
+    } (args: {
+    systemd.services = {
+      usbvfiod = {
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          User = "usbaccess";
+          Group = "usbaccess";
+          Restart = "on-failure";
+          RestartSec = "2s";
+          ExecStart = ''
+            ${lib.getExe usbvfiod} ${
+              if args.debug then "-v" else ""
+            } --socket-path ${testutils.usbvfiodSocket} --hotplug-socket-path ${testutils.usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map testutils.mkDeviceFlag args.virtualDevices)}
+          '';
+        };
+        environment = {
+          RUST_BACKTRACE = "full";
+        };
+      };
+
+      cloud-hypervisor =
+        let
+          netboot = testutils.mkNetboot args.debug;
+        in
+        {
+          wantedBy = [ "multi-user.target" ];
+          requires = [ "usbvfiod.service" ];
+          after = [ "usbvfiod.service" ];
+          serviceConfig = {
+            Restart = "on-failure";
+            RestartSec = "2s";
+            ExecStart = ''
+              ${lib.getExe cloud-hypervisor} --memory size=2G,shared=on --console file=${testutils.guestLogFile} --serial off \
+                --kernel ${netboot.kernel} \
+                --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                --initramfs ${netboot.initrd} \
+                --user-device socket=${testutils.usbvfiodSocket} \
+                --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+            '';
+          };
+        };
+    })
     ```
   */
   mkUsbTest = args: systemd: mkUsbTestChecked (sanityCheckArgs (mkDefaults args)) systemd;
