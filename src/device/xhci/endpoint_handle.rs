@@ -728,7 +728,10 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                 .iter()
                 .map(SupportedInEndpointTrb::transfer_length)
                 .sum::<usize>();
-            debug!("Submitting real request for {td_request_length} bytes");
+            debug!(
+                "Submitting on ep {} a real request for {td_request_length} bytes",
+                self.endpoint_id
+            );
             self.real_ep.submit(td_request_length)?;
 
             replace_with_or_abort(&mut self.submission_state, |old_state| {
