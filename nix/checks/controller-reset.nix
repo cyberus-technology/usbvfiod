@@ -35,7 +35,7 @@ builtins.listToAttrs (
       name = "controller-reset-usb-${usbVersion}";
       virtualDevices = [
         {
-          type = "blockdevice";
+          type = "block";
           inherit usbVersion;
         }
       ];
