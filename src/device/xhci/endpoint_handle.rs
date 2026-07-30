@@ -618,6 +618,16 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         "invalid control transfer sequence; expected Setup Stage Trb, got: {:?}",
                         other_trb
                     );
+                    let event = EventTrb::new_transfer_event_trb(
+                        trb.address,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(event)?;
+
                     self.submission_state =
                         ControlSubmissionState::ParserConsumedTrb(trb.address, other_trb);
                 }
@@ -640,6 +650,17 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         "invalid control transfer sequence; expected Setup, Data or Status Stage Trb, got: {:?}",
                         other_trb
                     );
+
+                    let event = EventTrb::new_transfer_event_trb(
+                        trb.address,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(event)?;
+
                     self.transfer_state.state = ControlTransferStage::ExpectSetupStageTrb;
                     self.submission_state =
                         ControlSubmissionState::ParserConsumedTrb(trb.address, other_trb);
@@ -663,6 +684,17 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         "invalid control transfer sequence; expected Setup Stage, Normal or Event Data Trb, got: {:?}",
                         other_trb
                     );
+
+                    let event = EventTrb::new_transfer_event_trb(
+                        trb.address,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(event)?;
+
                     self.transfer_state.state = ControlTransferStage::ExpectSetupStageTrb;
                     self.submission_state =
                         ControlSubmissionState::ParserConsumedTrb(trb.address, other_trb);
@@ -684,6 +716,17 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         "invalid control transfer sequence; expected Setup or Status Stage Trb, got: {:?}",
                         other_trb
                     );
+
+                    let event = EventTrb::new_transfer_event_trb(
+                        trb.address,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(event)?;
+
                     self.transfer_state.state = ControlTransferStage::ExpectSetupStageTrb;
                     self.submission_state =
                         ControlSubmissionState::ParserConsumedTrb(trb.address, other_trb);
@@ -704,6 +747,17 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         "invalid control transfer sequence; expected Setup Stage or Event Data Trb, got: {:?}",
                         other_trb
                     );
+
+                    let event = EventTrb::new_transfer_event_trb(
+                        trb.address,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(event)?;
+
                     self.transfer_state.state = ControlTransferStage::ExpectSetupStageTrb;
                     self.submission_state =
                         ControlSubmissionState::ParserConsumedTrb(trb.address, other_trb);
@@ -1861,6 +1915,29 @@ mod tests {
             Some(expected_event(SECOND_ADDRESS, 0, false))
         );
 
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                THIRD_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FOURTH_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
         assert!(interrupter.is_empty());
     }
 
@@ -2202,6 +2279,17 @@ mod tests {
 
         assert_eq!(
             interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
             Some(expected_event(SECOND_ADDRESS, 0, false))
         );
         assert_eq!(
@@ -2279,6 +2367,28 @@ mod tests {
         assert_eq!(
             interrupter.await_event().await,
             Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FOURTH_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIFTH_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
         );
 
         assert!(interrupter.is_empty());
