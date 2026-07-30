@@ -592,6 +592,7 @@ enum ControlSubmissionState {
     NoTrbSubmitted,
     ParserConsumedTrb(u64, TransferTrbVariant),
     ParserError(u64),
+    UnexpectedTrb(u64, TransferTrbVariant),
     AwaitingControlIn(u64, TransferTrbVariant),
     AwaitingControlOut(u64, TransferTrbVariant),
 }
@@ -618,18 +619,9 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         "invalid control transfer sequence; expected Setup Stage Trb, got: {:?}",
                         other_trb
                     );
-                    let event = EventTrb::new_transfer_event_trb(
-                        trb.address,
-                        0,
-                        CompletionCode::TrbError,
-                        false,
-                        self.endpoint_id,
-                        self.slot_id,
-                    );
-                    self.event_sender.send(event)?;
 
                     self.submission_state =
-                        ControlSubmissionState::ParserConsumedTrb(trb.address, other_trb);
+                        ControlSubmissionState::UnexpectedTrb(trb.address, other_trb);
                 }
             },
             ControlTransferStage::MaybeDataStageTrb => match variant {
@@ -651,19 +643,9 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         other_trb
                     );
 
-                    let event = EventTrb::new_transfer_event_trb(
-                        trb.address,
-                        0,
-                        CompletionCode::TrbError,
-                        false,
-                        self.endpoint_id,
-                        self.slot_id,
-                    );
-                    self.event_sender.send(event)?;
-
                     self.transfer_state.state = ControlTransferStage::ExpectSetupStageTrb;
                     self.submission_state =
-                        ControlSubmissionState::ParserConsumedTrb(trb.address, other_trb);
+                        ControlSubmissionState::UnexpectedTrb(trb.address, other_trb);
                 }
             },
             ControlTransferStage::MoreData => match variant {
@@ -685,19 +667,9 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         other_trb
                     );
 
-                    let event = EventTrb::new_transfer_event_trb(
-                        trb.address,
-                        0,
-                        CompletionCode::TrbError,
-                        false,
-                        self.endpoint_id,
-                        self.slot_id,
-                    );
-                    self.event_sender.send(event)?;
-
                     self.transfer_state.state = ControlTransferStage::ExpectSetupStageTrb;
                     self.submission_state =
-                        ControlSubmissionState::ParserConsumedTrb(trb.address, other_trb);
+                        ControlSubmissionState::UnexpectedTrb(trb.address, other_trb);
                 }
             },
 
@@ -717,19 +689,9 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         other_trb
                     );
 
-                    let event = EventTrb::new_transfer_event_trb(
-                        trb.address,
-                        0,
-                        CompletionCode::TrbError,
-                        false,
-                        self.endpoint_id,
-                        self.slot_id,
-                    );
-                    self.event_sender.send(event)?;
-
                     self.transfer_state.state = ControlTransferStage::ExpectSetupStageTrb;
                     self.submission_state =
-                        ControlSubmissionState::ParserConsumedTrb(trb.address, other_trb);
+                        ControlSubmissionState::UnexpectedTrb(trb.address, other_trb);
                 }
             },
             ControlTransferStage::ExpectFinalEventDataTrb => match variant {
@@ -748,19 +710,9 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
                         other_trb
                     );
 
-                    let event = EventTrb::new_transfer_event_trb(
-                        trb.address,
-                        0,
-                        CompletionCode::TrbError,
-                        false,
-                        self.endpoint_id,
-                        self.slot_id,
-                    );
-                    self.event_sender.send(event)?;
-
                     self.transfer_state.state = ControlTransferStage::ExpectSetupStageTrb;
                     self.submission_state =
-                        ControlSubmissionState::ParserConsumedTrb(trb.address, other_trb);
+                        ControlSubmissionState::UnexpectedTrb(trb.address, other_trb);
                 }
             },
         }
@@ -773,6 +725,21 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
             let result = match self.submission_state.clone() {
                 ControlSubmissionState::ParserConsumedTrb(address, variant) => {
                     trace!("consumed trb from address: {} as: {:?}", address, variant);
+                    TrbProcessingResult::Ok
+                }
+                ControlSubmissionState::UnexpectedTrb(address, variant) => {
+                    warn!("unexpected trb from address: {} as: {:?}", address, variant);
+
+                    let event = EventTrb::new_transfer_event_trb(
+                        address,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(event)?;
+
                     TrbProcessingResult::Ok
                 }
                 ControlSubmissionState::ParserError(address) => {
