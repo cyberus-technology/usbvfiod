@@ -16,6 +16,16 @@ in
   multiple-blockdevices = mkNixosIntegrationTest ./multiple-blockdevices.nix;
   forceful-removal = mkNixosIntegrationTest ./forceful-removal.nix;
 }
+// import ./controller-reset.nix {
+  inherit (pkgs)
+    cloud-hypervisor
+    ;
+  inherit
+    lib
+    usbvfiod
+    testutils
+    ;
+}
 // import ./blockdevice.nix {
   inherit (pkgs)
     cloud-hypervisor
