@@ -410,6 +410,23 @@ mod tests {
     }
 
     #[test]
+    fn event_ring_reset_clears_local_state() {
+        let (_ram, mut ring, reg) = init_ram_and_ring_and_registers();
+
+        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp);
+        assert_ne!(ring.enqueue_pointer, 0);
+        assert_ne!(ring.trb_count, 0);
+        assert!(ring.cycle_state);
+
+        ring.reset();
+
+        assert_eq!(ring.enqueue_pointer, 0);
+        assert_eq!(ring.trb_count, 0);
+        assert_eq!(ring.erst_count, 0);
+        assert!(!ring.cycle_state);
+    }
+
+    #[test]
     #[should_panic(expected = "ERSTSZ must be set before ERSTBA")]
     fn configure_requires_erstsz_first() {
         let erste = [
