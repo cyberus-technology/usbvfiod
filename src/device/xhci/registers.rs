@@ -380,4 +380,26 @@ mod tests {
             "Not writing to allowed and already set bit 2 should clear it."
         );
     }
+
+    #[test]
+    fn usbcmd_preserves_hcrst_until_reset_completes() {
+        let reg = UsbcmdRegister::new();
+
+        reg.write(usbcmd::RS | usbcmd::HCRST);
+        assert_eq!(reg.read(), usbcmd::RS | usbcmd::HCRST);
+
+        reg.write(usbcmd::INTE);
+        assert_eq!(
+            reg.read(),
+            usbcmd::INTE | usbcmd::HCRST,
+            "HCRST should stay set until the reset coordinator clears it."
+        );
+
+        reg.clear_hcrst();
+        assert_eq!(
+            reg.read(),
+            usbcmd::INTE,
+            "clearing HCRST should preserve the other writable bits."
+        );
+    }
 }
