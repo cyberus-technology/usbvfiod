@@ -126,7 +126,6 @@ pub mod tests {
             real_device,
         };
 
-        #[expect(dead_code)]
         #[derive(Default, Debug)]
         pub struct MockRealDevice {}
 

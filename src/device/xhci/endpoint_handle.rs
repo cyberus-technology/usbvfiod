@@ -970,7 +970,6 @@ pub mod tests {
             data_length: u16,
             direction: bool,
         }
-        #[expect(dead_code)]
         impl MockRealControlEndpointReadStatic {
             pub fn new() -> Self {
                 Self {
@@ -1030,7 +1029,6 @@ pub mod tests {
         pub struct MockRealInEndpoint {
             data_length: usize,
         }
-        #[expect(dead_code)]
         impl MockRealInEndpoint {
             pub fn new() -> Self {
                 Self { data_length: 0 }
@@ -1074,7 +1072,6 @@ pub mod tests {
         // mock for bulk out real endpoint returning success while discarding the data
         #[derive(Debug)]
         pub struct MockRealOutEndpoint {}
-        #[expect(dead_code)]
         impl MockRealOutEndpoint {
             pub fn new() -> Self {
                 Self {}
