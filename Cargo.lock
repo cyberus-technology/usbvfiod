@@ -410,9 +410,9 @@ dependencies = [
 
 [[package]]
 name = "nusb"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36a27f8bd2cea8b09029d2d3fa51e7aed1040c76e35a9a77de38d587849b0179"
+checksum = "18ef13beb3b3a8fc16fd7aea912ebd3d45dde00a9a5b968d0742297468065845"
 dependencies = [
  "core-foundation",
  "core-foundation-sys",
