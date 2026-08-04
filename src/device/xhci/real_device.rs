@@ -62,7 +62,7 @@ impl Identifier for (u8, u8) {}
 // the best bet for identification. However, with two identical devices, the
 // approach fails to uniquely identify the devices. Complete real device allows
 // distinction of devices by storing an externally-decided, unique identifier.
-// Host bus-/device-number is an option,// but so are randomly chosen (but unique
+// Host bus-/device-number is an option, but so are randomly chosen (but unique)
 // numbers or strings.
 //
 // A CompleteRealDevice must also provide a CancellationToken that can be used
@@ -109,5 +109,57 @@ impl<RD: RealDevice, ID: Identifier> CompleteRealDevice for CompleteRealDeviceIm
 
     fn detach_token(&self) -> CancellationToken {
         self.cancel.clone()
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    pub mod testutils {
+        use super::*;
+
+        use crate::device::xhci::{
+            endpoint_handle::tests::testutils::{
+                MockRealControlEndpointReadStatic, MockRealInEndpoint, MockRealOutEndpoint,
+            },
+            real_device,
+        };
+
+        #[expect(dead_code)]
+        #[derive(Default, Debug)]
+        pub struct MockRealDevice {}
+
+        impl RealDevice for MockRealDevice {
+            type RCEH = MockRealControlEndpointReadStatic;
+            type RBIEH = MockRealInEndpoint;
+            type RBOEH = MockRealOutEndpoint;
+            type RIIEH = MockRealInEndpoint;
+            type RIOEH = MockRealOutEndpoint;
+
+            fn speed(&self) -> Option<real_device::Speed> {
+                Some(Speed::Super)
+            }
+
+            fn control_endpoint_handle(&self) -> Self::RCEH {
+                MockRealControlEndpointReadStatic::new()
+            }
+
+            fn bulk_in_endpoint_handle(&self, _endpoint_id: u8) -> Self::RBIEH {
+                MockRealInEndpoint::new()
+            }
+
+            fn bulk_out_endpoint_handle(&self, _endpoint_id: u8) -> Self::RBOEH {
+                MockRealOutEndpoint::new()
+            }
+
+            fn interrupt_in_endpoint_handle(&self, _endpoint_id: u8) -> Self::RIIEH {
+                MockRealInEndpoint::new()
+            }
+
+            fn interrupt_out_endpoint_handle(&self, _endpoint_id: u8) -> Self::RIOEH {
+                MockRealOutEndpoint::new()
+            }
+        }
     }
 }
