@@ -2009,6 +2009,116 @@ pub mod tests {
     }
 
     #[tokio::test]
+    #[should_panic(expected = "assertion `left == right` failed")]
+    async fn control_in_do_not_rely_on_wlength_for_transferred_data() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            // use vendor specific theoretically spec violating data in wLength
+            .with_setup_length(0x0)
+            .with_idt()
+            .with_ioc()
+            .with_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_field(DMA_POINTER_1)
+            .with_length(TRANSFER_LENGTH)
+            .with_ioc()
+            .with_type(TRB_TYPE_DATA_STAGE)
+            .with_dir()
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_ioc()
+            .with_type(TRB_TYPE_STATUS_STAGE)
+            .with_dir()
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, TRANSFER_LENGTH, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "assertion `left == right` failed")]
+    async fn control_out_do_not_rely_on_wlength_for_transferred_data() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
+            // use vendor specific theoretically spec violating data in wLength
+            .with_setup_length(0x0)
+            .with_idt()
+            .with_ioc()
+            .with_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_field(DMA_POINTER_1)
+            .with_length(TRANSFER_LENGTH)
+            .with_ioc()
+            .with_type(TRB_TYPE_DATA_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_ioc()
+            .with_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, TRANSFER_LENGTH, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
     async fn submit_second_illegal_data_stage_trb() {
         let (mut interrupter, mut control_endpoint) =
             init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
