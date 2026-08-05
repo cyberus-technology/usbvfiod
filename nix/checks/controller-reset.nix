@@ -1,54 +1,7 @@
 {
-  lib,
-  cloud-hypervisor,
-  usbvfiod,
   testutils,
 }:
 let
-  systemd-config = args: {
-    systemd.services = {
-      usbvfiod = {
-        wantedBy = [ "multi-user.target" ];
-        serviceConfig = {
-          User = "usbaccess";
-          Group = "usbaccess";
-          Restart = "on-failure";
-          RestartSec = "2s";
-          ExecStart = ''
-            ${lib.getExe usbvfiod} ${
-              if args.debug then "-v" else ""
-            } --socket-path ${testutils.usbvfiodSocket} --hotplug-socket-path ${testutils.usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map testutils.mkDeviceFlag args.virtualDevices)}
-          '';
-        };
-        environment = {
-          RUST_BACKTRACE = "full";
-        };
-      };
-
-      cloud-hypervisor =
-        let
-          netboot = testutils.mkNetboot args.debug;
-        in
-        {
-          wantedBy = [ "multi-user.target" ];
-          requires = [ "usbvfiod.service" ];
-          after = [ "usbvfiod.service" ];
-          serviceConfig = {
-            Restart = "on-failure";
-            RestartSec = "2s";
-            ExecStart = ''
-              ${lib.getExe cloud-hypervisor} --memory size=2G,shared=on --console file=${testutils.guestLogFile} --serial off \
-                --kernel ${netboot.kernel} \
-                --cmdline ${lib.escapeShellArg netboot.cmdline} \
-                --initramfs ${netboot.initrd} \
-                --user-device socket=${testutils.usbvfiodSocket} \
-                --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
-            '';
-          };
-        };
-    };
-  };
-
   testScript = ''
     # Wait until the USB drive is recognized.
     out = cloud_hypervisor.wait_until_succeeds("lsusb -d ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId}", timeout=120)
@@ -87,6 +40,6 @@ builtins.listToAttrs (
         }
       ];
       inherit testScript;
-    } systemd-config;
+    };
   }) (builtins.attrNames testutils.usbVersions)
 )

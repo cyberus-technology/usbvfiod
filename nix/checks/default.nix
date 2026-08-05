@@ -4,12 +4,14 @@
   usbvfiod,
 }:
 let
-  testutils = import ./testutils.nix { inherit lib pkgs; };
+  testutils = import ./testutils.nix {
+    inherit lib pkgs usbvfiod;
+    inherit (pkgs) cloud-hypervisor;
+  };
   mkNixosIntegrationTest =
     file:
     pkgs.callPackage file {
-      inherit (pkgs) cloud-hypervisor;
-      inherit usbvfiod testutils;
+      inherit testutils;
     };
 in
 {
@@ -17,42 +19,14 @@ in
   forceful-removal = mkNixosIntegrationTest ./forceful-removal.nix;
 }
 // import ./controller-reset.nix {
-  inherit (pkgs)
-    cloud-hypervisor
-    ;
-  inherit
-    lib
-    usbvfiod
-    testutils
-    ;
+  inherit testutils;
 }
 // import ./blockdevice.nix {
-  inherit (pkgs)
-    cloud-hypervisor
-    ;
-  inherit
-    lib
-    usbvfiod
-    testutils
-    ;
+  inherit testutils;
 }
 // import ./attach-detach.nix {
-  inherit (pkgs)
-    cloud-hypervisor
-    ;
-  inherit
-    lib
-    usbvfiod
-    testutils
-    ;
+  inherit usbvfiod testutils;
 }
 // import ./interrupt.nix {
-  inherit (pkgs)
-    cloud-hypervisor
-    ;
-  inherit
-    lib
-    usbvfiod
-    testutils
-    ;
+  inherit testutils;
 }
