@@ -188,7 +188,7 @@ impl CommandWorker {
 
     // function only returns on error, but cannot use ! in Result
     async fn run_loop(&mut self) -> anyhow::Result<()> {
-        loop {
+        'run_loop: loop {
             match &self.state {
                 WorkerState::Stopped => match self.next_msg().await? {
                     WorkerMessage::Reset(completion) => {
@@ -243,7 +243,7 @@ impl CommandWorker {
                             }
                             WorkerMessage::Stop => {
                                 self.state = WorkerState::Stopping;
-                                break;
+                                continue 'run_loop;
                             }
                             msg => warn!("Unexpected message: msg={msg:?}, state={:?}", self.state),
                         }
@@ -273,6 +273,14 @@ impl CommandWorker {
                 }
                 WorkerState::Stopping => {
                     self.commandring_running.store(false, Ordering::Relaxed);
+                    let (dequeue_pointer, _) = self.ring.get_dequeue_pointer();
+                    let event = EventTrb::new_command_completion_event_trb(
+                        dequeue_pointer,
+                        0,
+                        CompletionCode::CommandRingStopped,
+                        0,
+                    );
+                    self.event_sender.send(event)?;
                     self.state = WorkerState::Stopped;
                 }
             }
