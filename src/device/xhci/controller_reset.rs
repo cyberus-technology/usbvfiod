@@ -64,3 +64,54 @@ impl ResetCoordinator {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    struct TestResetSender {
+        completion_sender: mpsc::UnboundedSender<oneshot::Sender<()>>,
+    }
+
+    impl ResetSender for TestResetSender {
+        fn send_reset(&self, completion_notifier: oneshot::Sender<()>) -> anyhow::Result<()> {
+            self.completion_sender.send(completion_notifier)?;
+
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn reset_clears_hcrst_after_all_components_complete() {
+        let usbcmd = UsbcmdRegister::new();
+        usbcmd.write(usbcmd::HCRST);
+
+        let (completion_sender, mut completion_receiver) = mpsc::unbounded_channel();
+        let coordinator = ResetCoordinator {
+            usbcmd: usbcmd.clone(),
+            reset_senders: [
+                Box::new(TestResetSender {
+                    completion_sender: completion_sender.clone(),
+                }),
+                Box::new(TestResetSender {
+                    completion_sender: completion_sender.clone(),
+                }),
+                Box::new(TestResetSender { completion_sender }),
+            ],
+        };
+
+        let reset_task = tokio::spawn(async move { coordinator.reset().await });
+
+        for _ in 0..3 {
+            let completion = completion_receiver.recv().await.unwrap();
+            assert_eq!(usbcmd.read() & usbcmd::HCRST, usbcmd::HCRST);
+            completion.send(()).unwrap();
+        }
+
+        reset_task.await.unwrap().unwrap();
+        assert_eq!(usbcmd.read() & usbcmd::HCRST, 0);
+    }
+}
