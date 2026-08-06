@@ -25,7 +25,7 @@ pub const fn zeroed_trb_buffer() -> RawTrbBuffer {
 /// Represents a TRB that the XHCI controller can place on the event ring.
 ///
 /// See XHCI specification Section 6.4.2 for detailed event TRB type descriptions.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum EventTrb {
     Transfer(TransferEventTrbData),
     CommandCompletion(CommandCompletionEventTrbData),
@@ -65,7 +65,7 @@ impl EventTrb {
 ///
 /// Do not use this struct directly, use EventTrb::new_command_completion_event_trb
 /// instead.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct CommandCompletionEventTrbData {
     command_trb_pointer: u64,
     command_completion_parameter: u32,
@@ -132,7 +132,7 @@ impl CommandCompletionEventTrbData {
 ///
 /// Do not use this struct directly, use EventTrb::new_port_status_change_event_trb
 /// instead.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PortStatusChangeEventTrbData {
     port_id: u8,
 }
@@ -164,7 +164,7 @@ impl PortStatusChangeEventTrbData {
 }
 
 /// Stores the relevant data for a Transfer Event.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TransferEventTrbData {
     trb_pointer: u64,
     trb_transfer_length: u32,
@@ -227,7 +227,7 @@ impl TransferEventTrbData {
 ///
 /// Refer to Table 6-90 in the XHCI specification for detailed descriptions of each code.
 #[allow(dead_code)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CompletionCode {
     Invalid = 0,
     Success,
