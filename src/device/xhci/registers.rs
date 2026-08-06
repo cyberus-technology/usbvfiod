@@ -402,4 +402,31 @@ mod tests {
             "clearing HCRST should preserve the other writable bits."
         );
     }
+
+    #[test]
+    fn usbsts_read_is_consistent_with_usbcmd_status() {
+        let usbcmd = UsbcmdRegister::new();
+        let usbsts = UsbstsRegister::new(usbcmd.value_reference());
+
+        assert_eq!(
+            usbsts.read() & usbsts::HCH,
+            usbsts::HCH,
+            "HCHalted bit is a 1 whenever the Run/Stop (R/S) bit is a 0."
+        );
+
+        usbcmd.write(usbcmd::RS);
+
+        assert_eq!(
+            usbsts.read() & usbsts::HCH,
+            0,
+            "HCHalted bit is a 0 whenever the Run/Stop (R/S) bit is a 1."
+        );
+
+        let static_bits = usbsts::EINT | usbsts::PCD;
+        assert_eq!(
+            usbsts.read() & static_bits,
+            static_bits,
+            "After creating this register we have some initial values."
+        );
+    }
 }
