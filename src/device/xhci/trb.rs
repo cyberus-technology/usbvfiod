@@ -352,6 +352,7 @@ pub struct CommandTrb {
 /// See XHCI specification Section 6.4.3 for detailed command TRB type descriptions.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommandTrbVariant {
+    NoOp,
     EnableSlot,
     DisableSlot(DisableSlotCommandTrbData),
     AddressDevice(AddressDeviceCommandTrbData),
@@ -362,7 +363,6 @@ pub enum CommandTrbVariant {
     SetTrDequeuePointer(SetTrDequeuePointerCommandTrbData),
     ResetDevice(ResetDeviceCommandTrbData),
     ForceHeader,
-    NoOp,
     Unrecognized(RawTrbBuffer, TrbParseError),
 }
 

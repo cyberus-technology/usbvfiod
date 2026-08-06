@@ -383,7 +383,12 @@ impl CommandWorker {
                 )
             }
             CommandTrbVariant::ForceHeader => todo!(),
-            CommandTrbVariant::NoOp => todo!(),
+            CommandTrbVariant::NoOp => EventTrb::new_command_completion_event_trb(
+                trb.address,
+                0,
+                CompletionCode::Success,
+                0,
+            ),
             CommandTrbVariant::Unrecognized(_, trb_parse_error) => {
                 warn!("Failed to parse command TRB {trb_parse_error:?}");
                 EventTrb::new_command_completion_event_trb(
