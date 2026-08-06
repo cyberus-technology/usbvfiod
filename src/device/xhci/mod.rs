@@ -1,4 +1,5 @@
 pub mod command_ring;
+pub mod controller_reset;
 pub mod endpoint;
 pub mod endpoint_handle;
 pub mod endpoint_launcher;

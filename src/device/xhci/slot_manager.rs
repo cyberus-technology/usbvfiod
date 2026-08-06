@@ -10,6 +10,7 @@ use crate::{
         bus::{BusDeviceRef, Request, RequestSize},
         pci::constants::xhci::{device_slots::slot_state, MAX_SLOTS},
         xhci::{
+            controller_reset::ResetSender,
             endpoint::EndpointSender,
             endpoint_launcher::LaunchRequester,
             registers::{ConfigureRegister, DcbaapRegister},
@@ -28,6 +29,20 @@ pub struct SlotManager {
     pub config_reg: ConfigureRegister,
     pub dcbaap: DcbaapRegister,
     msg_send: mpsc::UnboundedSender<SlotMessage>,
+}
+
+#[derive(Debug)]
+pub struct SlotManagerResetSender {
+    msg_send: mpsc::UnboundedSender<SlotMessage>,
+}
+
+impl ResetSender for SlotManagerResetSender {
+    fn send_reset(&self, completion_notifier: oneshot::Sender<()>) -> anyhow::Result<()> {
+        self.msg_send
+            .send(SlotMessage::ResetAllSlots(completion_notifier))?;
+
+        Ok(())
+    }
 }
 
 impl SlotManager {
@@ -70,6 +85,12 @@ impl SlotManager {
             msg_send: self.msg_send.clone(),
         }
     }
+
+    pub fn reset_sender(&self) -> SlotManagerResetSender {
+        SlotManagerResetSender {
+            msg_send: self.msg_send.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -98,6 +119,7 @@ pub enum SlotMessage {
         oneshot::Sender<CompletionCode>,
     ),
     ResetDevice(u8, oneshot::Sender<CompletionCode>),
+    ResetAllSlots(oneshot::Sender<()>),
     // slot_id, endpoint_id
     StopEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
     ResetEndpoint(u8, u8, oneshot::Sender<CompletionCode>),
@@ -227,6 +249,10 @@ impl SlotWorker {
                     let result = slot.handle_reset_device().await?;
                     sender.send_anyhow(result)?;
                 }
+                SlotMessage::ResetAllSlots(completion) => {
+                    self.reset().await?;
+                    completion.send_anyhow(())?;
+                }
                 SlotMessage::StopEndpoint(slot_id, endpoint_id, sender) => {
                     let slot = match self.slot_ref(slot_id) {
                         Some(slot) => slot,
@@ -345,6 +371,19 @@ impl SlotWorker {
         self.slots[slot_id as usize] = None;
 
         Ok(CompletionCode::Success)
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        let mut result = Ok(());
+
+        self.config_reg.reset();
+        self.dcbaap.reset();
+
+        for mut slot in self.slots.iter_mut().filter_map(Option::take) {
+            result = result.and(slot.pre_drop().await);
+        }
+
+        result
     }
 }
 
@@ -614,12 +653,14 @@ impl Slot {
 
     // call before dropping (disabling this slot)
     async fn pre_drop(&mut self) -> anyhow::Result<()> {
-        // disable EP0 if active
-        if !matches!(self.state, SlotState::Enabled) {
-            self.deconfigure_endpoint(1).await?;
+        let mut result = Ok(());
+
+        // disable all active endpoints
+        for endpoint_sender in self.endpoint_senders.iter_mut().filter_map(Option::take) {
+            result = result.and(endpoint_sender.terminate().await);
         }
 
-        Ok(())
+        result
     }
 
     async fn handle_reset_device(&mut self) -> anyhow::Result<CompletionCode> {

@@ -15,6 +15,7 @@ use crate::device::{
         traits::PciDevice,
     },
     xhci::{
+        controller_reset::ResetCoordinator,
         endpoint_launcher::EndpointLauncher,
         port::{get_portli_id, get_portpmsc_id, get_portsc_id, HotplugControl, PortArray},
         real_device::CompleteRealDevice,
@@ -59,6 +60,15 @@ impl<CRD: CompleteRealDevice> XhciController<CRD> {
             interrupter.create_event_sender(),
             slot_manager.create_slot_worker_handle(),
             usbcmd.value_reference(),
+        );
+        ResetCoordinator::start(
+            usbcmd.clone(),
+            [
+                Box::new(command_ring.reset_sender()),
+                Box::new(interrupter.reset_sender()),
+                Box::new(slot_manager.reset_sender()),
+            ],
+            &async_runtime,
         );
 
         Self {

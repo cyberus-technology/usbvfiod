@@ -68,6 +68,14 @@ impl EventRing {
         }
     }
 
+    pub const fn reset(&mut self) {
+        // The driver configures a fresh event ring after reset by writing ERSTBA.
+        self.enqueue_pointer = 0;
+        self.trb_count = 0;
+        self.erst_count = 0;
+        self.cycle_state = false;
+    }
+
     /// Configure the Event Ring.
     ///
     /// Call this function when the driver writes to the ERSTBA register (as
@@ -399,6 +407,23 @@ mod tests {
         // segment 0
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
         assert_trb_written(&ram, 0x30, true);
+    }
+
+    #[test]
+    fn event_ring_reset_clears_local_state() {
+        let (_ram, mut ring, reg) = init_ram_and_ring_and_registers();
+
+        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp);
+        assert_ne!(ring.enqueue_pointer, 0);
+        assert_ne!(ring.trb_count, 0);
+        assert!(ring.cycle_state);
+
+        ring.reset();
+
+        assert_eq!(ring.enqueue_pointer, 0);
+        assert_eq!(ring.trb_count, 0);
+        assert_eq!(ring.erst_count, 0);
+        assert!(!ring.cycle_state);
     }
 
     #[test]

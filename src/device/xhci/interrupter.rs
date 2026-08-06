@@ -1,14 +1,16 @@
 use anyhow::{anyhow, Context};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::{runtime, select};
 use tracing::{debug, info};
 
 use crate::device::bus::BusDeviceRef;
 use crate::device::interrupt_line::{DummyInterruptLine, InterruptLine};
 use crate::device::pci::constants::xhci::runtime::IMOD_DEFAULT;
+use crate::device::xhci::controller_reset::ResetSender;
 use crate::device::xhci::event_ring::EventRing;
 use crate::device::xhci::registers::{ErstbaRegister, GenericRwRegister};
 use crate::device::xhci::trb::EventTrb;
+use crate::oneshot_anyhow::SendWithAnyhowError;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -16,6 +18,20 @@ pub struct Interrupter {
     pub registers: InterrupterRegisters,
     /// Transmits events to send to the worker
     msg_sender: mpsc::UnboundedSender<InterrupterMessage>,
+}
+
+#[derive(Debug)]
+pub struct InterrupterResetSender {
+    msg_sender: mpsc::UnboundedSender<InterrupterMessage>,
+}
+
+impl ResetSender for InterrupterResetSender {
+    fn send_reset(&self, completion_notifier: oneshot::Sender<()>) -> anyhow::Result<()> {
+        self.msg_sender
+            .send(InterrupterMessage::Reset(completion_notifier))?;
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +74,7 @@ struct EventWorker {
 enum InterrupterMessage {
     SendEvent(EventTrb),
     UpdateInterruptLine(Arc<dyn InterruptLine>),
+    Reset(oneshot::Sender<()>),
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +132,12 @@ impl Interrupter {
             sender: self.msg_sender.clone(),
         }
     }
+
+    pub fn reset_sender(&self) -> InterrupterResetSender {
+        InterrupterResetSender {
+            msg_sender: self.msg_sender.clone(),
+        }
+    }
 }
 
 impl EventWorker {
@@ -134,29 +157,44 @@ impl EventWorker {
         }
     }
 
-    // function only returns on error, but cannot use ! in Result
     async fn run_loop(&mut self) -> anyhow::Result<()> {
-        // first ERSTBA write starts the event ring.
-        // drop all events that happen before.
-        // interrupt line updates should be processed.
+        // Each ERSTBA write configures a new event ring. A host controller reset
+        // clears that configuration and sends us back to waiting for ERSTBA.
+        loop {
+            self.wait_for_event_ring_configuration().await?;
+            self.event_ring.configure(
+                self.registers.erst_base_address.erstba(),
+                self.registers.erst_size.read() as u32,
+            );
+
+            self.run_configured().await?;
+        }
+    }
+
+    // The first ERSTBA write starts the event ring. Drop events that happen
+    // before configuration, but keep processing control messages.
+    async fn wait_for_event_ring_configuration(&mut self) -> anyhow::Result<()> {
         loop {
             select! {
-                _ = self.registers.erst_base_address.write_notification() => break,
+                _ = self.registers.erst_base_address.write_notification() => return Ok(()),
                 // we cannot use self.next_msg() here because it borrows self mutable, clashing
                 // with the borrow of self.registers above
                 msg = self.msg_recv.recv() => match msg.ok_or_else(|| anyhow!("event channel closed"))? {
                     InterrupterMessage::SendEvent(_) => {}
                     InterrupterMessage::UpdateInterruptLine(interrupt_line) => self.interrupt_line = interrupt_line,
+                    InterrupterMessage::Reset(completion) => {
+                        self.reset();
+                        completion.send_anyhow(())?;
+                    }
                 },
             }
         }
-        self.event_ring.configure(
-            self.registers.erst_base_address.erstba(),
-            self.registers.erst_size.read() as u32,
-        );
+    }
 
+    // Process messages while the event ring is configured. A reset clears the
+    // current configuration and returns to the outer loop to wait for ERSTBA.
+    async fn run_configured(&mut self) -> anyhow::Result<()> {
         loop {
-            // process TRB
             match self.next_msg().await? {
                 InterrupterMessage::SendEvent(event_trb) => {
                     self.event_ring.enqueue(
@@ -172,7 +210,25 @@ impl EventWorker {
                     self.interrupt_line = interrupt_line;
                     debug!("Updated interrupt line");
                 }
+                InterrupterMessage::Reset(completion) => {
+                    self.reset();
+                    completion.send_anyhow(())?;
+                    break;
+                }
             }
         }
+
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.registers.interrupt_management.write(0);
+        self.registers
+            .interrupt_moderation_interval
+            .write(IMOD_DEFAULT);
+        self.registers.erst_base_address.reset();
+        self.registers.erst_size.write(0);
+        self.registers.eventring_dequeue_pointer.write(0);
+        self.event_ring.reset();
     }
 }

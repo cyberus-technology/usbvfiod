@@ -159,6 +159,10 @@ impl ConfigureRegister {
         self.value.store(value, Ordering::Relaxed);
     }
 
+    pub fn reset(&self) {
+        self.value.store(0, Ordering::Relaxed);
+    }
+
     pub fn num_slots_enabled(&self) -> u8 {
         (self.read() & 0xff) as u8
     }
@@ -177,18 +181,24 @@ impl DcbaapRegister {
     pub fn write(&self, new_value: u64) {
         self.value.store(new_value & !0x1f, Ordering::Relaxed);
     }
+
+    pub fn reset(&self) {
+        self.value.store(0, Ordering::Relaxed);
+    }
 }
 
 /// USB Command Register (chapter 5.4.1)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UsbcmdRegister {
     value: Arc<AtomicU32>,
+    reset_notify: Arc<Notify>,
 }
 
 impl UsbcmdRegister {
     pub fn new() -> Self {
         Self {
             value: Arc::new(AtomicU32::new(0)),
+            reset_notify: Default::default(),
         }
     }
 
@@ -198,27 +208,41 @@ impl UsbcmdRegister {
 
     /// A simple write with a very limited list of allowed bits (RsvdP is also not written).
     pub fn write(&self, value: u64) {
-        // Currently writable bits ...
-        const BITMASK_PRESERVED: u64 = usbcmd::RS | usbcmd::INTE;
-        // ... ignoring any other bits and printing a warning when attempted.
-        if value & usbcmd::HCRST == usbcmd::HCRST {
-            info!("Host Controller Reset attempted; no action");
-        }
-        if value & !(BITMASK_PRESERVED | usbcmd::HCRST) != 0 {
+        // Currently writable bits, ignoring any other bits and printing a warning.
+        const BITMASK_PRESERVED: u64 = usbcmd::RS | usbcmd::INTE | usbcmd::HCRST;
+        if value & !BITMASK_PRESERVED != 0 {
             warn!(
                 "received at least one bit that is ignored for USBCMD: {}",
                 value & !BITMASK_PRESERVED
             );
         }
 
-        let value = value & BITMASK_PRESERVED;
-        // SAFETY: USBCMD is defined as 32 bit and the masks used above enforce it.
+        // Preserve an ongoing reset until the reset coordinator clears HCRST.
         self.value
-            .store(value.try_into().unwrap(), Ordering::Relaxed);
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                let hcrst = current as u64 & usbcmd::HCRST;
+                let value = (value & BITMASK_PRESERVED) | hcrst;
+                // SAFETY: USBCMD is defined as 32 bit and the masks used above enforce it.
+                Some(value.try_into().unwrap())
+            })
+            .unwrap();
+        if value & usbcmd::HCRST == usbcmd::HCRST {
+            info!("Host Controller Reset requested");
+            self.reset_notify.notify_waiters();
+        }
     }
 
     pub fn value_reference(&self) -> Arc<AtomicU32> {
         self.value.clone()
+    }
+
+    pub async fn hcrst_notification(&self) {
+        self.reset_notify.notified().await;
+    }
+
+    pub fn clear_hcrst(&self) {
+        self.value
+            .fetch_and(!(usbcmd::HCRST as u32), Ordering::Relaxed);
     }
 }
 
@@ -278,6 +302,10 @@ impl ErstbaRegister {
     pub fn write(&self, new_value: u64) {
         self.value.store(new_value, Ordering::Relaxed);
         self.notify.notify_waiters();
+    }
+
+    pub fn reset(&self) {
+        self.value.store(0, Ordering::Relaxed);
     }
 
     pub async fn write_notification(&self) {
@@ -350,6 +378,28 @@ mod tests {
             reg.read(),
             0x1,
             "Not writing to allowed and already set bit 2 should clear it."
+        );
+    }
+
+    #[test]
+    fn usbcmd_preserves_hcrst_until_reset_completes() {
+        let reg = UsbcmdRegister::new();
+
+        reg.write(usbcmd::RS | usbcmd::HCRST);
+        assert_eq!(reg.read(), usbcmd::RS | usbcmd::HCRST);
+
+        reg.write(usbcmd::INTE);
+        assert_eq!(
+            reg.read(),
+            usbcmd::INTE | usbcmd::HCRST,
+            "HCRST should stay set until the reset coordinator clears it."
+        );
+
+        reg.clear_hcrst();
+        assert_eq!(
+            reg.read(),
+            usbcmd::INTE,
+            "clearing HCRST should preserve the other writable bits."
         );
     }
 }
