@@ -1,6 +1,8 @@
 {
   lib,
   pkgs,
+  cloud-hypervisor,
+  usbvfiod,
   ...
 }:
 let
@@ -266,6 +268,56 @@ let
     ACTION=="add|change|bind", ATTRS{serial}=="0000:00:${pciAddr}.0", SUBSYSTEM=="usb", ATTRS{product}=="${controller}", ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
   '';
 
+  # configure usbvfiod with `--socket-path` or `--fd`
+  mkSystemdConfig =
+    virtualDevices: debug: useFileDescriptor:
+    if useFileDescriptor == false then
+      {
+        systemd.services = {
+          usbvfiod = {
+            wantedBy = [ "multi-user.target" ];
+            serviceConfig = {
+              User = "usbaccess";
+              Group = "usbaccess";
+              Restart = "on-failure";
+              RestartSec = "2s";
+              ExecStart = ''
+                ${lib.getExe usbvfiod} ${if debug then "-v" else ""} --socket-path ${usbvfiodSocket} --hotplug-socket-path ${usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag virtualDevices)}
+              '';
+            };
+            environment = {
+              RUST_BACKTRACE = "full";
+            };
+          };
+
+          cloud-hypervisor =
+            let
+              netboot = mkNetboot debug;
+            in
+            {
+              wantedBy = [ "multi-user.target" ];
+              requires = [ "usbvfiod.service" ];
+              after = [ "usbvfiod.service" ];
+              serviceConfig = {
+                Restart = "on-failure";
+                RestartSec = "2s";
+                ExecStart = ''
+                  ${lib.getExe cloud-hypervisor} --memory size=2G,shared=on --console file=${guestLogFile} --serial off \
+                    --kernel ${netboot.kernel} \
+                    --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                    --initramfs ${netboot.initrd} \
+                    --user-device socket=${usbvfiodSocket} \
+                    --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+                '';
+              };
+            };
+        };
+      }
+    else
+      lib.assertMsg false
+        "useFileDescriptor == true is not yet implemented for the usbvfiod service setup"
+        { };
+
   # Fill in a template for the qemu.options list for a blockdevice.
   mkQemuBlockdevice =
     driveId: driveFile: deviceBus: devicePort:
@@ -378,6 +430,7 @@ let
 
       attrs = {
         debug = true;
+        useFileDescriptor = false;
       }
       // args
       // {
@@ -391,7 +444,7 @@ let
 
   # See mkUsbTest (this runs without any arg checks).
   mkUsbTestChecked =
-    args: systemd:
+    args:
     pkgs.testers.runNixOSTest {
       inherit (args) name;
 
@@ -400,7 +453,7 @@ let
       nodes.machine = _: {
         imports = [
           basicMachineConfig
-          (systemd args)
+          (mkSystemdConfig args.virtualDevices args.debug args.useFileDescriptor)
         ];
 
         services = {
@@ -523,7 +576,6 @@ in
     `args`
 
     : 1\. Function argument
-    : 2\. Systemd NixOS config definition snippet
 
     # Type
 
@@ -531,6 +583,7 @@ in
     mkUsbTest :: {
       name :: String
       debug :: Bool
+      useFileDescriptor :: Bool
       virtualDevices :: [
         {
         type :: "blockdevice" || "hid-device"
@@ -542,7 +595,7 @@ in
         }
       ]
       testScript :: String
-    }  { systemd = { ... } } -> a
+    } -> a
     ```
 
     # Examples
@@ -556,6 +609,7 @@ in
     myTest = mkUsbTest {
       name = "foo";
       debug = true;
+      useFileDescriptor = false;
       virtualDevices = [
         {
           type = "blockdevice";
@@ -565,50 +619,7 @@ in
           udevRule.symlink = "teststorage";
           attachedOnStartup = "guest";
         }
-      ] {
-        systemd.services = {
-          usbvfiod = {
-            wantedBy = [ "multi-user.target" ];
-            serviceConfig = {
-              User = "usbaccess";
-              Group = "usbaccess";
-              Restart = "on-failure";
-              RestartSec = "2s";
-              ExecStart = ''
-                ${lib.getExe usbvfiod} ${
-                  if args.debug then "-v" else ""
-                } --socket-path ${testutils.usbvfiodSocket} --hotplug-socket-path ${testutils.usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map testutils.mkDeviceFlag args.virtualDevices)}
-              '';
-            };
-            environment = {
-              RUST_BACKTRACE = "full";
-            };
-          };
-
-          cloud-hypervisor =
-            let
-              netboot = testutils.mkNetboot args.debug;
-            in
-            {
-              wantedBy = [ "multi-user.target" ];
-              requires = [ "usbvfiod.service" ];
-              after = [ "usbvfiod.service" ];
-              serviceConfig = {
-                Restart = "on-failure";
-                RestartSec = "2s";
-                ExecStart = ''
-                  ${lib.getExe cloud-hypervisor} --memory size=2G,shared=on --console file=${testutils.guestLogFile} --serial off \
-                    --kernel ${netboot.kernel} \
-                    --cmdline ${lib.escapeShellArg netboot.cmdline} \
-                    --initramfs ${netboot.initrd} \
-                    --user-device socket=${testutils.usbvfiodSocket} \
-                    --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
-                '';
-              };
-            };
-        };
-      };
-
+      ];
       testScript = ''
         # Confirm USB controller pops up in boot logs
         out = cloud_hypervisor.succeed("journalctl -b", timeout=60)
@@ -638,5 +649,5 @@ in
     };
     ```
   */
-  mkUsbTest = args: systemd: mkUsbTestChecked (sanityCheckArgs (mkDefaults args)) systemd;
+  mkUsbTest = args: mkUsbTestChecked (sanityCheckArgs (mkDefaults args));
 }
