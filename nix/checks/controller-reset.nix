@@ -12,6 +12,12 @@ let
     for i in range(1, 4):
       print(f"CONTROLLER RESET LOOP {i}")
 
+      # Remove the scsi device to avoid I/O errors when unloading the xhci_pci driver.
+      cloud_hypervisor.succeed("echo 1 > /sys/block/sda/device/delete", timeout=60)
+
+      # Wait for all device events to finish.
+      cloud_hypervisor.succeed("udevadm settle", timeout=60)
+
       # Reload the guest xhci_pci driver to trigger a host controller reset.
       cloud_hypervisor.succeed("modprobe -r xhci_pci", timeout=120)
       cloud_hypervisor.succeed("modprobe xhci_pci", timeout=120)
