@@ -49,8 +49,10 @@ pub trait EndpointHandle: BaseEndpointHandle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrbProcessingResult {
     Ok,
+    /// (trb_address, cycle_bit)
     Stall(Option<(u64, bool)>),
     TrbError,
+    /// (trb_address, cycle_bit)
     TransactionError(Option<(u64, bool)>),
     Disconnect,
 }
@@ -1570,7 +1572,8 @@ pub mod tests {
 
     use crate::device::xhci::endpoint_handle::tests::testutils::{
         MockRealControlEndpointExpectDataPattern, MockRealControlEndpointHardwareError,
-        MockRealControlEndpointReadStatic, MockRealInEndpoint, MockRealOutEndpoint,
+        MockRealControlEndpointReadStatic, MockRealInEndpointHardwareError,
+        MockRealInEndpointReadStatic, MockRealOutEndpoint,
     };
     use crate::device::xhci::interrupter::tests::testutils::MockInterrupter;
     use crate::device::{bus::testutils::TestBusDevice, xhci::trb::testutils::RawTrbBuilder};
@@ -1763,17 +1766,17 @@ pub mod tests {
 
         // will return `vec![42; requested length]`
         #[derive(Debug)]
-        pub struct MockRealInEndpoint {
+        pub struct MockRealInEndpointReadStatic {
             data_length: usize,
         }
 
-        impl MockRealInEndpoint {
+        impl MockRealInEndpointReadStatic {
             pub fn new() -> Self {
                 Self { data_length: 0 }
             }
         }
 
-        impl RealInEndpointHandle for MockRealInEndpoint {
+        impl RealInEndpointHandle for MockRealInEndpointReadStatic {
             type TrbCompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
 
@@ -1794,7 +1797,7 @@ pub mod tests {
             }
         }
 
-        impl BaseEndpointHandle for MockRealInEndpoint {
+        impl BaseEndpointHandle for MockRealInEndpointReadStatic {
             type CompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
@@ -1805,6 +1808,49 @@ pub mod tests {
 
             fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
                 // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        // mock for bulk in real endpoint returning `vec![42; 512 + 64]` and then a given InTrbProcessingStatus
+        #[derive(Debug)]
+        pub struct MockRealInEndpointHardwareError {
+            status: InTrbProcessingStatus,
+        }
+
+        impl MockRealInEndpointHardwareError {
+            pub fn new(status: InTrbProcessingStatus) -> Self {
+                Self { status }
+            }
+        }
+
+        impl RealInEndpointHandle for MockRealInEndpointHardwareError {
+            type TrbCompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
+
+            fn submit(&mut self, _data: usize) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+                Box::pin(async {
+                    Ok(InTrbProcessingResult {
+                        status: self.status.clone(),
+                        data: vec![42; 512 + 64],
+                    })
+                })
+            }
+        }
+
+        impl BaseEndpointHandle for MockRealInEndpointHardwareError {
+            type CompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+            fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+                Box::pin(async { Ok(()) })
+            }
+
+            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
                 Box::pin(async { Ok(()) })
             }
         }
@@ -2494,7 +2540,7 @@ pub mod tests {
         let pcap_usb_bus_number = 1;
         let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
 
-        let real_ep = MockRealInEndpoint::new();
+        let real_ep = MockRealInEndpointReadStatic::new();
 
         let dma_bus = Arc::new(DynamicBus::new());
         let dma_backing = vec![99; 2048];
@@ -2592,6 +2638,115 @@ pub mod tests {
             interrupter.await_event().await,
             Some(expected_event(EVENT_DATA_FIELD, TRANSFER_LENGTH, true))
         );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn normal_in_returns_hardware_stall() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = MockRealInEndpointHardwareError::new(InTrbProcessingStatus::Stall);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, mut interrupter) = MockInterrupter::new();
+
+        let mut bulk_in_endpoint = TdBasedInEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        let normal_1 = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .with_trb_transfer_length(512)
+            .with_interrupt_on_completion()
+            .with_direction()
+            .with_chain()
+            .build();
+
+        let normal_2 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .with_trb_transfer_length(512)
+            .with_interrupt_on_completion()
+            .with_direction()
+            .with_chain()
+            .build();
+
+        let normal_3 = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .with_trb_transfer_length(512)
+            .with_interrupt_on_completion()
+            .with_direction()
+            .build();
+
+        bulk_in_endpoint
+            .submit_trb(normal_1)
+            .expect("this mock hardware request should never fail");
+
+        assert_eq!(
+            bulk_in_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Ok)
+        );
+
+        bulk_in_endpoint
+            .submit_trb(normal_2)
+            .expect("this mock hardware request should never fail");
+
+        assert_eq!(
+            bulk_in_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Ok)
+        );
+
+        bulk_in_endpoint
+            .submit_trb(normal_3)
+            .expect("this mock hardware request should never fail");
+
+        // The TdBasedInEndpointHandle called its processing and is done with the TD.
+        let completion = bulk_in_endpoint.next_completion().await.ok();
+
+        assert_eq!(
+            completion,
+            Some(TrbProcessingResult::Stall(Some((SECOND_ADDRESS, false))))
+        );
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0,
+                CompletionCode::Success,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                SECOND_ADDRESS,
+                448, // missing this many bytes
+                CompletionCode::StallError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        // no event for the third normal Trb because we (in theory) have yet to touch it
 
         assert!(interrupter.is_empty());
     }
