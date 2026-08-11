@@ -220,6 +220,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     // writing state is unnecessary but also not wrong.
                     self.context.set_state(endpoint_state::STOPPED);
                     self.transfer_ring.set_dequeue_pointer(ptr, cs);
+                    self.context.set_dequeue_pointer_and_cycle_state(ptr, cs);
                     self.state = WorkerState::Stopped;
                     completion.send_anyhow(CompletionCode::Success)?;
                 }
