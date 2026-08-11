@@ -706,8 +706,13 @@ impl Slot {
 
     async fn handle_reset_device(&mut self) -> anyhow::Result<CompletionCode> {
         let base_address = match self.state {
-            SlotState::Enabled | SlotState::Default(_) => {
+            SlotState::Enabled => {
+                info!("handle_reset_device SlotState::Enabled");
                 return Ok(CompletionCode::ContextStateError);
+            }
+            SlotState::Default(base_address) => {
+                info!("technically not allowed but linux driver will attempt to use this");
+                base_address
             }
             SlotState::Addressed(base_address) => base_address,
             SlotState::Configured(base_address) => base_address,
