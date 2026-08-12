@@ -224,7 +224,7 @@ impl SlotWorker {
                     sender.send_anyhow(result)?;
                 }
                 SlotMessage::EvaluateContext(trb_data, sender) => {
-                    let slot = match self.slot_ref(trb_data.slot_id) {
+                    let slot = match self.slot_mut(trb_data.slot_id) {
                         Some(slot) => slot,
                         None => {
                             sender.send_anyhow(CompletionCode::SlotNotEnabledError)?;
@@ -644,10 +644,51 @@ impl Slot {
     }
 
     async fn handle_evaluate_context(
-        &self,
-        _input_context_pointer: u64,
+        &mut self,
+        input_context_pointer: u64,
     ) -> anyhow::Result<CompletionCode> {
         warn!("handle_evaluate_context is not implemented yet. Just reporting success");
+
+        let base_address = match self.state {
+            SlotState::Enabled => return Ok(CompletionCode::ContextStateError),
+            SlotState::Default(base_address) => base_address,
+            SlotState::Addressed(base_address) => base_address,
+            SlotState::Configured(base_address) => base_address,
+        };
+
+        let drop_flags = self
+            .dma_bus
+            .read(Request::new(input_context_pointer, RequestSize::Size4));
+        let add_flags = self.dma_bus.read(Request::new(
+            input_context_pointer.wrapping_add(4),
+            RequestSize::Size4,
+        ));
+
+        let mut to_deconfigure = Vec::new();
+        let mut to_configure = Vec::new();
+
+        for i in 2..=31 {
+            if drop_flags & (1 << i) != 0 {
+                debug!("D{i} set");
+                to_deconfigure.push(i);
+            }
+            if add_flags & (1 << i) != 0 {
+                debug!("A{i} set");
+                to_configure.push(i);
+            }
+        }
+
+        for ep in to_deconfigure {
+            self.deconfigure_endpoint(ep).await?;
+        }
+
+        for ep in to_configure {
+            self.dma_copy_ep_context(ep, input_context_pointer, base_address);
+            self.configure_endpoint(ep, base_address).await?;
+        }
+
+        self.write_slot_state();
+
         Ok(CompletionCode::Success)
     }
 
