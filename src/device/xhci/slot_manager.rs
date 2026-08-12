@@ -867,3 +867,33 @@ impl SlotWorkerHandle {
         Ok(completion_code)
     }
 }
+
+#[cfg(test)]
+pub mod test {
+    use super::*;
+
+    pub mod testutils {
+        use tokio::sync::mpsc::UnboundedReceiver;
+
+        use super::*;
+
+        #[derive(Debug)]
+        pub struct MockSlotManager {
+            msg_send: mpsc::UnboundedSender<SlotMessage>,
+        }
+
+        impl MockSlotManager {
+            pub fn new() -> (Self, UnboundedReceiver<SlotMessage>) {
+                let (msg_send, msg_recv) = mpsc::unbounded_channel();
+
+                (Self { msg_send }, msg_recv)
+            }
+
+            pub fn create_slot_worker_handle(&self) -> SlotWorkerHandle {
+                SlotWorkerHandle {
+                    msg_send: self.msg_send.clone(),
+                }
+            }
+        }
+    }
+}

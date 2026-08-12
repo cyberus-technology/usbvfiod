@@ -232,3 +232,66 @@ impl EventWorker {
         self.event_ring.reset();
     }
 }
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    pub mod testutils {
+        use std::time::Duration;
+
+        use tokio::time::timeout;
+
+        use super::*;
+
+        const ASYNC_TIMEOUT_SECS: u64 = 30;
+
+        pub struct MockInterrupter {
+            timeout_sec: Duration,
+            msg_recv: mpsc::UnboundedReceiver<InterrupterMessage>,
+        }
+
+        impl MockInterrupter {
+            pub fn new() -> (EventSender, Self) {
+                let (sender, recv) = mpsc::unbounded_channel();
+                let event_sender = EventSender { sender };
+                let dummy = Self {
+                    timeout_sec: Duration::from_secs(ASYNC_TIMEOUT_SECS),
+                    msg_recv: recv,
+                };
+
+                (event_sender, dummy)
+            }
+
+            pub fn is_empty(&self) -> bool {
+                self.msg_recv.is_empty()
+            }
+
+            /// receiving anything else than a EventTrb will return None
+            pub async fn await_event(&mut self) -> Option<EventTrb> {
+                match timeout(self.timeout_sec, self.msg_recv.recv()).await {
+                    Ok(Some(InterrupterMessage::SendEvent(event_trb))) => Some(event_trb),
+                    _ => None,
+                }
+            }
+        }
+
+        mod tests {
+            use super::*;
+
+            #[tokio::test]
+            async fn send_event_through_dummy_interrupter() {
+                let (event_sender, mut interrupter) = MockInterrupter::new();
+
+                let event = EventTrb::new_port_status_change_event_trb(1);
+                matches!(event_sender.send(event), Ok(()));
+
+                assert!(!interrupter.is_empty());
+                assert_eq!(
+                    interrupter.await_event().await,
+                    Some(EventTrb::new_port_status_change_event_trb(1))
+                );
+            }
+        }
+    }
+}

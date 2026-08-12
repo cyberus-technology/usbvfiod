@@ -109,6 +109,7 @@ impl LinkedRing {
         self.cycle_state = cycle_state;
     }
 
+    /// returns (dequeue_pointer, cycle_state)
     pub const fn get_dequeue_pointer(&self) -> (u64, bool) {
         (self.dequeue_pointer, self.cycle_state)
     }

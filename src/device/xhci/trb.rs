@@ -11,7 +11,7 @@ use super::super::pci::constants::xhci::rings::trb_types::{self, *};
 /// of a Transfer Request Block.
 pub type RawTrbBuffer = [u8; 16];
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RawTrb {
     pub address: u64,
     pub buffer: RawTrbBuffer,
@@ -25,7 +25,7 @@ pub const fn zeroed_trb_buffer() -> RawTrbBuffer {
 /// Represents a TRB that the XHCI controller can place on the event ring.
 ///
 /// See XHCI specification Section 6.4.2 for detailed event TRB type descriptions.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum EventTrb {
     Transfer(TransferEventTrbData),
     CommandCompletion(CommandCompletionEventTrbData),
@@ -65,7 +65,7 @@ impl EventTrb {
 ///
 /// Do not use this struct directly, use EventTrb::new_command_completion_event_trb
 /// instead.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct CommandCompletionEventTrbData {
     command_trb_pointer: u64,
     command_completion_parameter: u32,
@@ -126,13 +126,18 @@ impl CommandCompletionEventTrbData {
 
         trb
     }
+
+    #[cfg(test)]
+    pub const fn get_completion_code(&self) -> CompletionCode {
+        self.completion_code
+    }
 }
 
 /// Stores the relevant data for a Port Status Change Event.
 ///
 /// Do not use this struct directly, use EventTrb::new_port_status_change_event_trb
 /// instead.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PortStatusChangeEventTrbData {
     port_id: u8,
 }
@@ -164,7 +169,7 @@ impl PortStatusChangeEventTrbData {
 }
 
 /// Stores the relevant data for a Transfer Event.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TransferEventTrbData {
     trb_pointer: u64,
     trb_transfer_length: u32,
@@ -227,7 +232,7 @@ impl TransferEventTrbData {
 ///
 /// Refer to Table 6-90 in the XHCI specification for detailed descriptions of each code.
 #[allow(dead_code)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CompletionCode {
     Invalid = 0,
     Success,
@@ -352,6 +357,7 @@ pub struct CommandTrb {
 /// See XHCI specification Section 6.4.3 for detailed command TRB type descriptions.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommandTrbVariant {
+    NoOp,
     EnableSlot,
     DisableSlot(DisableSlotCommandTrbData),
     AddressDevice(AddressDeviceCommandTrbData),
@@ -362,7 +368,6 @@ pub enum CommandTrbVariant {
     SetTrDequeuePointer(SetTrDequeuePointerCommandTrbData),
     ResetDevice(ResetDeviceCommandTrbData),
     ForceHeader,
-    NoOp,
     Unrecognized(RawTrbBuffer, TrbParseError),
 }
 
@@ -378,11 +383,12 @@ impl CommandTrbVariant {
     /// While this function can parse all available Command TRB types, it does
     /// not parse all of them in full detail. If the function returns only the
     /// enum variant without an associated struct, the parsing for the
-    /// particular command is not yet implemented. EnableSlotCommand is an
-    /// exception, because the TRB does not contain any additional information.
+    /// particular command is not yet implemented. NoOpCommand and EnableSlotCommand
+    /// are exceptions, because the TRB does not contain any additional information.
     pub fn parse(bytes: RawTrbBuffer) -> Self {
         let trb_type = bytes[13] >> 2;
         match trb_type {
+            trb_types::NO_OP_COMMAND => Self::NoOp,
             // EnableSlotCommand does not contain information apart from the
             // type; thus, no further parsing is necessary and we can just
             // return the enum variant.
@@ -421,7 +427,6 @@ impl CommandTrbVariant {
                 ),
             ),
             trb_types::FORCE_HEADER_COMMAND => Self::ForceHeader,
-            trb_types::NO_OP_COMMAND => Self::NoOp,
             trb_type => Self::Unrecognized(bytes, TrbParseError::UnknownTrbType(trb_type)),
         }
     }
@@ -1093,6 +1098,217 @@ pub enum TrbParseError {
     UnknownTrbType(u8),
     #[error("Detected a non-zero value in a RsvdZ field")]
     RsvdZViolation,
+}
+
+#[cfg(test)]
+pub mod testutils {
+    use super::*;
+
+    /// This Builder simplifies creating RawTrb and prevents some easy mistakes when
+    /// manually writing the correct value at the corresponding index of the buffers.
+    pub struct RawTrbBuilder {
+        pub address: u64,
+        pub buffer: RawTrbBuffer,
+    }
+    impl RawTrbBuilder {
+        const CH: u8 = 0x10;
+        const IOC: u8 = 0x20;
+        const IDT: u8 = 0x40;
+        const DIR: u8 = 0x1;
+
+        pub fn new(address: u64) -> Self {
+            Self {
+                address,
+                buffer: [0; 16],
+            }
+        }
+
+        /// setup stage trb exclusive field: bmRequestType
+        pub fn with_setup_type(mut self, value: u8) -> Self {
+            self.buffer[0] = value;
+            self
+        }
+
+        /// setup stage trb exclusive field: wLength
+        pub fn with_setup_length(mut self, value: u16) -> Self {
+            let value_bytes: [u8; 2] = value.to_le_bytes();
+            self.buffer[6..(2 + 6)].copy_from_slice(&value_bytes);
+            self
+        }
+
+        /// first 8 bytes of the trb
+        pub fn with_data_field(mut self, value: u64) -> Self {
+            let value_bytes: [u8; 8] = value.to_le_bytes();
+            self.buffer[..8].copy_from_slice(&value_bytes);
+            self
+        }
+
+        /// byte index 8 & 9 & 1 Bit of 10th: TRB Transfer Length
+        pub fn with_length(mut self, length: u32) -> Self {
+            let length_bytes: [u8; 4] = length.to_le_bytes();
+            self.buffer[8..(2 + 8)].copy_from_slice(&length_bytes[0..2]);
+            self.buffer[10] = length_bytes[2] & 0b1;
+            self
+        }
+
+        /// chain bit
+        pub fn with_ch(mut self) -> Self {
+            self.buffer[12] |= Self::CH;
+            self
+        }
+
+        /// interrupt on completion bit
+        pub fn with_ioc(mut self) -> Self {
+            self.buffer[12] |= Self::IOC;
+            self
+        }
+
+        /// immediate data bit
+        pub fn with_idt(mut self) -> Self {
+            self.buffer[12] |= Self::IDT;
+            self
+        }
+
+        /// trb type field
+        pub fn with_type(mut self, trb_type: u8) -> Self {
+            self.buffer[13] |= trb_type << 2;
+            self
+        }
+
+        /// direction bit
+        ///
+        /// for data stage and status stage trb
+        ///
+        /// if DIR { IN } else { OUT }
+        pub fn with_dir(mut self) -> Self {
+            self.buffer[14] |= Self::DIR;
+            self
+        }
+
+        /// absolute write to an arbitrary byte index
+        pub fn with_byte(mut self, index: usize, value: u8) -> Self {
+            assert!(index < self.buffer.len());
+            self.buffer[index] = value;
+            self
+        }
+
+        pub fn build(self) -> RawTrb {
+            RawTrb {
+                address: self.address,
+                buffer: self.buffer,
+            }
+        }
+    }
+
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn build_normal_trb_as_raw_trb() {
+            let normal = RawTrbBuilder::new(0x10)
+                .with_data_field(0x1122334455667788)
+                .with_length(2048)
+                .with_ioc()
+                .with_ch()
+                .with_type(0x1)
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [
+                    0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0, 0x8, 0, 0, 0x30, 0x4, 0, 0,
+                ],
+            };
+            assert_eq!(normal, expect);
+        }
+
+        #[test]
+        fn build_normal_trb_as_raw_trb_with_max_length() {
+            let normal = RawTrbBuilder::new(0x10)
+                .with_data_field(0x1122334455667788)
+                // this is the fields maximum value not the as per specification allowed maximum value of 0x1_0000
+                .with_length(0x1_ffff)
+                .with_ioc()
+                .with_ch()
+                .with_type(0x1)
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [
+                    0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xff, 0xff, 0x1, 0, 0x30, 0x4,
+                    0, 0,
+                ],
+            };
+            assert_eq!(normal, expect);
+        }
+
+        #[test]
+        fn build_control_in_setup_stage_as_raw_trb() {
+            let setup_stage = RawTrbBuilder::new(0x10)
+                .with_setup_type(0x80)
+                .with_setup_length(512)
+                .with_length(1024)
+                .with_idt()
+                .with_ioc()
+                .with_type(0x2)
+                .with_byte(14, 0x3) // TRT: IN Data Stage
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [0x80, 0, 0, 0, 0, 0, 0, 0x2, 0, 0x4, 0, 0, 0x60, 0x8, 0x3, 0],
+            };
+            assert_eq!(setup_stage, expect);
+        }
+
+        #[test]
+        fn build_control_in_data_stage_as_raw_trb() {
+            let data_stage = RawTrbBuilder::new(0x10)
+                .with_data_field(0x112233445566)
+                .with_idt()
+                .with_ioc()
+                .with_type(0x3)
+                .with_dir()
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [
+                    0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0, 0, 0, 0, 0, 0, 0x60, 0xc, 0x1, 0,
+                ],
+            };
+            assert_eq!(data_stage, expect);
+        }
+
+        #[test]
+        fn build_control_in_status_stage_as_raw_trb() {
+            let status_stage = RawTrbBuilder::new(0x10)
+                .with_ioc()
+                .with_ch()
+                .with_type(0x4)
+                .with_dir()
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x30, 0x10, 0x1, 0],
+            };
+            assert_eq!(status_stage, expect);
+        }
+
+        #[test]
+        fn build_event_data_as_raw_trb() {
+            let event_data = RawTrbBuilder::new(0x10)
+                .with_data_field(0xe4e117da7a)
+                .with_ioc()
+                .with_type(0x7)
+                .with_dir()
+                .build();
+            let expect = RawTrb {
+                address: 0x10,
+                buffer: [
+                    0x7a, 0xda, 0x17, 0xe1, 0xe4, 0, 0, 0, 0, 0, 0, 0, 0x20, 0x1c, 0x1, 0,
+                ],
+            };
+            assert_eq!(event_data, expect);
+        }
+    }
 }
 
 #[cfg(test)]
