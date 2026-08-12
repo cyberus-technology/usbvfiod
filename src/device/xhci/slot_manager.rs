@@ -649,6 +649,17 @@ impl Slot {
     ) -> anyhow::Result<CompletionCode> {
         warn!("handle_evaluate_context is not implemented yet. Just reporting success");
 
+        // TODO 4.6.7 6.2.5
+        // - stop all endpoints
+        // - eval changes on the context and only touch those -> impossible we recreate the worker
+        // - match the state for default or upper
+        //     - eval parameter setting -> parameter error?
+        //     - exit latency is isoch -> todo!()
+        //     - update device context
+        // - write out new context values as last step
+
+        //
+
         let base_address = match self.state {
             SlotState::Enabled => return Ok(CompletionCode::ContextStateError),
             SlotState::Default(base_address) => base_address,

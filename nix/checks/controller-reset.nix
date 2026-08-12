@@ -9,12 +9,15 @@ let
     cloud_hypervisor.wait_until_succeeds("lsblk /dev/sda", timeout=120)
 
     # Run the controller reset loop a few times.
-    for i in range(1, 4):
+    for i in range(1, 10):
       print(f"CONTROLLER RESET LOOP {i}")
 
       # Reload the guest xhci_pci driver to trigger a host controller reset.
       cloud_hypervisor.succeed("modprobe -r xhci_pci", timeout=120)
       cloud_hypervisor.succeed("modprobe xhci_pci", timeout=120)
+
+      command = f'echo "Loop count {i}"'
+      cloud_hypervisor.succeed(command, timeout=60)
 
       # Confirm raw block I/O still works after the controller reset.
       out = cloud_hypervisor.wait_until_succeeds("lsusb -d ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId}", timeout=120)
