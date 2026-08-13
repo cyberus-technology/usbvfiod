@@ -110,8 +110,8 @@ let
   # Putting the socket in a world-readable location is obviously not a
   # good choice for a production setup, but for this test it works
   # well.
-  usbvfiodSocket = "/tmp/usbvfio";
-  usbvfiodSocketHotplug = "/tmp/hotplug";
+  usbvfiodSocket = "/tmp/usbvfiod.sock";
+  usbvfiodSocketHotplug = "/tmp/hotplug.sock";
 
   guestLogFile = "/tmp/console.log";
   qemuLogFile = "/tmp/qemu-vc.log";
@@ -268,55 +268,73 @@ let
     ACTION=="add|change|bind", ATTRS{serial}=="0000:00:${pciAddr}.0", SUBSYSTEM=="usb", ATTRS{product}=="${controller}", ATTR{devpath}=="${port}", MODE="0660", GROUP="usbaccess", SYMLINK+="bus/usb/${symlink}"
   '';
 
-  # configure usbvfiod with `--socket-path` or `--fd`
-  mkSystemdConfig =
-    virtualDevices: debug: useFileDescriptor:
+  # Create the partial usbvfiod argument string for either fs paths or fd ids
+  mkSocketFlag =
+    useFileDescriptor:
     if useFileDescriptor == false then
-      {
-        systemd.services = {
-          usbvfiod = {
-            wantedBy = [ "multi-user.target" ];
-            serviceConfig = {
-              User = "usbaccess";
-              Group = "usbaccess";
-              Restart = "on-failure";
-              RestartSec = "2s";
-              ExecStart = ''
-                ${lib.getExe usbvfiod} ${if debug then "-v" else ""} --socket-path ${usbvfiodSocket} --hotplug-socket-path ${usbvfiodSocketHotplug} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag virtualDevices)}
-              '';
-            };
-            environment = {
-              RUST_BACKTRACE = "full";
-            };
-          };
-
-          cloud-hypervisor =
-            let
-              netboot = mkNetboot debug;
-            in
-            {
-              wantedBy = [ "multi-user.target" ];
-              requires = [ "usbvfiod.service" ];
-              after = [ "usbvfiod.service" ];
-              serviceConfig = {
-                Restart = "on-failure";
-                RestartSec = "2s";
-                ExecStart = ''
-                  ${lib.getExe cloud-hypervisor} --memory size=2G,shared=on --console file=${guestLogFile} --serial off \
-                    --kernel ${netboot.kernel} \
-                    --cmdline ${lib.escapeShellArg netboot.cmdline} \
-                    --initramfs ${netboot.initrd} \
-                    --user-device socket=${usbvfiodSocket} \
-                    --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
-                '';
-              };
-            };
-        };
-      }
+      "--socket-path ${usbvfiodSocket} --hotplug-socket-path ${usbvfiodSocketHotplug}"
     else
-      lib.assertMsg false
-        "useFileDescriptor == true is not yet implemented for the usbvfiod service setup"
-        { };
+      "--fd 3 --hotplug-fd 4";
+
+  # configure usbvfiod with `--socket-path` or `--fd`
+  mkSystemdConfig = virtualDevices: debug: useFileDescriptor: {
+    systemd.services = {
+      usbvfiod = {
+        wantedBy = lib.mkIf (!useFileDescriptor) [ "multi-user.target" ];
+        serviceConfig = {
+          User = "usbaccess";
+          Group = "usbaccess";
+          Restart = "on-failure";
+          RestartSec = "2s";
+          ExecStart = ''
+            ${lib.getExe usbvfiod} ${lib.optionalString debug "-v"} ${mkSocketFlag useFileDescriptor} ${lib.concatStringsSep " " (builtins.map mkDeviceFlag virtualDevices)}
+          '';
+        };
+        environment = {
+          RUST_BACKTRACE = "full";
+        };
+      };
+
+      cloud-hypervisor =
+        let
+          netboot = mkNetboot debug;
+        in
+        {
+          wantedBy = [ "multi-user.target" ];
+          requires = if useFileDescriptor then [ "usbvfiod.socket" ] else [ "usbvfiod.service" ];
+          after = lib.mkIf (!useFileDescriptor) [ "usbvfiod.service" ];
+          serviceConfig = {
+            Restart = "on-failure";
+            RestartSec = "2s";
+            ExecStart = ''
+              ${lib.getExe cloud-hypervisor} --memory size=2G,shared=on --console file=${guestLogFile} --serial off \
+                --kernel ${netboot.kernel} \
+                --cmdline ${lib.escapeShellArg netboot.cmdline} \
+                --initramfs ${netboot.initrd} \
+                --user-device socket=${usbvfiodSocket} \
+                --net "tap=tap0,mac=,ip=192.168.100.1,mask=255.255.255.0"
+            '';
+          };
+        };
+    };
+
+    systemd.sockets = lib.mkIf useFileDescriptor {
+      usbvfiod = {
+        description = "sockets to trigger usbvfiod service start and provide communication channels";
+        wantedBy = [ "sockets.target" ];
+        socketConfig = {
+          ListenStream = [
+            "${usbvfiodSocket}"
+            "${usbvfiodSocketHotplug}"
+          ];
+          SocketMode = 0660;
+          SocketUser = "usbaccess";
+          SocketGroup = "usbaccess";
+          Accept = "no";
+        };
+      };
+    };
+  };
 
   # Fill in a template for the qemu.options list for a blockdevice.
   mkQemuBlockdevice =
