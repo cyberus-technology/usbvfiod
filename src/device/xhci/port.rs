@@ -389,3 +389,85 @@ impl<CRD: CompleteRealDevice> DeviceRetriever<CRD> {
         Ok(device)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::{runtime::Handle, time::timeout};
+
+    use crate::device::xhci::{
+        interrupter::tests::testutils::MockInterrupter,
+        real_device::{tests::testutils::MockRealDevice, CompleteRealDeviceImpl},
+    };
+
+    use super::*;
+
+    const ASYNC_TIMEOUT_SECS: u64 = 30;
+    const PORT_ID: u8 = 1;
+    const USB_BUS_NR: u8 = 1;
+    const USB_DEV_NR: u8 = 1;
+    const IDENTIFIER: (u8, u8) = (USB_BUS_NR, USB_DEV_NR);
+
+    #[tokio::test]
+    async fn port_array_hotplug_control_can_attach_list_and_detach() {
+        let async_runtime = Handle::current();
+        let (event_sender, mut interrupter) = MockInterrupter::new();
+
+        let mock_real_device = CompleteRealDeviceImpl::new(IDENTIFIER, MockRealDevice::default());
+        let port_array: PortArray<CompleteRealDeviceImpl<MockRealDevice, (u8, u8)>> =
+            PortArray::new(event_sender, async_runtime);
+
+        // attach a device
+        let hotplug_control = port_array.create_hotplug_control();
+        let response = timeout(
+            Duration::from_secs(ASYNC_TIMEOUT_SECS),
+            hotplug_control.attach(mock_real_device),
+        )
+        .await
+        .expect("local timeout on await");
+
+        assert_eq!(response, Response::SuccessfulOperation);
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_port_status_change_event_trb(PORT_ID))
+        );
+
+        // list attached devices
+        let response = timeout(
+            Duration::from_secs(ASYNC_TIMEOUT_SECS),
+            hotplug_control.list_devices(),
+        )
+        .await
+        .expect("local timeout on await");
+
+        assert_eq!(response, vec![IDENTIFIER]);
+        assert!(interrupter.is_empty());
+
+        // detach the device
+        let response = timeout(
+            Duration::from_secs(ASYNC_TIMEOUT_SECS),
+            hotplug_control.detach(IDENTIFIER),
+        )
+        .await
+        .expect("local timeout on await");
+
+        // expect a successful response for the command and an event
+        assert_eq!(response, Response::SuccessfulOperation);
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_port_status_change_event_trb(PORT_ID))
+        );
+
+        // list attached devices
+        let response = timeout(
+            Duration::from_secs(ASYNC_TIMEOUT_SECS),
+            hotplug_control.list_devices(),
+        )
+        .await
+        .expect("local timeout on await");
+
+        assert_eq!(response, vec![]);
+        assert!(interrupter.is_empty());
+    }
+}

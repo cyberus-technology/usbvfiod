@@ -956,3 +956,156 @@ impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for TdBasedInEndpointHandle<
         Box::pin(async { self.real_ep.clear_halt().await })
     }
 }
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    pub mod testutils {
+        use super::*;
+
+        // will return `vec![42; requested length]`
+        #[derive(Debug)]
+        pub struct MockRealControlEndpointReadStatic {
+            data_length: u16,
+            direction: bool,
+        }
+        impl MockRealControlEndpointReadStatic {
+            pub fn new() -> Self {
+                Self {
+                    data_length: 0,
+                    direction: false,
+                }
+            }
+        }
+
+        impl RealControlEndpointHandle for MockRealControlEndpointReadStatic {
+            type TrbCompletionFuture<'a> = Pin<
+                Box<
+                    dyn Future<Output = anyhow::Result<ControlRequestProcessingResult>> + Send + 'a,
+                >,
+            >;
+
+            fn submit_control_request(&mut self, request: UsbRequest) -> anyhow::Result<()> {
+                // fake request is instantly submitted but we need to remember the direction for next_complete
+                const IN: u8 = 0b10000000;
+                self.direction = (request.request_type & IN) == IN;
+                self.data_length = request.length;
+
+                Ok(())
+            }
+
+            fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+                Box::pin(async {
+                    let result = match self.direction {
+                        true => {
+                            let data = vec![42; self.data_length as usize];
+                            ControlRequestProcessingResult::SuccessfulControlIn(data)
+                        }
+                        false => ControlRequestProcessingResult::SuccessfulControlOut,
+                    };
+                    Ok(result)
+                })
+            }
+        }
+
+        impl BaseEndpointHandle for MockRealControlEndpointReadStatic {
+            type CompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+            fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+
+            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        // will return `vec![42; requested length]`
+        #[derive(Debug)]
+        pub struct MockRealInEndpoint {
+            data_length: usize,
+        }
+        impl MockRealInEndpoint {
+            pub fn new() -> Self {
+                Self { data_length: 0 }
+            }
+        }
+        impl RealInEndpointHandle for MockRealInEndpoint {
+            type TrbCompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
+
+            fn submit(&mut self, data: usize) -> anyhow::Result<()> {
+                self.data_length = data;
+                Ok(())
+            }
+
+            fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+                Box::pin(async {
+                    let data = vec![42; self.data_length];
+                    let result = InTrbProcessingResult {
+                        status: InTrbProcessingStatus::Success,
+                        data,
+                    };
+                    Ok(result)
+                })
+            }
+        }
+        impl BaseEndpointHandle for MockRealInEndpoint {
+            type CompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+            fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+
+            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        // mock for bulk out real endpoint returning success while discarding the data
+        #[derive(Debug)]
+        pub struct MockRealOutEndpoint {}
+        impl MockRealOutEndpoint {
+            pub fn new() -> Self {
+                Self {}
+            }
+        }
+        impl RealOutEndpointHandle for MockRealOutEndpoint {
+            type TrbCompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<OutTrbProcessingResult>> + Send + 'a>>;
+
+            fn submit(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
+                println!("consumed data of length: {}", data.len());
+                Ok(())
+            }
+
+            fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+                Box::pin(async {
+                    let result = OutTrbProcessingResult::Success;
+                    Ok(result)
+                })
+            }
+        }
+        impl BaseEndpointHandle for MockRealOutEndpoint {
+            type CompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+            fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+
+            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+        }
+    }
+}
