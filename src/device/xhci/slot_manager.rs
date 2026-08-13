@@ -540,16 +540,14 @@ impl Slot {
         input_context_pointer: u64,
         deconfigure: bool,
     ) -> anyhow::Result<CompletionCode> {
+        // xhci specification: Figure 4-2: Slot State Diagram
         // configure endpoint with DC=0 transitions from Addressed/Configured to Configured
-        // configure endpoint with DC=1 transitions from Configured to Addressed
+        // configure endpoint with DC=1 transitions from Addressed/Configured to Addressed
         let base_address = match self.state {
             SlotState::Enabled | SlotState::Default(_) => {
                 return Ok(CompletionCode::ContextStateError)
             }
-            SlotState::Addressed(base_address) => match deconfigure {
-                true => return Ok(CompletionCode::ContextStateError),
-                false => base_address,
-            },
+            SlotState::Addressed(base_address) => base_address,
             SlotState::Configured(base_address) => base_address,
         };
 
