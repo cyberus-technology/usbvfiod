@@ -316,7 +316,6 @@ mod tests {
         // the test assumes that `next_trb()` will move the dequeue pointer to the
         // transfer trb it returns and never mention any link trb it skipped over
         let trb = ring.next_trb();
-
         assert_ne!(
             ring.get_dequeue_pointer(),
             (SEG_1 + LINK_TRB_ADDRESS, false)
@@ -331,5 +330,49 @@ mod tests {
 
         // since we did not encounter a actionable link trb we remained at this address
         assert_eq!(ring.get_dequeue_pointer(), (SEG_1 + LINK_TRB_ADDRESS, true));
+    }
+
+    // Encountering multiple chained LinkTrb is described in the xhci specification as:
+    // - undefined behavior (chapter 4.11.7) and
+    // - performance degrading effects (chapter 6.4.4.1).
+    #[test]
+    #[should_panic(expected = "Link TRB should not follow directly after another Link TRB")]
+    fn encountering_two_consecutive_link_trb_is_supported() {
+        const SEG_1: u64 = 0x00;
+        const SEG_2: u64 = 0x20;
+        const SEG_3: u64 = 0x60;
+
+        // construct memory segments for a ring that can contain TRBs
+        let dma_bus = Arc::new(DynamicBus::new());
+        dma_bus
+            .add(SEG_1, Arc::new(TestBusDevice::new(&[0; 0x10])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+        dma_bus
+            .add(SEG_2, Arc::new(TestBusDevice::new(&[0; 0x10])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+        dma_bus
+            .add(SEG_3, Arc::new(TestBusDevice::new(&[0; 0x10])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let dma = Arc::new(TestBusDevice::new(&[0; TRB_SIZE * 8]));
+        let mut ring = LinkedRing::new(dma.clone(), SEG_1, false);
+
+        // place two consecutive link trb td
+        let link = RawTrbBuilder::new(SEG_1)
+            .with_data_pointer(SEG_2)
+            .with_trb_type(trb_types::LINK)
+            .build();
+        dma.write_bulk(link.address, &link.buffer);
+
+        let link = RawTrbBuilder::new(SEG_2)
+            .with_data_pointer(SEG_3)
+            .with_trb_type(trb_types::LINK)
+            .build();
+        dma.write_bulk(link.address, &link.buffer);
+
+        // LinkTrb --> LinkTrb --> zero buffer
+        let trb = ring.next_trb();
+        assert_eq!(ring.get_dequeue_pointer(), (SEG_3, false));
+        check_trb(trb, SEG_3, [0; 16]);
     }
 }
