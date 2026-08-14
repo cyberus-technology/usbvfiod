@@ -117,7 +117,14 @@ impl LinkedRing {
 
 #[cfg(test)]
 mod tests {
-    use crate::device::bus::testutils::TestBusDevice;
+    use crate::{
+        device::{
+            bus::{testutils::TestBusDevice, BusDevice},
+            pci::constants::xhci::rings::trb_types,
+            xhci::trb::testutils::RawTrbBuilder,
+        },
+        dynamic_bus::DynamicBus,
+    };
     use std::sync::Arc;
 
     use super::*;
@@ -275,5 +282,54 @@ mod tests {
         ring.set_dequeue_pointer(THIRD_ADDRESS, false);
         assert_eq!(ring.get_dequeue_pointer(), (THIRD_ADDRESS, false));
         check_trb(ring.next_trb(), THIRD_ADDRESS, [0; 16]);
+    }
+
+    #[test]
+    fn next_trb_advances_dequeue_pointer_over_link_trb() {
+        const SEG_1: u64 = 0x000;
+        const SEG_2: u64 = 0x100;
+
+        const LINK_TRB_ADDRESS: u64 = 0x30;
+
+        // construct memory segments for a ring that can contain TRBs
+        let dma_bus = Arc::new(DynamicBus::new());
+        dma_bus
+            .add(SEG_1, Arc::new(TestBusDevice::new(&[0; 0x40])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+        dma_bus
+            .add(SEG_2, Arc::new(TestBusDevice::new(&[0; 0x40])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let mut ring = LinkedRing::new(dma_bus.clone(), SEG_1 + THIRD_ADDRESS, true);
+
+        // use a link trb to connect the two memory segments
+        let link = RawTrbBuilder::new(SEG_1 + LINK_TRB_ADDRESS)
+            .with_data_pointer(SEG_2 + FIRST_ADDRESS)
+            .with_trb_type(trb_types::LINK)
+            .build();
+
+        dma_bus.write_bulk(link.address, &link.buffer);
+
+        // advance to the link trb
+        ring.set_dequeue_pointer(SEG_1 + LINK_TRB_ADDRESS, false);
+
+        // the test assumes that `next_trb()` will move the dequeue pointer to the
+        // transfer trb it returns and never mention any link trb it skipped over
+        let trb = ring.next_trb();
+
+        assert_ne!(
+            ring.get_dequeue_pointer(),
+            (SEG_1 + LINK_TRB_ADDRESS, false)
+        );
+        assert_eq!(ring.get_dequeue_pointer(), (SEG_2 + FIRST_ADDRESS, false));
+        check_trb(trb, SEG_2 + FIRST_ADDRESS, [0; 16]);
+
+        // jump back to the link trb but use a different cycle bit so we do not see the link trb
+        ring.set_dequeue_pointer(SEG_1 + LINK_TRB_ADDRESS, true);
+
+        assert_eq!(ring.next_trb(), None);
+
+        // since we did not encounter a actionable link trb we remained at this address
+        assert_eq!(ring.get_dequeue_pointer(), (SEG_1 + LINK_TRB_ADDRESS, true));
     }
 }
