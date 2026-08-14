@@ -153,7 +153,7 @@ mod tests {
             0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x2, 0x18, 0x0, 0x0,
         ];
 
-        // construct memory segment for a ring that can contain 5 TRBs and an endpoint context
+        // construct memory segment for a ring that can contain 5 TRBs
         let ram = Arc::new(TestBusDevice::new(&[0; TRB_SIZE * 5]));
         let mut ring = LinkedRing::new(ram.clone(), 0x0, true);
 
@@ -164,17 +164,16 @@ mod tests {
             "When no fresh TRB is on the ring, next_trb should return None, instead got: {trb:?}"
         );
 
-        // place three TRBs
-        // set cycle bit
-        // place setup
+        // place three TRBs and set their cycle bit
+        // setup
         ram.write_bulk(0, &setup);
         ram.write_bulk(12, &[0x1]);
 
-        // place data
+        // data
         ram.write_bulk(TRB_SIZE as u64, &data);
         ram.write_bulk(TRB_SIZE as u64 + 12, &[0x1]);
 
-        // place status
+        // status
         ram.write_bulk(TRB_SIZE as u64 * 2, &status);
         ram.write_bulk(TRB_SIZE as u64 * 2 + 12, &[0x1]);
 
@@ -202,17 +201,17 @@ mod tests {
 
         // place second batch of TRBs (include link TRB because the ring needs to
         // wrap around)
-        // place setup
+        // setup
         ram.write_bulk(TRB_SIZE as u64 * 3, &setup);
         ram.write_bulk(TRB_SIZE as u64 * 3 + 12, &[0x1]);
 
-        // place link
+        // link
         ram.write_bulk(TRB_SIZE as u64 * 4, &link);
         ram.write_bulk(TRB_SIZE as u64 * 4 + 12, &[0x1]);
         // set cycle bit without affecting the toggle_cycle bit
         ram.write_bulk(TRB_SIZE as u64 * 4 + 12, &[0x1 | link[12]]);
 
-        // place status
+        // status
         ram.write_bulk(0, &status);
         // wrap around---cycle bit now needs to be 0
         ram.write_bulk(0, &[0x0]);
