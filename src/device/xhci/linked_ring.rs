@@ -1,4 +1,4 @@
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -38,35 +38,45 @@ impl LinkedRing {
     ///
     /// This function only returns `TransferTrb`s that are not Link TRBs.
     /// Instead, Link TRBs are handled correctly, which is the reason why the
-    /// function might read two TRBs to return a single one.
+    /// function might read multiple TRBs to return a single one. When a Link
+    /// TRB is handled the dequeue pointer is set to the Link TRB's data field
+    /// value.
+    ///
+    /// Encountering multiple consecutive LinkTrb is described in the xhci specification as:
+    /// - allowed in the form of Link TD (chapter 4.11.7)
+    /// - undefined behavior within the same TD (chapter 4.11.7)
+    /// - having performance degrading effects (chapter 6.4.4.1).
+    ///
+    /// There is an upper limit on how many Link TRB are tolerated before this
+    /// function will return None instead of following more Link TRB. A sensible
+    /// driver should not hit that limit.
     pub fn next_trb(&mut self) -> Option<RawTrb> {
         // retrieve TRB at dequeue pointer and return None if there is no fresh
         // TRB
-        let first_trb_buffer = self.next_trb_raw()?;
+        let mut buffer = self.next_trb_raw()?;
 
-        let final_buffer = if let Some(link_trb) = LinkTrb::parse(first_trb_buffer) {
+        let mut link_trb_counter = 0;
+        while let Some(link_trb) = LinkTrb::parse(buffer) {
+            if link_trb_counter == 256 {
+                warn!("encountered unreasonable amount of consecutive Link TRB");
+                return None;
+            }
+            link_trb_counter += 1;
+
             // encountered Link TRB
             // update dequeue pointer.
             self.dequeue_pointer = link_trb.ring_segment_pointer;
+
             if link_trb.toggle_cycle {
                 self.cycle_state = !self.cycle_state;
             }
 
-            // lookup first TRB in the new memory segment
-            let second_trb_buffer = self.next_trb_raw()?;
-            if LinkTrb::parse(second_trb_buffer).is_some() {
-                panic!("Link TRB should not follow directly after another Link TRB");
-            }
-            second_trb_buffer
-        } else {
-            first_trb_buffer
-        };
+            // lookup TRB in the new memory segment
+            buffer = self.next_trb_raw()?;
+        }
 
         let address = self.dequeue_pointer;
-        let trb = RawTrb {
-            address,
-            buffer: final_buffer,
-        };
+        let trb = RawTrb { address, buffer };
 
         Some(trb)
     }
@@ -332,11 +342,7 @@ mod tests {
         assert_eq!(ring.get_dequeue_pointer(), (SEG_1 + LINK_TRB_ADDRESS, true));
     }
 
-    // Encountering multiple chained LinkTrb is described in the xhci specification as:
-    // - undefined behavior (chapter 4.11.7) and
-    // - performance degrading effects (chapter 6.4.4.1).
     #[test]
-    #[should_panic(expected = "Link TRB should not follow directly after another Link TRB")]
     fn encountering_two_consecutive_link_trb_is_supported() {
         const SEG_1: u64 = 0x00;
         const SEG_2: u64 = 0x20;
