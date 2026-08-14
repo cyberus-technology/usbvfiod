@@ -103,7 +103,7 @@ impl<CRD: CompleteRealDevice> PortArray<CRD> {
 
 #[derive(Debug)]
 struct PortWorker<CRD: CompleteRealDevice> {
-    devices: OneIndexed<Option<Arc<CRD>>, { MAX_PORTS as usize }>,
+    devices: OneIndexed<Option<AttachedDevice<CRD>>, { MAX_PORTS as usize }>,
     portsc: Arc<OneIndexed<PortscRegister, { MAX_PORTS as usize }>>,
     event_sender: EventSender,
     // the worker does not use the sender itself but needs to pass clones of the sender to detach listeners
@@ -112,10 +112,23 @@ struct PortWorker<CRD: CompleteRealDevice> {
     async_runtime: runtime::Handle,
 }
 
+/// The detach token is created once per device instance and cloned by its users, so its identity
+/// distinguishes attached device lifecycles. Token cancellation does not change this identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceInstanceId(CancellationToken);
+
+#[derive(Debug)]
+struct AttachedDevice<CRD: CompleteRealDevice> {
+    device: Arc<CRD>,
+    // The lifecycle ID of this attached device instance.
+    instance_id: DeviceInstanceId,
+}
+
 #[derive(Debug)]
 pub enum PortMessage<CRD: CompleteRealDevice> {
     Attach(CRD, oneshot::Sender<Response>),
-    Detach(CRD::ID, oneshot::Sender<Response>),
+    // Detaches a device, optionally limited to a specific attached device lifecycle.
+    Detach(CRD::ID, Option<DeviceInstanceId>, oneshot::Sender<Response>),
     ListAttached(oneshot::Sender<Vec<CRD::ID>>),
     // port id
     GetDevice(usize, oneshot::Sender<Option<Arc<CRD>>>),
@@ -136,8 +149,8 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
                 PortMessage::Attach(device, responder) => {
                     responder.send_anyhow(self.attach(device)?)?;
                 }
-                PortMessage::Detach(identifier, responder) => {
-                    responder.send_anyhow(self.detach(identifier)?)?;
+                PortMessage::Detach(identifier, instance_id, responder) => {
+                    responder.send_anyhow(self.detach(identifier, instance_id)?)?;
                 }
                 PortMessage::ListAttached(responder) => {
                     responder.send_anyhow(self.attached_devices())?;
@@ -146,7 +159,7 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
                     let device = self
                         .devices
                         .get(port_id)
-                        .and_then(|opt| opt.as_ref().map(|dev| dev.clone()));
+                        .and_then(|opt| opt.as_ref().map(|attached| attached.device.clone()));
                     responder.send_anyhow(device)?;
                 }
             };
@@ -165,7 +178,7 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
             info!(
                 "A device with the same identifier is already attached and will be detached first"
             );
-            self.detach(device.identifier())?;
+            self.detach(device.identifier(), None)?;
         }
 
         let speed = match device.realdevice_ref().speed() {
@@ -185,13 +198,18 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
                 };
 
         let identifier = device.identifier();
+        let instance_id = DeviceInstanceId(device.detach_token());
         self.async_runtime.spawn(detach_listener(
             device.detach_token(),
             identifier,
+            instance_id.clone(),
             self.msg_sender.clone(),
         ));
 
-        self.devices[available_port_id] = Some(Arc::new(device));
+        self.devices[available_port_id] = Some(AttachedDevice {
+            device: Arc::new(device),
+            instance_id,
+        });
 
         let new_portsc = match version {
             UsbVersion::USB3 => {
@@ -227,18 +245,35 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
         self.devices
             .iter()
             .filter_map(|dev| dev.as_ref())
-            .map(|dev| dev.identifier())
+            .map(|attached| attached.device.identifier())
             .collect()
     }
 
-    fn detach(&mut self, id: CRD::ID) -> anyhow::Result<Response> {
+    /// Detach a device by identifier, optionally requiring a particular attach lifecycle.
+    ///
+    /// An absent instance ID is used by explicit detach and reattach requests, which operate on
+    /// the currently attached device with instance ID. An instance ID is used by asynchronous detach
+    /// listeners and must match the currently attached device before it is removed.
+    fn detach(
+        &mut self,
+        id: CRD::ID,
+        requested_instance_id: Option<DeviceInstanceId>,
+    ) -> anyhow::Result<Response> {
         // find out on which port the device is connected
         let port_id = match self
             .devices
             .enumerate()
-            .filter_map(|(i, port)| port.as_ref().map(|d| (i, d.identifier())))
-            .filter(|(_, dev_id)| *dev_id == id)
-            .map(|(i, _)| i)
+            .filter_map(|(i, port)| {
+                port.as_ref().and_then(|attached| {
+                    let instance_id_matches =
+                        requested_instance_id
+                            .as_ref()
+                            .is_none_or(|requested_instance_id| {
+                                requested_instance_id == &attached.instance_id
+                            });
+                    (attached.device.identifier() == id && instance_id_matches).then_some(i)
+                })
+            })
             .next()
         {
             Some(i) => {
@@ -251,6 +286,9 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
                 // - cancels the detach token
                 // - detach_listener_tasks notices the cancellation and calls this handler again
                 // - second handler of course now cannot find this devices
+                //
+                // It is also expected when a detach listener targets an instance that has been
+                // replaced by reattachment.
                 //
                 // However, this message will also be printed when detach command for unknown identifier
                 // is received.
@@ -266,6 +304,7 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
         // Safety: just determined that this port_id refers to the device we want to detach
         mem::take(&mut self.devices[port_id])
             .unwrap()
+            .device
             .detach_token()
             .cancel();
 
@@ -285,11 +324,12 @@ impl<CRD: CompleteRealDevice> PortWorker<CRD> {
 async fn detach_listener<CRD: CompleteRealDevice>(
     cancel: CancellationToken,
     identifier: CRD::ID,
+    instance_id: DeviceInstanceId,
     msg_sender: mpsc::UnboundedSender<PortMessage<CRD>>,
 ) {
     let (send, recv) = oneshot::channel();
     cancel.cancelled().await;
-    let _ = msg_sender.send(PortMessage::Detach(identifier, send));
+    let _ = msg_sender.send(PortMessage::Detach(identifier, Some(instance_id), send));
     let _ = recv.await;
 }
 
@@ -357,7 +397,7 @@ impl<CRD: CompleteRealDevice> HotplugControl<CRD> {
 
     pub async fn detach(&self, identifier: CRD::ID) -> Response {
         let (responder, response_recv) = oneshot::channel();
-        let msg = PortMessage::Detach(identifier, responder);
+        let msg = PortMessage::Detach(identifier, None, responder);
         self.msg_send.send(msg).expect("channel should never close");
         response_recv
             .await
