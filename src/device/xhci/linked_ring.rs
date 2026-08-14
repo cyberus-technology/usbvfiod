@@ -122,6 +122,9 @@ mod tests {
 
     use super::*;
 
+    const FIRST_ADDRESS: u64 = 0x00;
+    const THIRD_ADDRESS: u64 = 0x20;
+
     // test summary:
     //
     // This test checks the retrieval of raw TRBs according to the cycle state and cycle bits,
@@ -249,5 +252,28 @@ mod tests {
         expected_data[12] &= 0xfe;
 
         assert_eq!(actual_data, expected_data);
+    }
+
+    #[test]
+    fn get_and_set_dequeue_pointer_with_cycle_bit() {
+        // construct memory segment for a ring that can contain TRBs
+        let dma = Arc::new(TestBusDevice::new(&[0; TRB_SIZE * 32]));
+        let mut ring = LinkedRing::new(dma, THIRD_ADDRESS, true);
+
+        // the dequeue pointer is initialized on some address in the middle
+        // with a cycle bit preventing `next_trb()` to see any trbs
+        assert_eq!(ring.get_dequeue_pointer(), (THIRD_ADDRESS, true));
+        assert_eq!(ring.next_trb(), None);
+
+        // setting the pointer backwards and changing the cycle bit interpretation
+        // so we interpret the zero buffer as trb from the current cycle
+        ring.set_dequeue_pointer(FIRST_ADDRESS, false);
+        assert_eq!(ring.get_dequeue_pointer(), (FIRST_ADDRESS, false));
+        check_trb(ring.next_trb(), FIRST_ADDRESS, [0; 16]);
+
+        // with the cycle bit we can see the previously none trb
+        ring.set_dequeue_pointer(THIRD_ADDRESS, false);
+        assert_eq!(ring.get_dequeue_pointer(), (THIRD_ADDRESS, false));
+        check_trb(ring.next_trb(), THIRD_ADDRESS, [0; 16]);
     }
 }
