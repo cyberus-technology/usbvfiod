@@ -381,4 +381,85 @@ mod tests {
         assert_eq!(ring.get_dequeue_pointer(), (SEG_3, false));
         check_trb(trb, SEG_3, [0; 16]);
     }
+
+    // This is technically allowed by the specification. We don't want to allow
+    // endless Link TRB since the guest would be able to block the hosts resources.
+    #[test]
+    fn gracefully_handle_endless_link_td() {
+        let dma = Arc::new(TestBusDevice::new(&[0; TRB_SIZE * 2]));
+        let mut ring = LinkedRing::new(dma.clone(), FIRST_ADDRESS, false);
+
+        // place a link trb that create an endless loop on itself
+        let link = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(FIRST_ADDRESS)
+            .with_trb_type(trb_types::LINK)
+            .build();
+        dma.write_bulk(link.address, &link.buffer);
+
+        for _ in 0..9 {
+            // LinkTrb TD --> LinkTrb TD --> ... --(hit some limit)--> returned None
+            let trb = ring.next_trb();
+            assert_eq!(ring.get_dequeue_pointer(), (FIRST_ADDRESS, false));
+            assert_eq!(trb, None);
+        }
+    }
+
+    // This is technically not allowed by the specification. We allow this for
+    // the sake of simplicity and handle it the same as we handle the endless
+    // Link TD.
+    #[test]
+    fn gracefully_handle_endless_chained_link_trb() {
+        let dma = Arc::new(TestBusDevice::new(&[0; TRB_SIZE * 2]));
+        let mut ring = LinkedRing::new(dma.clone(), FIRST_ADDRESS, false);
+
+        // place a link trb that create an endless loop on itself
+        let link = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(FIRST_ADDRESS)
+            .with_trb_type(trb_types::LINK)
+            .with_chain()
+            .build();
+        dma.write_bulk(link.address, &link.buffer);
+
+        for _ in 0..9 {
+            // LinkTrb(chain) --> LinkTrb(chain) --> ... --(hit some limit)--> returned None
+            let trb = ring.next_trb();
+            assert_eq!(ring.get_dequeue_pointer(), (FIRST_ADDRESS, false));
+            assert_eq!(trb, None);
+        }
+    }
+
+    #[test]
+    fn gracefully_handle_endless_link_trb_with_flipping_cycle_bit() {
+        let dma = Arc::new(TestBusDevice::new(&[0; TRB_SIZE * 4]));
+        let mut ring = LinkedRing::new(dma.clone(), FIRST_ADDRESS, false);
+
+        // cycle is false when encountering this link trb
+        let link = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(THIRD_ADDRESS)
+            .with_trb_type(trb_types::LINK)
+            .with_toggle_cycle()
+            .build();
+        dma.write_bulk(link.address, &link.buffer);
+
+        // cycle is true when encountering this link trb
+        let link_cycle = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_pointer(FIRST_ADDRESS)
+            .with_trb_type(trb_types::LINK)
+            .with_cycle()
+            .with_toggle_cycle()
+            .build();
+        dma.write_bulk(link_cycle.address, &link_cycle.buffer);
+
+        for _ in 0..9 {
+            // LinkTrb(!cycle) --> LinkTrb(cycle) --> LinkTrb(!cycle) --> ... --(hit some limit)--> returned None
+            let trb = ring.next_trb();
+            assert_eq!(trb, None);
+
+            let dequeue_pointer = ring.get_dequeue_pointer();
+            assert!(
+                dequeue_pointer == (FIRST_ADDRESS, false)
+                    || dequeue_pointer == (THIRD_ADDRESS, true)
+            );
+        }
+    }
 }

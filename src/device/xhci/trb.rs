@@ -1115,6 +1115,8 @@ pub mod testutils {
         const IOC: u8 = 0x20;
         const IDT: u8 = 0x40;
         const DIR: u8 = 0x1;
+        const C: u8 = 0x1;
+        const TC: u8 = 0x2;
 
         pub fn new(address: u64) -> Self {
             Self {
@@ -1176,6 +1178,17 @@ pub mod testutils {
         /// if DIR { IN } else { OUT }
         pub fn with_direction(mut self) -> Self {
             self.buffer[14] |= Self::DIR;
+            self
+        }
+
+        pub fn with_cycle(mut self) -> Self {
+            self.buffer[12] |= Self::C;
+            self
+        }
+
+        /// for link trb
+        pub fn with_toggle_cycle(mut self) -> Self {
+            self.buffer[12] |= Self::TC;
             self
         }
 
