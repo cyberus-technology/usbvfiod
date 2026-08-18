@@ -1595,7 +1595,7 @@ pub mod tests {
     use crate::device::xhci::endpoint_handle::tests::testutils::{
         MockRealControlEndpointExpectDataPattern, MockRealControlEndpointHardwareError,
         MockRealControlEndpointReadStatic, MockRealInEndpointHardwareError,
-        MockRealInEndpointReadStatic, MockRealOutEndpoint,
+        MockRealInEndpointReadStatic, MockRealOutEndpoint, MockRealOutEndpointHardwareError,
     };
     use crate::device::xhci::interrupter::tests::testutils::MockInterrupter;
     use crate::device::{bus::testutils::TestBusDevice, xhci::trb::testutils::RawTrbBuilder};
@@ -1910,6 +1910,52 @@ pub mod tests {
 
             fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
                 // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        // mock for bulk out real endpoint consuming `vec![_; 512 + 64]` and then returning a given OutTrbProcessingResult
+        #[derive(Debug)]
+        pub struct MockRealOutEndpointHardwareError {
+            status: OutTrbProcessingResult,
+            byte_count: i32,
+        }
+        impl MockRealOutEndpointHardwareError {
+            pub fn new(status: OutTrbProcessingResult) -> Self {
+                Self {
+                    status,
+                    byte_count: 576,
+                }
+            }
+        }
+        impl RealOutEndpointHandle for MockRealOutEndpointHardwareError {
+            type TrbCompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<OutTrbProcessingResult>> + Send + 'a>>;
+
+            fn submit(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
+                let length: i32 = data.len().try_into().expect("too much data");
+                self.byte_count -= length;
+                Ok(())
+            }
+
+            fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+                let status = match self.byte_count {
+                    i if i <= 0 => self.status.clone(),
+                    i if i > 0 => OutTrbProcessingResult::Success,
+                    _ => unreachable!(),
+                };
+                Box::pin(async { Ok(status) })
+            }
+        }
+        impl BaseEndpointHandle for MockRealOutEndpointHardwareError {
+            type CompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+            fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+                Box::pin(async { Ok(()) })
+            }
+
+            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
                 Box::pin(async { Ok(()) })
             }
         }
@@ -2986,6 +3032,106 @@ pub mod tests {
         );
 
         // no event for the third normal Trb because we (in theory) have yet to touch it
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn normal_out_returns_hardware_stall() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = MockRealOutEndpointHardwareError::new(OutTrbProcessingResult::Stall);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, mut interrupter) = MockInterrupter::new();
+
+        let mut bulk_out_endpoint = OutEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        let normal_1 = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_type(TRB_TYPE_NORMAL)
+            .with_length(512)
+            .with_ioc()
+            .with_ch()
+            .build();
+        let normal_2 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_type(TRB_TYPE_NORMAL)
+            .with_length(512)
+            .with_ioc()
+            .build();
+
+        bulk_out_endpoint
+            .submit_trb(normal_1)
+            .expect("this mock hardware request should never fail");
+
+        let completion = bulk_out_endpoint.next_completion().await.ok();
+
+        // stall information is only included for td aggregation
+        assert_eq!(completion, Some(TrbProcessingResult::Ok));
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0, // these bytes are fully consumed
+                CompletionCode::Success,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        assert!(interrupter.is_empty());
+
+        bulk_out_endpoint
+            .submit_trb(normal_2)
+            .expect("this mock hardware request should never fail");
+
+        let completion = bulk_out_endpoint.next_completion().await.ok();
+
+        assert_eq!(completion, Some(TrbProcessingResult::Stall(None)));
+
+        // In theory we can not know how much of the transfer concluded successfully
+        //
+        // xhci specification: Table 6-38: Offset 08h – Transfer Event TRB Field Definitions
+        // ```
+        // TRB Transfer Length. This field shall reflect the residual number of bytes not transferred.
+        //
+        // For an OUT, this field shall indicate the value of the Length field
+        // of the Transfer TRB, minus the data bytes that were successfully
+        // transmitted. A successful OUT transfer shall return a Length of ‘0’.
+        // ```
+        //
+        // With the current mock a length field of 448 would be expected
+        // according to the specification citation.
+        //
+        // We currently return a hard coded 0 and this test is working with that.
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                SECOND_ADDRESS,
+                0,
+                CompletionCode::StallError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
 
         assert!(interrupter.is_empty());
     }

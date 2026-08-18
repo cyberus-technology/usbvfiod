@@ -29,7 +29,7 @@ pub trait RealOutEndpointHandle: BaseEndpointHandle {
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum OutTrbProcessingResult {
     Disconnect,
     Stall,
