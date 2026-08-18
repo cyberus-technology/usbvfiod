@@ -63,6 +63,10 @@ impl LinkedRing {
             }
             link_trb_counter += 1;
 
+            if link_trb.interrupt_on_completion {
+                warn!("ignoring the set IOC bit on a Link TRB");
+            }
+
             // encountered Link TRB
             // update dequeue pointer.
             self.dequeue_pointer = link_trb.ring_segment_pointer;

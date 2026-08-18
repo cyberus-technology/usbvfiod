@@ -441,6 +441,7 @@ pub struct LinkTrb {
     pub ring_segment_pointer: u64,
     /// The flag that indicates whether to toggle the cycle bit.
     pub toggle_cycle: bool,
+    pub interrupt_on_completion: bool,
 }
 
 impl LinkTrb {
@@ -454,7 +455,9 @@ impl LinkTrb {
         // SAFETY: range matches array length
         let rsp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
         let mut ring_segment_pointer = u64::from_le_bytes(rsp_bytes);
+
         let toggle_cycle = trb_bytes[12] & 0x2 != 0;
+        let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
 
         // the lowest four bit of the pointer are RsvdZ to ensure 16-byte
         // alignment.
@@ -466,6 +469,7 @@ impl LinkTrb {
         Some(Self {
             ring_segment_pointer,
             toggle_cycle,
+            interrupt_on_completion,
         })
     }
 }
@@ -1325,12 +1329,13 @@ mod tests {
     #[test]
     fn parse_link_trb() {
         let trb_bytes = [
-            0x80, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x02, 0x18,
+            0x80, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x22, 0x18,
             0x00, 0x00,
         ];
         let expected = Some(LinkTrb {
             ring_segment_pointer: 0x1122334455667780,
             toggle_cycle: true,
+            interrupt_on_completion: true,
         });
         assert_eq!(LinkTrb::parse(trb_bytes), expected);
     }
