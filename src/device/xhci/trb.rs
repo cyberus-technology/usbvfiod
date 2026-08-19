@@ -441,6 +441,7 @@ pub struct LinkTrb {
     pub ring_segment_pointer: u64,
     /// The flag that indicates whether to toggle the cycle bit.
     pub toggle_cycle: bool,
+    pub interrupt_on_completion: bool,
 }
 
 impl LinkTrb {
@@ -454,7 +455,9 @@ impl LinkTrb {
         // SAFETY: range matches array length
         let rsp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
         let mut ring_segment_pointer = u64::from_le_bytes(rsp_bytes);
+
         let toggle_cycle = trb_bytes[12] & 0x2 != 0;
+        let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
 
         // the lowest four bit of the pointer are RsvdZ to ensure 16-byte
         // alignment.
@@ -466,6 +469,7 @@ impl LinkTrb {
         Some(Self {
             ring_segment_pointer,
             toggle_cycle,
+            interrupt_on_completion,
         })
     }
 }
@@ -1115,6 +1119,8 @@ pub mod testutils {
         const IOC: u8 = 0x20;
         const IDT: u8 = 0x40;
         const DIR: u8 = 0x1;
+        const C: u8 = 0x1;
+        const TC: u8 = 0x2;
 
         pub fn new(address: u64) -> Self {
             Self {
@@ -1130,58 +1136,63 @@ pub mod testutils {
         }
 
         /// setup stage trb exclusive field: wLength
-        pub fn with_setup_length(mut self, value: u16) -> Self {
+        pub fn with_setup_wlength(mut self, value: u16) -> Self {
             let value_bytes: [u8; 2] = value.to_le_bytes();
             self.buffer[6..(2 + 6)].copy_from_slice(&value_bytes);
             self
         }
 
         /// first 8 bytes of the trb
-        pub fn with_data_field(mut self, value: u64) -> Self {
+        pub fn with_data_pointer(mut self, value: u64) -> Self {
             let value_bytes: [u8; 8] = value.to_le_bytes();
             self.buffer[..8].copy_from_slice(&value_bytes);
             self
         }
 
-        /// byte index 8 & 9 & 1 Bit of 10th: TRB Transfer Length
-        pub fn with_length(mut self, length: u32) -> Self {
+        /// byte index 8 & 9 & 1 Bit of 10th
+        pub fn with_trb_transfer_length(mut self, length: u32) -> Self {
             let length_bytes: [u8; 4] = length.to_le_bytes();
             self.buffer[8..(2 + 8)].copy_from_slice(&length_bytes[0..2]);
             self.buffer[10] = length_bytes[2] & 0b1;
             self
         }
 
-        /// chain bit
-        pub fn with_ch(mut self) -> Self {
+        pub fn with_chain(mut self) -> Self {
             self.buffer[12] |= Self::CH;
             self
         }
 
-        /// interrupt on completion bit
-        pub fn with_ioc(mut self) -> Self {
+        pub fn with_interrupt_on_completion(mut self) -> Self {
             self.buffer[12] |= Self::IOC;
             self
         }
 
-        /// immediate data bit
-        pub fn with_idt(mut self) -> Self {
+        pub fn with_immediate_data(mut self) -> Self {
             self.buffer[12] |= Self::IDT;
             self
         }
 
-        /// trb type field
-        pub fn with_type(mut self, trb_type: u8) -> Self {
+        pub fn with_trb_type(mut self, trb_type: u8) -> Self {
             self.buffer[13] |= trb_type << 2;
             self
         }
 
-        /// direction bit
-        ///
         /// for data stage and status stage trb
         ///
         /// if DIR { IN } else { OUT }
-        pub fn with_dir(mut self) -> Self {
+        pub fn with_direction(mut self) -> Self {
             self.buffer[14] |= Self::DIR;
+            self
+        }
+
+        pub fn with_cycle(mut self) -> Self {
+            self.buffer[12] |= Self::C;
+            self
+        }
+
+        /// for link trb
+        pub fn with_toggle_cycle(mut self) -> Self {
+            self.buffer[12] |= Self::TC;
             self
         }
 
@@ -1206,11 +1217,11 @@ pub mod testutils {
         #[test]
         fn build_normal_trb_as_raw_trb() {
             let normal = RawTrbBuilder::new(0x10)
-                .with_data_field(0x1122334455667788)
-                .with_length(2048)
-                .with_ioc()
-                .with_ch()
-                .with_type(0x1)
+                .with_data_pointer(0x1122334455667788)
+                .with_trb_transfer_length(2048)
+                .with_interrupt_on_completion()
+                .with_chain()
+                .with_trb_type(trb_types::NORMAL)
                 .build();
             let expect = RawTrb {
                 address: 0x10,
@@ -1224,12 +1235,12 @@ pub mod testutils {
         #[test]
         fn build_normal_trb_as_raw_trb_with_max_length() {
             let normal = RawTrbBuilder::new(0x10)
-                .with_data_field(0x1122334455667788)
+                .with_data_pointer(0x1122334455667788)
                 // this is the fields maximum value not the as per specification allowed maximum value of 0x1_0000
-                .with_length(0x1_ffff)
-                .with_ioc()
-                .with_ch()
-                .with_type(0x1)
+                .with_trb_transfer_length(0x1_ffff)
+                .with_interrupt_on_completion()
+                .with_chain()
+                .with_trb_type(trb_types::NORMAL)
                 .build();
             let expect = RawTrb {
                 address: 0x10,
@@ -1245,11 +1256,11 @@ pub mod testutils {
         fn build_control_in_setup_stage_as_raw_trb() {
             let setup_stage = RawTrbBuilder::new(0x10)
                 .with_setup_type(0x80)
-                .with_setup_length(512)
-                .with_length(1024)
-                .with_idt()
-                .with_ioc()
-                .with_type(0x2)
+                .with_setup_wlength(512)
+                .with_trb_transfer_length(1024)
+                .with_immediate_data()
+                .with_interrupt_on_completion()
+                .with_trb_type(trb_types::SETUP_STAGE)
                 .with_byte(14, 0x3) // TRT: IN Data Stage
                 .build();
             let expect = RawTrb {
@@ -1262,11 +1273,11 @@ pub mod testutils {
         #[test]
         fn build_control_in_data_stage_as_raw_trb() {
             let data_stage = RawTrbBuilder::new(0x10)
-                .with_data_field(0x112233445566)
-                .with_idt()
-                .with_ioc()
-                .with_type(0x3)
-                .with_dir()
+                .with_data_pointer(0x112233445566)
+                .with_immediate_data()
+                .with_interrupt_on_completion()
+                .with_trb_type(trb_types::DATA_STAGE)
+                .with_direction()
                 .build();
             let expect = RawTrb {
                 address: 0x10,
@@ -1280,10 +1291,10 @@ pub mod testutils {
         #[test]
         fn build_control_in_status_stage_as_raw_trb() {
             let status_stage = RawTrbBuilder::new(0x10)
-                .with_ioc()
-                .with_ch()
-                .with_type(0x4)
-                .with_dir()
+                .with_interrupt_on_completion()
+                .with_chain()
+                .with_trb_type(trb_types::STATUS_STAGE)
+                .with_direction()
                 .build();
             let expect = RawTrb {
                 address: 0x10,
@@ -1295,10 +1306,10 @@ pub mod testutils {
         #[test]
         fn build_event_data_as_raw_trb() {
             let event_data = RawTrbBuilder::new(0x10)
-                .with_data_field(0xe4e117da7a)
-                .with_ioc()
-                .with_type(0x7)
-                .with_dir()
+                .with_data_pointer(0xe4e117da7a)
+                .with_interrupt_on_completion()
+                .with_trb_type(trb_types::EVENT_DATA)
+                .with_direction()
                 .build();
             let expect = RawTrb {
                 address: 0x10,
@@ -1318,12 +1329,13 @@ mod tests {
     #[test]
     fn parse_link_trb() {
         let trb_bytes = [
-            0x80, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x02, 0x18,
+            0x80, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00, 0x22, 0x18,
             0x00, 0x00,
         ];
         let expected = Some(LinkTrb {
             ring_segment_pointer: 0x1122334455667780,
             toggle_cycle: true,
+            interrupt_on_completion: true,
         });
         assert_eq!(LinkTrb::parse(trb_bytes), expected);
     }
