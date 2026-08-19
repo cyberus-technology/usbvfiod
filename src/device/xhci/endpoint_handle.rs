@@ -728,7 +728,10 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                 .iter()
                 .map(SupportedInEndpointTrb::transfer_length)
                 .sum::<usize>();
-            debug!("Submitting real request for {td_request_length} bytes");
+            debug!(
+                "Submitting on ep {} a real request for {td_request_length} bytes",
+                self.endpoint_id
+            );
             self.real_ep.submit(td_request_length)?;
 
             replace_with_or_abort(&mut self.submission_state, |old_state| {
@@ -744,14 +747,16 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
-            match mem::take(&mut self.submission_state) {
-                TdBasedNormalSubmissionState::CollectingTd(trbs) => {
-                    self.submission_state = TdBasedNormalSubmissionState::CollectingTd(trbs);
-                    Ok(TrbProcessingResult::Ok)
+            match &mut self.submission_state {
+                TdBasedNormalSubmissionState::CollectingTd(_) => Ok(TrbProcessingResult::Ok),
+                TdBasedNormalSubmissionState::UnsupportedTrb => {
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    Ok(TrbProcessingResult::TrbError)
                 }
-                TdBasedNormalSubmissionState::UnsupportedTrb => Ok(TrbProcessingResult::TrbError),
                 TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs) => {
                     let completion = self.real_ep.next_completion().await?;
+                    let trbs = mem::take(trbs);
+                    self.submission_state = TdBasedNormalSubmissionState::default();
                     let processing_result = process_real_transfer_response(
                         self.endpoint_id,
                         self.slot_id,
@@ -827,7 +832,7 @@ struct TdProcessingInfo<'a> {
 enum TdProcessingState {
     Default,
     // no more data, skip forward to next TD
-    ShortTransfer,
+    ShortTransfer(usize),
 }
 
 impl<'a> TdProcessingInfo<'a> {
@@ -882,7 +887,11 @@ impl<'a> TdProcessingInfo<'a> {
                                 );
                                 self.event_sender.send(transfer_event)?;
                             }
-                            self.state = TdProcessingState::ShortTransfer;
+                            self.state = TdProcessingState::ShortTransfer(bytes_missing);
+
+                            pcap::in_completion(self.pcap_meta, addr, bytes);
+
+                            return Ok(None);
                         }
                         _ => {
                             let (completion_code, processing_result) = match self.status {
@@ -936,9 +945,22 @@ impl<'a> TdProcessingInfo<'a> {
 
                 Ok(None)
             }
-            TdProcessingState::ShortTransfer => {
+            TdProcessingState::ShortTransfer(bytes_missing) => {
                 // Skip all Normal TRBs.
                 // We will need more handling here once we support EventData TRBs.
+
+                if trb_data.interrupt_on_completion {
+                    let transfer_event = EventTrb::new_transfer_event_trb(
+                        addr,
+                        bytes_missing as u32,
+                        CompletionCode::Success,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(transfer_event)?;
+                }
+
                 Ok(None)
             }
         }
@@ -949,7 +971,10 @@ impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for TdBasedInEndpointHandle<
     type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async { self.real_ep.cancel().await })
+        Box::pin(async {
+            self.submission_state = TdBasedNormalSubmissionState::default();
+            self.real_ep.cancel().await
+        })
     }
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
