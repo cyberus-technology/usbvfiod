@@ -491,18 +491,18 @@ mod tests {
 
         // place command trb on a ring segment
         let command_1 = RawTrbBuilder::new(FIRST_ADDRESS)
-            .with_type(trb_types::NO_OP_COMMAND)
+            .with_trb_type(trb_types::NO_OP_COMMAND)
             .build();
         let command_2 = RawTrbBuilder::new(SECOND_ADDRESS)
-            .with_type(trb_types::ENABLE_SLOT_COMMAND)
+            .with_trb_type(trb_types::ENABLE_SLOT_COMMAND)
             .build();
         let command_3 = RawTrbBuilder::new(THIRD_ADDRESS)
-            .with_type(trb_types::DISABLE_SLOT_COMMAND)
+            .with_trb_type(trb_types::DISABLE_SLOT_COMMAND)
             .with_byte(15, SLOT_ID)
             .build();
         let command_4 = RawTrbBuilder::new(FOURTH_ADDRESS)
-            .with_data_field(0x1 << 4)
-            .with_type(trb_types::ADDRESS_DEVICE_COMMAND)
+            .with_data_pointer(0x1 << 4)
+            .with_trb_type(trb_types::ADDRESS_DEVICE_COMMAND)
             .with_byte(15, SLOT_ID)
             .build();
 
@@ -602,7 +602,7 @@ mod tests {
         let (command_ring, mut interrupter, _receiver, dma_bus, usbcmd) = init_test();
 
         let command = RawTrbBuilder::new(FIRST_ADDRESS)
-            .with_type(trb_types::NO_OP_COMMAND)
+            .with_trb_type(trb_types::NO_OP_COMMAND)
             .build();
 
         dma_bus.write_bulk(command.address, &command.buffer);
@@ -662,7 +662,7 @@ mod tests {
         let (command_ring, mut interrupter, _receiver, dma_bus, usbcmd) = init_test();
 
         let command = RawTrbBuilder::new(FIRST_ADDRESS)
-            .with_type(trb_types::NO_OP_COMMAND)
+            .with_trb_type(trb_types::NO_OP_COMMAND)
             .build();
 
         dma_bus.write_bulk(command.address, &command.buffer);
