@@ -492,7 +492,10 @@ impl Slot {
                 self.state = SlotState::Addressed(base_address);
                 base_address
             }
-            _ => return Ok(CompletionCode::ContextStateError),
+            state => {
+                warn!("AddressDevice in state {state:?} is treated as ContextStateError");
+                return Ok(CompletionCode::ContextStateError);
+            }
         };
         self.dma_copy_slot_context(input_context_pointer, base_address);
         self.write_slot_state();
@@ -545,7 +548,11 @@ impl Slot {
         // configure endpoint with DC=1 transitions from Addressed/Configured to Addressed
         let base_address = match self.state {
             SlotState::Enabled | SlotState::Default(_) => {
-                return Ok(CompletionCode::ContextStateError)
+                warn!(
+                    "ConfigureEndpoint in state {:?} is treated as ContextStateError",
+                    self.state
+                );
+                return Ok(CompletionCode::ContextStateError);
             }
             SlotState::Addressed(base_address) => base_address,
             SlotState::Configured(base_address) => base_address,
@@ -664,6 +671,10 @@ impl Slot {
     async fn handle_reset_device(&mut self) -> anyhow::Result<CompletionCode> {
         let base_address = match self.state {
             SlotState::Enabled | SlotState::Default(_) => {
+                warn!(
+                    "ResetDevice in state {:?} is treated as ContextStateError",
+                    self.state
+                );
                 return Ok(CompletionCode::ContextStateError);
             }
             SlotState::Addressed(base_address) => base_address,
