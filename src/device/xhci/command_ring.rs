@@ -443,6 +443,7 @@ mod tests {
     const SECOND_ADDRESS: u64 = FIRST_ADDRESS + 0x10;
     const THIRD_ADDRESS: u64 = SECOND_ADDRESS + 0x10;
     const FOURTH_ADDRESS: u64 = THIRD_ADDRESS + 0x10;
+    const FIFTH_ADDRESS: u64 = FOURTH_ADDRESS + 0x10;
 
     const SLOT_ID: u8 = 0;
 
@@ -657,7 +658,7 @@ mod tests {
         assert!(interrupter.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn write_to_command_abort_bit() {
         let (command_ring, mut interrupter, _receiver, dma_bus, usbcmd) = init_test();
 
@@ -665,16 +666,24 @@ mod tests {
             .with_trb_type(trb_types::NO_OP_COMMAND)
             .build();
 
+        // Do not use a toggle cycle bit to run an infinite loop.
+        let link_trb = RawTrbBuilder::new(FIFTH_ADDRESS)
+            .with_data_pointer(command.address)
+            .with_trb_type(trb_types::LINK)
+            .build();
+
+        // Use a Link TD to loop an infinite amount of four NoOp TD.
         dma_bus.write_bulk(command.address, &command.buffer);
         dma_bus.write_bulk(SECOND_ADDRESS, &command.buffer);
         dma_bus.write_bulk(THIRD_ADDRESS, &command.buffer);
         dma_bus.write_bulk(FOURTH_ADDRESS, &command.buffer);
+        dma_bus.write_bulk(link_trb.address, &link_trb.buffer);
 
-        // start the ring through usbcmd and doorbell
+        // Start the ring through usbcmd and doorbell.
         usbcmd.write(usbcmd::RS);
         command_ring.doorbell().unwrap();
 
-        // verify running state by waiting for the first command completion event
+        // Wait for the first command completion event to avoid a race condition...
         let event = interrupter.await_event().await.unwrap();
         let expected_event = EventTrb::new_command_completion_event_trb(
             FIRST_ADDRESS,
@@ -684,23 +693,28 @@ mod tests {
         );
         assert_eq!(event, expected_event);
 
+        // ...when using crcr::CRR to verify the running state.
         assert_eq!(command_ring.status(), crcr::CRR);
 
         // abort ring operations
-        //
-        // As time of writing I have not found a surefire way to stop in between
-        // the No Op Command TRB's. So we can not be sure if we are still processing
-        // or are already done and switched to idle.
         command_ring.control(crcr::CA).unwrap();
+
         loop {
             let event = interrupter.await_event().await.unwrap();
-            debug!("{:?}", event);
             match event {
                 EventTrb::CommandCompletion(event_trb) => match event_trb.get_completion_code() {
                     CompletionCode::Success => {
-                        assert_eq!(command_ring.status() & crcr::CRR, crcr::CRR);
+                        // The following assert_eq! is racey.
+                        // The CommandRing is used to communicate to the CommandWorker.
+                        // CommandRing::status() is reading from the CRCR register and will read
+                        // the current state the CommandWorker uses. This state can be further than
+                        // we know when evaluating a past Event TRB sent by the CommandWorker.
+
+                        // assert_eq!(command_ring.status() & crcr::CRR, crcr::CRR);
                     }
                     CompletionCode::CommandRingStopped => {
+                        // After stopping, the CommandWorker is not supposed to do much
+                        // so we can use the CRCR register in this path.
                         assert_eq!(command_ring.status() & crcr::CRR, 0);
                         break;
                     }
