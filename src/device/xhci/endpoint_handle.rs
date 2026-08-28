@@ -22,8 +22,8 @@ use crate::device::{
             RealOutEndpointHandle,
         },
         trb::{
-            CompletionCode, EventDataTrbData, EventTrb, NormalTrbData, RawTrb, TransferTrb,
-            TransferTrbVariant,
+            CompletionCode, EventDataTrbData, EventTrb, NoOpTrbData, NormalTrbData, RawTrb,
+            TransferTrb, TransferTrbVariant,
         },
         usbrequest::UsbRequest,
     },
@@ -611,6 +611,7 @@ struct SupportedInEndpointTrb {
 enum SupportedInEndpointTrbVariant {
     Normal(NormalTrbData),
     EventData(EventDataTrbData),
+    NoOp(NoOpTrbData),
 }
 
 impl TryFrom<TransferTrbVariant> for SupportedInEndpointTrbVariant {
@@ -620,6 +621,7 @@ impl TryFrom<TransferTrbVariant> for SupportedInEndpointTrbVariant {
         match value {
             TransferTrbVariant::Normal(data) => Ok(Self::Normal(data)),
             TransferTrbVariant::EventData(data) => Ok(Self::EventData(data)),
+            TransferTrbVariant::NoOp(data) => Ok(Self::NoOp(data)),
             variant => Err(variant),
         }
     }
@@ -632,6 +634,7 @@ impl SupportedInEndpointTrb {
             SupportedInEndpointTrbVariant::EventData(event_data_trb_data) => {
                 event_data_trb_data.chain
             }
+            SupportedInEndpointTrbVariant::NoOp(noop) => noop.chain,
         }
     }
 
@@ -639,6 +642,7 @@ impl SupportedInEndpointTrb {
         match &self.variant {
             SupportedInEndpointTrbVariant::Normal(data) => data.transfer_length as usize,
             SupportedInEndpointTrbVariant::EventData(_) => 0,
+            SupportedInEndpointTrbVariant::NoOp(_) => 0,
         }
     }
 }
@@ -832,6 +836,7 @@ struct TdProcessingInfo<'a> {
 enum TdProcessingState {
     Default,
     // no more data, skip forward to next TD
+    /// missing bytes
     ShortTransfer(usize),
 }
 
@@ -840,12 +845,25 @@ impl<'a> TdProcessingInfo<'a> {
         &mut self,
         trb: SupportedInEndpointTrb,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
-        // assumption: Only normal TRBs
         match trb.variant {
             SupportedInEndpointTrbVariant::Normal(data) => {
                 self.process_normal_trb(trb.addr, trb.cycle_bit, data)
             }
             SupportedInEndpointTrbVariant::EventData(_data) => todo!(),
+            SupportedInEndpointTrbVariant::NoOp(data) => {
+                if data.interrupt_on_completion {
+                    let transfer_event = EventTrb::new_transfer_event_trb(
+                        trb.addr,
+                        0,
+                        CompletionCode::Success,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(transfer_event)?;
+                }
+                Ok(None)
+            }
         }
     }
 
