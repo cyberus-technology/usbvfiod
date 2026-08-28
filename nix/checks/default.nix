@@ -28,6 +28,9 @@ in
 // import ./attach-detach.nix {
   inherit usbvfiod testutils;
 }
+// import ./reattach-attached.nix {
+  inherit usbvfiod testutils;
+}
 // import ./interrupt.nix {
   inherit testutils;
 }
