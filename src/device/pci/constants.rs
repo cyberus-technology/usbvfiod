@@ -291,12 +291,13 @@ pub mod xhci {
 
     /// Constants for the capability register.
     pub mod capability {
+
         /// We only emulate version 1.0.0 of the XHCI spec for simplicity.
         pub const HCIVERSION: u64 = 0x100;
         pub const HCSPARAMS1: u64 =
             (super::MAX_PORTS << 24) | (super::MAX_INTRS << 8) | super::MAX_SLOTS;
         pub const HCSPARAMS2: u64 = super::MAX_ERST_SIZE_EXP << 4;
-        pub const HCCPARAMS1: u64 = super::offset::SUPPORTED_PROTOCOLS << 14;
+        pub const HCCPARAMS1: u64 = hccparams1::PAE | super::offset::SUPPORTED_PROTOCOLS << 14;
 
         pub const USB_STRING: u64 = 0x20425355;
 
@@ -319,6 +320,12 @@ pub mod xhci {
             pub const CAP_INFO: u64 = ID | (MAJOR << 24) | (MINOR << 16) | (NEXT << 8);
             pub const CONFIG: u64 =
                 (super::super::NUM_USB3_PORTS + 1) | (super::super::NUM_USB2_PORTS << 8);
+        }
+
+        // See xhci specification chapter 5.3.6
+        pub mod hccparams1 {
+            // Parse all Event Data TRB while advancing to the next TD after a Short Packet.
+            pub const PAE: u64 = 0x100;
         }
     }
 
