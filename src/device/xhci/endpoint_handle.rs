@@ -17,7 +17,8 @@ use crate::device::{
         hotplug_endpoint_handle::BaseEndpointHandle,
         interrupter::EventSender,
         real_endpoint_handle::{
-            ControlRequestProcessingResult, InTrbProcessingResult, InTrbProcessingStatus,
+            ControlRequestProcessingResult, InTrbProcessingResult,
+            InTrbProcessingStatus::{self},
             OutTrbProcessingResult, RealControlEndpointHandle, RealInEndpointHandle,
             RealOutEndpointHandle,
         },
@@ -736,6 +737,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                 "Submitting on ep {} a real request for {td_request_length} bytes",
                 self.endpoint_id
             );
+
             self.real_ep.submit(td_request_length)?;
 
             replace_with_or_abort(&mut self.submission_state, |old_state| {
