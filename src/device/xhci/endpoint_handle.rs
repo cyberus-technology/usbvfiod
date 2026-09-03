@@ -17,7 +17,8 @@ use crate::device::{
         hotplug_endpoint_handle::BaseEndpointHandle,
         interrupter::EventSender,
         real_endpoint_handle::{
-            ControlRequestProcessingResult, InTrbProcessingResult, InTrbProcessingStatus,
+            ControlRequestProcessingResult, InTrbProcessingResult,
+            InTrbProcessingStatus::{self, Success},
             OutTrbProcessingResult, RealControlEndpointHandle, RealInEndpointHandle,
             RealOutEndpointHandle,
         },
@@ -652,6 +653,7 @@ enum TdBasedNormalSubmissionState {
     CollectingTd(Vec<SupportedInEndpointTrb>),
     AwaitingRealTransfer(Vec<SupportedInEndpointTrb>),
     UnsupportedTrb,
+    NoOpTD(Vec<SupportedInEndpointTrb>),
 }
 
 impl Default for TdBasedNormalSubmissionState {
@@ -728,6 +730,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
         let end_of_td = !supported_trb.chain();
         trbs.push(supported_trb);
         if end_of_td {
+            warn!("TD: {:?}", trbs);
             let td_request_length = trbs
                 .iter()
                 .map(SupportedInEndpointTrb::transfer_length)
@@ -736,6 +739,21 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                 "Submitting on ep {} a real request for {td_request_length} bytes",
                 self.endpoint_id
             );
+
+            // We want to skip a submit on a real ep since requesting 0 is not allowed.
+            if td_request_length == 0 {
+                replace_with_or_abort(&mut self.submission_state, |old_state| {
+                    let TdBasedNormalSubmissionState::CollectingTd(trbs) = old_state else {
+                        unreachable!(
+                            "verified the state is CollectingTd at the start of the function"
+                        );
+                    };
+                    TdBasedNormalSubmissionState::NoOpTD(trbs)
+                });
+
+                return Ok(());
+            }
+
             self.real_ep.submit(td_request_length)?;
 
             replace_with_or_abort(&mut self.submission_state, |old_state| {
@@ -759,6 +777,24 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                 }
                 TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs) => {
                     let completion = self.real_ep.next_completion().await?;
+                    let trbs = mem::take(trbs);
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    let processing_result = process_real_transfer_response(
+                        self.endpoint_id,
+                        self.slot_id,
+                        completion,
+                        trbs,
+                        &self.event_sender,
+                        &self.dma_bus,
+                        self.pcap_meta,
+                    )?;
+                    Ok(processing_result)
+                }
+                TdBasedNormalSubmissionState::NoOpTD(trbs) => {
+                    let completion = InTrbProcessingResult {
+                        status: Success,
+                        data: vec![],
+                    };
                     let trbs = mem::take(trbs);
                     self.submission_state = TdBasedNormalSubmissionState::default();
                     let processing_result = process_real_transfer_response(
