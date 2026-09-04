@@ -161,6 +161,8 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                             self.context.set_state(endpoint_state::STOPPED);
                             let (dequeue_pointer,cycle_state) = self.transfer_ring.get_dequeue_pointer();
                             self.context.set_dequeue_pointer_and_cycle_state(dequeue_pointer,cycle_state);
+                            self.real_endpoint.cancel().await?;
+                            // TODO A Transfer Event with CompletionCode::Stopped and the residual length should be generated.
                             self.state = WorkerState::StoppedWithContinuableTrb;
                             completion.send_anyhow(CompletionCode::Success)?;
                         }
@@ -197,14 +199,15 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     }
                     msg => self.context_state_error(msg)?,
                 },
+                // TODO: The WorkerState::StoppedWithContinuableTrb state is
+                // currently identical to Stopped and not fully implemented.
                 WorkerState::StoppedWithContinuableTrb => match self.next_msg().await? {
-                    EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
-                        self.real_endpoint.cancel().await?;
-                        self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
-                    }
                     EndpointMessage::Doorbell => {
                         self.context.set_state(endpoint_state::RUNNING);
-                        self.state = WorkerState::WaitForTrbCompletion;
+                        self.state = WorkerState::LookForTrb;
+                    }
+                    EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
+                        self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
                     }
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender);
