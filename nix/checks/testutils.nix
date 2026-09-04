@@ -162,6 +162,14 @@ let
       def __init__(self, vm_host: BaseMachine) -> None:
         self.vm_host = vm_host
 
+      def execute(self, *commands: str, timeout: int | None = None) -> str:
+        vm_host = self.vm_host
+        output = ""
+        for command in commands:
+          (status, out) = vm_host.execute("ssh -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 '" + command + "'", timeout=timeout)
+          output += out
+        return output
+
       def succeed(self, *commands: str, timeout: int | None = None) -> str:
         vm_host = self.vm_host
         output = ""
