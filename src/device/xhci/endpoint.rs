@@ -194,7 +194,8 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                     }
                     EndpointMessage::Doorbell => {
                         self.context.set_state(endpoint_state::RUNNING);
-                        self.state = WorkerState::WaitForTrbCompletion;
+                        self.real_endpoint.cancel().await?;
+                        self.state = WorkerState::LookForTrb;
                     }
                     EndpointMessage::Terminate(sender) => {
                         self.state = WorkerState::Terminating(sender);
