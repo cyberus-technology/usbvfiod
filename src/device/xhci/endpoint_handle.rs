@@ -17,13 +17,14 @@ use crate::device::{
         hotplug_endpoint_handle::BaseEndpointHandle,
         interrupter::EventSender,
         real_endpoint_handle::{
-            ControlRequestProcessingResult, InTrbProcessingResult, InTrbProcessingStatus,
+            ControlRequestProcessingResult, InTrbProcessingResult,
+            InTrbProcessingStatus::{self, Success},
             OutTrbProcessingResult, RealControlEndpointHandle, RealInEndpointHandle,
             RealOutEndpointHandle,
         },
         trb::{
-            CompletionCode, EventDataTrbData, EventTrb, NormalTrbData, RawTrb, TransferTrb,
-            TransferTrbVariant,
+            CompletionCode, EventDataTrbData, EventTrb, NoOpTrbData, NormalTrbData, RawTrb,
+            TransferTrb, TransferTrbVariant,
         },
         usbrequest::UsbRequest,
     },
@@ -611,6 +612,7 @@ struct SupportedInEndpointTrb {
 enum SupportedInEndpointTrbVariant {
     Normal(NormalTrbData),
     EventData(EventDataTrbData),
+    NoOp(NoOpTrbData),
 }
 
 impl TryFrom<TransferTrbVariant> for SupportedInEndpointTrbVariant {
@@ -620,6 +622,7 @@ impl TryFrom<TransferTrbVariant> for SupportedInEndpointTrbVariant {
         match value {
             TransferTrbVariant::Normal(data) => Ok(Self::Normal(data)),
             TransferTrbVariant::EventData(data) => Ok(Self::EventData(data)),
+            TransferTrbVariant::NoOp(data) => Ok(Self::NoOp(data)),
             variant => Err(variant),
         }
     }
@@ -632,6 +635,7 @@ impl SupportedInEndpointTrb {
             SupportedInEndpointTrbVariant::EventData(event_data_trb_data) => {
                 event_data_trb_data.chain
             }
+            SupportedInEndpointTrbVariant::NoOp(noop) => noop.chain,
         }
     }
 
@@ -639,6 +643,7 @@ impl SupportedInEndpointTrb {
         match &self.variant {
             SupportedInEndpointTrbVariant::Normal(data) => data.transfer_length as usize,
             SupportedInEndpointTrbVariant::EventData(_) => 0,
+            SupportedInEndpointTrbVariant::NoOp(_) => 0,
         }
     }
 }
@@ -648,6 +653,7 @@ enum TdBasedNormalSubmissionState {
     CollectingTd(Vec<SupportedInEndpointTrb>),
     AwaitingRealTransfer(Vec<SupportedInEndpointTrb>),
     UnsupportedTrb,
+    NoOpTD(Vec<SupportedInEndpointTrb>),
 }
 
 impl Default for TdBasedNormalSubmissionState {
@@ -724,11 +730,30 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
         let end_of_td = !supported_trb.chain();
         trbs.push(supported_trb);
         if end_of_td {
+            warn!("TD: {:?}", trbs);
             let td_request_length = trbs
                 .iter()
                 .map(SupportedInEndpointTrb::transfer_length)
                 .sum::<usize>();
-            debug!("Submitting real request for {td_request_length} bytes");
+            debug!(
+                "Submitting on ep {} a real request for {td_request_length} bytes",
+                self.endpoint_id
+            );
+
+            // We want to skip a submit on a real ep since requesting 0 is not allowed.
+            if td_request_length == 0 {
+                replace_with_or_abort(&mut self.submission_state, |old_state| {
+                    let TdBasedNormalSubmissionState::CollectingTd(trbs) = old_state else {
+                        unreachable!(
+                            "verified the state is CollectingTd at the start of the function"
+                        );
+                    };
+                    TdBasedNormalSubmissionState::NoOpTD(trbs)
+                });
+
+                return Ok(());
+            }
+
             self.real_ep.submit(td_request_length)?;
 
             replace_with_or_abort(&mut self.submission_state, |old_state| {
@@ -744,14 +769,34 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
-            match mem::take(&mut self.submission_state) {
-                TdBasedNormalSubmissionState::CollectingTd(trbs) => {
-                    self.submission_state = TdBasedNormalSubmissionState::CollectingTd(trbs);
-                    Ok(TrbProcessingResult::Ok)
+            match &mut self.submission_state {
+                TdBasedNormalSubmissionState::CollectingTd(_) => Ok(TrbProcessingResult::Ok),
+                TdBasedNormalSubmissionState::UnsupportedTrb => {
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    Ok(TrbProcessingResult::TrbError)
                 }
-                TdBasedNormalSubmissionState::UnsupportedTrb => Ok(TrbProcessingResult::TrbError),
                 TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs) => {
                     let completion = self.real_ep.next_completion().await?;
+                    let trbs = mem::take(trbs);
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    let processing_result = process_real_transfer_response(
+                        self.endpoint_id,
+                        self.slot_id,
+                        completion,
+                        trbs,
+                        &self.event_sender,
+                        &self.dma_bus,
+                        self.pcap_meta,
+                    )?;
+                    Ok(processing_result)
+                }
+                TdBasedNormalSubmissionState::NoOpTD(trbs) => {
+                    let completion = InTrbProcessingResult {
+                        status: Success,
+                        data: vec![],
+                    };
+                    let trbs = mem::take(trbs);
+                    self.submission_state = TdBasedNormalSubmissionState::default();
                     let processing_result = process_real_transfer_response(
                         self.endpoint_id,
                         self.slot_id,
@@ -827,7 +872,8 @@ struct TdProcessingInfo<'a> {
 enum TdProcessingState {
     Default,
     // no more data, skip forward to next TD
-    ShortTransfer,
+    /// missing bytes
+    ShortTransfer(usize),
 }
 
 impl<'a> TdProcessingInfo<'a> {
@@ -835,12 +881,25 @@ impl<'a> TdProcessingInfo<'a> {
         &mut self,
         trb: SupportedInEndpointTrb,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
-        // assumption: Only normal TRBs
         match trb.variant {
             SupportedInEndpointTrbVariant::Normal(data) => {
                 self.process_normal_trb(trb.addr, trb.cycle_bit, data)
             }
             SupportedInEndpointTrbVariant::EventData(_data) => todo!(),
+            SupportedInEndpointTrbVariant::NoOp(data) => {
+                if data.interrupt_on_completion {
+                    let transfer_event = EventTrb::new_transfer_event_trb(
+                        trb.addr,
+                        0,
+                        CompletionCode::Success,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(transfer_event)?;
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -882,7 +941,11 @@ impl<'a> TdProcessingInfo<'a> {
                                 );
                                 self.event_sender.send(transfer_event)?;
                             }
-                            self.state = TdProcessingState::ShortTransfer;
+                            self.state = TdProcessingState::ShortTransfer(bytes_missing);
+
+                            pcap::in_completion(self.pcap_meta, addr, bytes);
+
+                            return Ok(None);
                         }
                         _ => {
                             let (completion_code, processing_result) = match self.status {
@@ -936,9 +999,22 @@ impl<'a> TdProcessingInfo<'a> {
 
                 Ok(None)
             }
-            TdProcessingState::ShortTransfer => {
+            TdProcessingState::ShortTransfer(bytes_missing) => {
                 // Skip all Normal TRBs.
                 // We will need more handling here once we support EventData TRBs.
+
+                if trb_data.interrupt_on_completion {
+                    let transfer_event = EventTrb::new_transfer_event_trb(
+                        addr,
+                        bytes_missing as u32,
+                        CompletionCode::ShortPacket,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(transfer_event)?;
+                }
+
                 Ok(None)
             }
         }
@@ -949,7 +1025,10 @@ impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for TdBasedInEndpointHandle<
     type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async { self.real_ep.cancel().await })
+        Box::pin(async {
+            self.submission_state = TdBasedNormalSubmissionState::default();
+            self.real_ep.cancel().await
+        })
     }
 
     fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
