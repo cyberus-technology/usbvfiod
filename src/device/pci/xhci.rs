@@ -229,8 +229,8 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
                 .registers
                 .interrupt_moderation_interval
                 .read(),
-            offset::ERSTSZ => self.interrupter.registers.erst_base_address.read(),
-            offset::ERSTBA => self.interrupter.registers.erst_size.read(),
+            offset::ERSTSZ => self.interrupter.registers.erst_size.read(),
+            offset::ERSTBA => self.interrupter.registers.erst_base_address.read(),
             offset::ERSTBA_HI => 0,
             offset::ERDP => self.interrupter.registers.eventring_dequeue_pointer.read(),
             offset::ERDP_HI => 0,
