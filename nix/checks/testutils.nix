@@ -47,7 +47,10 @@ let
               );
             };
 
-            services.journald.console = "hvc0";
+            services.journald.settings.Journal = {
+              ForwardToConsole = true;
+              TTYPath = "/dev/hvc0";
+            };
 
             # Enable debug verbosity.
             boot.consoleLogLevel = lib.mkIf debug 8;
@@ -477,10 +480,10 @@ let
         services = {
           # The framework automatically forwards all journal output to ttyS0,
           # slowing down the test significantly if there is a lot of logs.
-          journald.extraConfig = lib.mkForce ''
-            ForwardToConsole=yes
-            TTYPath=/dev/hvc1
-          '';
+          journald.settings.Journal = {
+            ForwardToConsole = true;
+            TTYPath = lib.mkForce "/dev/hvc1";
+          };
           # Create a udev rule for every device listed that enables it.
           udev.extraRules = lib.concatStrings (
             builtins.map (

@@ -160,7 +160,7 @@
         packages = {
           default = usbvfiod;
         }
-        // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
+        // lib.optionalAttrs (!pkgs.stdenv.hostPlatform.isDarwin) {
           usbvfiod-llvm-coverage-html = craneLibLLvmTools.cargoLlvmCov (
             commonArgs
             // {
