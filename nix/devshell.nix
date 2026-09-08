@@ -67,6 +67,61 @@ let
     runchv
     attach
   ];
+
+  rustcProfilingFlags = ''--config 'build.rustflags = ["-C", "force-frame-pointers=yes", "-C", "symbol-mangling-version=v0"]' '';
+
+  # Prepare cached binaries for other scripts and give some very likely needed output.
+  preparegrind = pkgs.writeShellScriptBin "preparegrind" ''
+    if [ "$BUILD" = "debug" ]; then
+      cargo build --bin usbvfiod ${rustcProfilingFlags}
+    else
+      cargo build --bin usbvfiod --release ${rustcProfilingFlags}
+    fi
+    cargo build --bin remote ${rustcProfilingFlags}
+    nix-build -A netboot.x86_64-linux '<nixpkgs/nixos/release.nix>' --out-link result-netboot
+
+    echo ""
+    echo "INFO: lsusb output to get bus and device numbers:"
+    lsusb
+    echo ""
+    echo "INFO: example commands in the nested guest to produce some load on a blockdevice:"
+    echo "dd if=/dev/urandom of=/dev/sda count=100 bs=4M status=progress oflag=direct && poweroff"
+    echo "dd if=/dev/sda of=/dev/null count=100 bs=4M status=progress oflag=direct && poweroff"
+  '';
+
+  # Alternative to `runusbvfiod` that will generate cachegrind files.
+  cachegrind = pkgs.writeShellScriptBin "cachegrind" ''
+    if [ "$BUILD" = "debug" ]; then
+      cargo build --bin usbvfiod ${rustcProfilingFlags}
+    else
+      cargo build --bin usbvfiod --release ${rustcProfilingFlags}
+    fi
+    rm -rf ${vfio-user-socket} ${hotplug-socket}
+
+    ${pkgs.valgrind}/bin/valgrind --tool=cachegrind \
+      --cachegrind-out-file=cachegrind.out.%p \
+      --trace-children=yes \
+      ./target/debug/usbvfiod --socket-path ${vfio-user-socket} --hotplug-socket-path ${hotplug-socket} --no-color
+  '';
+
+  # Alternative to `runusbvfiod` that will generate callgrind files.
+  callgrind = pkgs.writeShellScriptBin "callgrind" ''
+    if [ "$BUILD" = "debug" ]; then
+      cargo build --bin usbvfiod ${rustcProfilingFlags}
+    else
+      cargo build --bin usbvfiod --release ${rustcProfilingFlags}
+    fi
+    rm -rf ${vfio-user-socket} ${hotplug-socket}
+
+    ${pkgs.valgrind}/bin/valgrind --tool=callgrind \
+      --callgrind-out-file=callgrind.out.%p \
+      --compress-strings=no \
+      --separate-threads=yes \
+      --dump-line=yes \
+      --collect-systime=yes \
+      --collect-bus=yes \
+      ./target/debug/usbvfiod --socket-path ${vfio-user-socket} --hotplug-socket-path ${hotplug-socket} --no-color
+  '';
 in
 {
   default = craneLib.devShell {
@@ -77,6 +132,30 @@ in
     '';
 
     packages = commonPackages;
+
+    BUILD = "debug";
+  };
+
+  profiling = craneLib.devShell {
+    # used as guidance: https://nnethercote.github.io/perf-book/profiling.html
+    shellHook = ''
+      ${shellHook}
+      ${infoMessage}/bin/infoMessage
+      echo "INFO: This devShell, meant for profiling, also provides the following."
+      echo "  valgrind      profiling toolkit"
+      echo "  kcachegrind   GUI for valgrind reports"
+      echo "  preparegrind  script to cargo/nix build (cache things) and print some help (i.e. lsusb output, dd command)"
+      echo "  cachegrind    usbvfiod wrapper using valgrind with tool=cachegrind"
+      echo "  callgrind     usbvfiod wrapper using valgrind with tool=callgrind"
+    '';
+
+    packages = commonPackages ++ [
+      pkgs.valgrind
+      pkgs.kdePackages.kcachegrind
+      preparegrind
+      cachegrind
+      callgrind
+    ];
 
     BUILD = "debug";
   };
