@@ -8,15 +8,15 @@ let
     for i in range(1,20):
       print(f"ATTACH DETACH LOOP {i}")
       # List and print all attached devices.
-      out = machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list", timeout=60)
+      out = machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list", timeout=ONE_MINUTE)
       search("No attached devices", out)
 
       # Attach a device.
-      out = machine.succeed("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --attach /dev/bus/usb/usbdevice", timeout=60)
+      out = machine.succeed("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --attach /dev/bus/usb/usbdevice", timeout=ONE_MINUTE)
       print(out)
 
       # List attached devices.
-      out = machine.succeed("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list", timeout=60)
+      out = machine.succeed("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list", timeout=ONE_MINUTE)
       print(out)
 
       # Get the bus and device numbers.
@@ -25,14 +25,14 @@ let
 
       # Wait for the guest to find the usb device.
       if (i % 2 == 0):
-        cloud_hypervisor.wait_until_succeeds("lsusb -d ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId}", timeout=120)
+        cloud_hypervisor.wait_until_succeeds("lsusb -d ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId}", timeout=TWO_MINUTES)
 
       # Wait for the guest to find the blockdevice.
       if (i % 4 == 0):
-        cloud_hypervisor.wait_until_succeeds("lsblk /dev/sd*", timeout=120)
+        cloud_hypervisor.wait_until_succeeds("lsblk /dev/sd*", timeout=TWO_MINUTES)
 
       # Detach the device.
-      out = machine.succeed(f"${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --detach {bus_nr} {device_nr}", timeout=60)
+      out = machine.succeed(f"${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --detach {bus_nr} {device_nr}", timeout=ONE_MINUTE)
       print(out)
   '';
 in

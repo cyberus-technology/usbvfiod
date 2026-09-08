@@ -26,7 +26,7 @@ builtins.listToAttrs (
             print(f"input loop `{i}` done")
 
         # Check the Keyboard is in detected in the guest.
-        cloud_hypervisor.succeed("lsusb -d ${testutils.hidVendorId}:${testutils.hidProductId}", timeout=60)
+        cloud_hypervisor.succeed("lsusb -d ${testutils.hidVendorId}:${testutils.hidProductId}", timeout=ONE_MINUTE)
 
         # Generate inputs in the background.
         t1 = threading.Thread(target=create_input)
@@ -37,7 +37,7 @@ builtins.listToAttrs (
         # It is theoretically possible all events appear and are consumed by the input subsystem before we have the opportunity to listen.
         out = cloud_hypervisor.succeed("hexdump --length 144 --two-bytes-hex /dev/input/by-id/usb-QEMU_QEMU_USB_Keyboard_68284-0000\\:00\\:${
           testutils.usbVersions."${usbVersion}".addr
-        }.0-1-event-kbd", timeout=60)
+        }.0-1-event-kbd", timeout=ONE_MINUTE)
 
         # Check if the hexdump contains a ctrl event sequence
         # https://docs.kernel.org/input/input.html#event-interface

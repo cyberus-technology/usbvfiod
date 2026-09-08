@@ -27,7 +27,7 @@ testutils.mkUsbTest {
         "3"
       ];
   testScript = ''
-    out = cloud_hypervisor.succeed("lsusb --tree", timeout=60)
+    out = cloud_hypervisor.succeed("lsusb --tree", timeout=ONE_MINUTE)
     search(r'Port 001: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)
     search(r'Port 002: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)
     search(r'Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 480M', out)
@@ -37,7 +37,7 @@ testutils.mkUsbTest {
     search(r'Port 003: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M', out)
     search(r'Port 004: Dev \d+, If 0, Class=Mass Storage, Driver=usb-storage, 5000M', out)
 
-    out = cloud_hypervisor.succeed("lsblk", timeout=60)
+    out = cloud_hypervisor.succeed("lsblk", timeout=ONE_MINUTE)
     search(r'sda\s+\d+:\d+\s+0\s+${testutils.imageSize}\s+0\s+disk', out)
     search(r'sdb\s+\d+:\d+\s+0\s+${testutils.imageSize}\s+0\s+disk', out)
     search(r'sdc\s+\d+:\d+\s+0\s+${testutils.imageSize}\s+0\s+disk', out)
