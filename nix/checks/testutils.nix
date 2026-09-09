@@ -47,7 +47,10 @@ let
               );
             };
 
-            services.journald.console = "hvc0";
+            services.journald.settings.Journal = {
+              ForwardToConsole = true;
+              TTYPath = "/dev/hvc0";
+            };
 
             # Enable debug verbosity.
             boot.consoleLogLevel = lib.mkIf debug 8;
@@ -152,6 +155,7 @@ let
   # This will also add a QoL 'string in string' search function.
   nestedPythonClass = ''
     import re
+    import datetime
     from test_driver.errors import RequestedAssertionFailed
 
     class Nested():
@@ -162,7 +166,7 @@ let
       def __init__(self, vm_host: BaseMachine) -> None:
         self.vm_host = vm_host
 
-      def succeed(self, *commands: str, timeout: int | None = None) -> str:
+      def succeed(self, *commands: str, timeout: datetime.timedelta = datetime.timedelta(minutes=15)) -> str:
         vm_host = self.vm_host
         output = ""
         for command in commands:
@@ -181,7 +185,7 @@ let
                 output += out
         return output
 
-      def wait_until_succeeds(self, command: str, timeout: int = 900):
+      def wait_until_succeeds(self, command: str, timeout: datetime.timedelta = datetime.timedelta(minutes=15)):
         vm_host = self.vm_host
         output = ""
 
@@ -477,10 +481,10 @@ let
         services = {
           # The framework automatically forwards all journal output to ttyS0,
           # slowing down the test significantly if there is a lot of logs.
-          journald.extraConfig = lib.mkForce ''
-            ForwardToConsole=yes
-            TTYPath=/dev/hvc1
-          '';
+          journald.settings.Journal = {
+            ForwardToConsole = true;
+            TTYPath = lib.mkForce "/dev/hvc1";
+          };
           # Create a udev rule for every device listed that enables it.
           udev.extraRules = lib.concatStrings (
             builtins.map (
@@ -537,6 +541,9 @@ let
       testScript = ''
         ${nestedPythonClass}
 
+        ONE_MINUTE=datetime.timedelta(minutes=1)
+        TWO_MINUTES=datetime.timedelta(minutes=2)
+
         # prepare blockdevice images if necessary
         ${lib.concatStringsSep "\n" (
           builtins.map (mkPrepareBlockdeviceImages args.name) args.virtualDevices
@@ -547,7 +554,7 @@ let
         machine.wait_for_unit("cloud-hypervisor.service")
 
         # Check sshd in systemd.services.cloud-hypervisor is usable prior to testing over ssh.
-        machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=3000)
+        machine.wait_until_succeeds("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@192.168.100.2 'exit 0'", timeout=datetime.timedelta(minutes=50))
 
         cloud_hypervisor = Nested(vm_host=machine)
 
@@ -588,6 +595,8 @@ in
   /**
     Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
     The Functions purpose is to remove duplicated lines, make comparing tests easier and write new tests with less boilerplate.
+
+    Provides QoL variables ONE_MINUTE and TWO_MINUTES to use as timeout argument and call `.succeed(commands, timeout=ONE_MINUTE)` instead of writing `.succeed(command, timeout=datetime.timedelta(minutes=1))` or declaring variables on each test.
 
     # Inputs
 
@@ -640,28 +649,28 @@ in
       ];
       testScript = ''
         # Confirm USB controller pops up in boot logs
-        out = cloud_hypervisor.succeed("journalctl -b", timeout=60)
+        out = cloud_hypervisor.succeed("journalctl -b", timeout=ONE_MINUTE)
         search("usb usb1: Product: xHCI Host Controller", out)
         search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
 
         # Confirm some diagnostic information
-        out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=60)
+        out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=ONE_MINUTE)
         search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
-        out = cloud_hypervisor.succeed("lsusb", timeout=60)
+        out = cloud_hypervisor.succeed("lsusb", timeout=ONE_MINUTE)
         search("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
-        out = cloud_hypervisor.succeed("sfdisk -l", timeout=60)
+        out = cloud_hypervisor.succeed("sfdisk -l", timeout=ONE_MINUTE)
         search("Disk /dev/sda:", out)
 
         # Test partitioning
-        cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda", timeout=60)
+        cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda", timeout=ONE_MINUTE)
 
         # Test filesystem
-        cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=60)
-        cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
-        cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt", timeout=60)
-        cloud_hypervisor.succeed("umount /mnt", timeout=60)
-        cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=60)
-        out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=60)
+        cloud_hypervisor.succeed("mkfs.ext4 /dev/sda1", timeout=ONE_MINUTE)
+        cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=ONE_MINUTE)
+        cloud_hypervisor.succeed("echo 123TEST123 > /mnt/file.txt", timeout=ONE_MINUTE)
+        cloud_hypervisor.succeed("umount /mnt", timeout=ONE_MINUTE)
+        cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=ONE_MINUTE)
+        out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=ONE_MINUTE)
         search("123TEST123", out)
       '';
     };

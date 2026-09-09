@@ -24,7 +24,7 @@ testutils.mkUsbTest {
       print(f"ATTACH DETACH LOOP {i}")
 
       # Expect no attached devices.
-      out = machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list", timeout=60)
+      out = machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list", timeout=ONE_MINUTE)
       search("No attached devices", out)
 
       # plug in a blockdevice
@@ -34,17 +34,17 @@ testutils.mkUsbTest {
       }.0,drive=hotplug,port=1"))
 
       # wait for qemu host to find the blockdevice
-      machine.wait_until_succeeds("lsusb | grep 'QEMU QEMU USB HARDDRIVE'", timeout=120)
-      machine.wait_until_succeeds("lsblk /dev/sd*", timeout=120)
+      machine.wait_until_succeeds("lsusb | grep 'QEMU QEMU USB HARDDRIVE'", timeout=TWO_MINUTES)
+      machine.wait_until_succeeds("lsblk /dev/sd*", timeout=TWO_MINUTES)
 
-      machine.wait_until_succeeds("ls /dev/bus/usb/hotplug", timeout=60)
+      machine.wait_until_succeeds("ls /dev/bus/usb/hotplug", timeout=ONE_MINUTE)
 
       # Attach a device.
-      out = machine.succeed("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --attach /dev/bus/usb/hotplug", timeout=60)
+      out = machine.succeed("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --attach /dev/bus/usb/hotplug", timeout=ONE_MINUTE)
       print(out)
 
       # List attached devices.
-      out = machine.succeed("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list", timeout=60)
+      out = machine.succeed("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list", timeout=ONE_MINUTE)
       print(out)
 
       # Check the list output is what we expect: one device
@@ -60,11 +60,11 @@ testutils.mkUsbTest {
 
       # Wait for the guest to find the usb device.
       if (i % 2 == 0):
-        cloud_hypervisor.wait_until_succeeds("lsusb -d ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId}", timeout=120)
+        cloud_hypervisor.wait_until_succeeds("lsusb -d ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId}", timeout=TWO_MINUTES)
 
       # Wait for the guest to find the blockdevice.
       if (i % 4 == 0):
-        cloud_hypervisor.wait_until_succeeds("lsblk /dev/sd*", timeout=120)
+        cloud_hypervisor.wait_until_succeeds("lsblk /dev/sd*", timeout=TWO_MINUTES)
 
       # Plug out a blockdevice.
       print(machine.send_monitor_command("device_del hotplug-dev"))
@@ -74,9 +74,9 @@ testutils.mkUsbTest {
 
       # Trigger the guest to access the device and get the nusb error that would otherwise come eventually.
       # If it did not already happen the xHC should then start the detach process of the device.
-      cloud_hypervisor.wait_until_succeeds("lsusb -vvv", timeout=120)
+      cloud_hypervisor.wait_until_succeeds("lsusb -vvv", timeout=TWO_MINUTES)
 
       # Wait until the xHC can confirm there is no device attached anymore.
-      machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list | grep 'No attached devices'", timeout=60)
+      machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list | grep 'No attached devices'", timeout=ONE_MINUTE)
   '';
 }
