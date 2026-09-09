@@ -687,6 +687,7 @@ impl Slot {
         }
 
         self.state = SlotState::Default(base_address);
+        self.write_slot_state();
 
         Ok(CompletionCode::Success)
     }
