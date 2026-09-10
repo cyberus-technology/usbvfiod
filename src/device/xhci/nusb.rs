@@ -235,14 +235,13 @@ async fn control_endpoint_worker(
 
             let processing_result = match is_out_request {
                 true => {
-                    let data = request.data.unwrap_or(Vec::new());
                     let control = ControlOut {
                         control_type,
                         recipient,
                         request: request.request,
                         value: request.value,
                         index: request.index,
-                        data: &data,
+                        data: &request.data,
                     };
                     match device
                         .control_out(control, Duration::from_millis(2000))

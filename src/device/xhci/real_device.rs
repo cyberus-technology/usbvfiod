@@ -121,7 +121,8 @@ pub mod tests {
 
         use crate::device::xhci::{
             endpoint_handle::tests::testutils::{
-                MockRealControlEndpointReadStatic, MockRealInEndpoint, MockRealOutEndpoint,
+                MockRealControlEndpointReadStatic, MockRealInEndpointReadStatic,
+                MockRealOutEndpoint,
             },
             real_device,
         };
@@ -131,9 +132,9 @@ pub mod tests {
 
         impl RealDevice for MockRealDevice {
             type RCEH = MockRealControlEndpointReadStatic;
-            type RBIEH = MockRealInEndpoint;
+            type RBIEH = MockRealInEndpointReadStatic;
             type RBOEH = MockRealOutEndpoint;
-            type RIIEH = MockRealInEndpoint;
+            type RIIEH = MockRealInEndpointReadStatic;
             type RIOEH = MockRealOutEndpoint;
 
             fn speed(&self) -> Option<real_device::Speed> {
@@ -145,7 +146,7 @@ pub mod tests {
             }
 
             fn bulk_in_endpoint_handle(&self, _endpoint_id: u8) -> Self::RBIEH {
-                MockRealInEndpoint::new()
+                MockRealInEndpointReadStatic::new()
             }
 
             fn bulk_out_endpoint_handle(&self, _endpoint_id: u8) -> Self::RBOEH {
@@ -153,7 +154,7 @@ pub mod tests {
             }
 
             fn interrupt_in_endpoint_handle(&self, _endpoint_id: u8) -> Self::RIIEH {
-                MockRealInEndpoint::new()
+                MockRealInEndpointReadStatic::new()
             }
 
             fn interrupt_out_endpoint_handle(&self, _endpoint_id: u8) -> Self::RIOEH {

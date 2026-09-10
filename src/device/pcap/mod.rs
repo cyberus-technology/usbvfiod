@@ -17,12 +17,7 @@ pub fn control_submission(base: EndpointPcapMeta, req: &UsbRequest) {
     } else {
         UsbDirection::DeviceToHost
     };
-    packet::log_control_submission(
-        base,
-        control_direction,
-        req,
-        req.data.as_deref().unwrap_or(&[]),
-    );
+    packet::log_control_submission(base, control_direction, req, &req.data);
 }
 
 pub fn control_completion_in(base: EndpointPcapMeta, urb_id: u64, data: &[u8]) {
@@ -52,7 +47,7 @@ pub fn control_in_error(
         UsbEventType::Error,
         meta::control_error_status(error),
         Some(packet::build_setup_bytes(req)),
-        req.data.as_deref().unwrap_or(&[]),
+        &req.data,
     );
 }
 
@@ -68,7 +63,7 @@ pub fn control_out_error(
         UsbEventType::Error,
         meta::control_error_status(error),
         Some(packet::build_setup_bytes(req)),
-        req.data.as_deref().unwrap_or(&[]),
+        &req.data,
     );
 }
 

@@ -11,7 +11,7 @@ pub trait RealControlEndpointHandle: BaseEndpointHandle {
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ControlRequestProcessingResult {
     Disconnect,
     Stall,
@@ -29,7 +29,7 @@ pub trait RealOutEndpointHandle: BaseEndpointHandle {
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum OutTrbProcessingResult {
     Disconnect,
     Stall,
@@ -44,7 +44,7 @@ pub trait RealInEndpointHandle: BaseEndpointHandle {
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InTrbProcessingStatus {
     Disconnect,
     Stall,
