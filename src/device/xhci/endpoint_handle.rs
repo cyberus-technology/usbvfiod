@@ -1372,7 +1372,9 @@ impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for TdBasedInEndpointHandle<
 pub mod tests {
     use super::*;
 
-    use crate::device::xhci::endpoint_handle::tests::testutils::MockRealControlEndpointReadStatic;
+    use crate::device::xhci::endpoint_handle::tests::testutils::{
+        MockRealControlEndpointExpectDataPattern, MockRealControlEndpointReadStatic,
+    };
     use crate::device::xhci::interrupter::tests::testutils::MockInterrupter;
     use crate::device::{bus::testutils::TestBusDevice, xhci::trb::testutils::RawTrbBuilder};
     use crate::dynamic_bus::DynamicBus;
@@ -1397,7 +1399,9 @@ pub mod tests {
     const TRB_TYPE_STATUS_STAGE: u8 = 0x4;
 
     const SETUP_BM_REQUEST_TYPE_IN: u8 = 0x80;
+    const SETUP_BM_REQUEST_TYPE_OUT: u8 = 0;
 
+    const SETUP_TRANSFER_TYPE_OUT_DATA: u8 = 0x2;
     const SETUP_TRANSFER_TYPE_IN_DATA: u8 = 0x3;
 
     pub mod testutils {
@@ -1453,7 +1457,6 @@ pub mod tests {
         #[derive(Debug)]
         pub struct MockRealControlEndpointExpectDataPattern {}
 
-        #[expect(dead_code)]
         impl MockRealControlEndpointExpectDataPattern {
             pub fn new() -> Self {
                 Self {}
@@ -1815,6 +1818,62 @@ pub mod tests {
                 ENDPOINT_ID,
                 SLOT_ID,
             ))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_control_out_request_with_data_stage_using_immediate_data() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointExpectDataPattern::new());
+
+        const DMA_POINTER: u64 = 0xeb8bda7a;
+        const TRANSFER_LENGTH: u32 = 2;
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_OUT_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_immediate_data()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
         );
 
         assert!(interrupter.is_empty());
