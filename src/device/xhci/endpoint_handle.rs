@@ -2141,4 +2141,54 @@ pub mod tests {
 
         assert!(interrupter.is_empty());
     }
+
+    #[tokio::test]
+    async fn control_request_returns_hardware_transaction_error() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointHardwareError::new(
+                ControlRequestProcessingResult::TransactionError,
+            ));
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this mock hardware request should never fail");
+        control_endpoint.next_completion().await.ok();
+
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this mock hardware request should never fail");
+        // We can assert here because it is the last TRB of the control
+        // request chain, when the actual request happens and the error code is
+        // available.
+        assert_eq!(
+            control_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::TransactionError(None))
+        );
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0,
+                CompletionCode::UsbTransactionError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        assert!(interrupter.is_empty());
+    }
 }
