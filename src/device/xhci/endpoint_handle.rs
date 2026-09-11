@@ -45,7 +45,7 @@ pub trait EndpointHandle: BaseEndpointHandle {
 /// - Some((addr, cs)) indicates that the stall/error happened on an earlier TRB but we notice it only
 ///   now because we aggregated all TRBs of a TD before talking to the real device; the endpoint
 ///   state machine should wind the dequeue pointer (and associated cycle state) back to this TRB.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrbProcessingResult {
     Ok,
     Stall(Option<(u64, bool)>),
@@ -1372,6 +1372,24 @@ impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for TdBasedInEndpointHandle<
 pub mod tests {
     use super::*;
 
+    use crate::device::xhci::endpoint_handle::tests::testutils::MockRealControlEndpointReadStatic;
+    use crate::device::xhci::interrupter::tests::testutils::MockInterrupter;
+    use crate::device::{bus::testutils::TestBusDevice, xhci::trb::testutils::RawTrbBuilder};
+    use crate::dynamic_bus::DynamicBus;
+
+    use std::sync::Arc;
+
+    const SLOT_ID: u8 = 1;
+    const ENDPOINT_ID: u8 = 1;
+
+    const FIRST_ADDRESS: u64 = 0x10;
+    const SECOND_ADDRESS: u64 = 0x20;
+
+    const TRB_TYPE_SETUP_STAGE: u8 = 0x2;
+    const TRB_TYPE_STATUS_STAGE: u8 = 0x4;
+
+    const SETUP_BM_REQUEST_TYPE_IN: u8 = 0x80;
+
     pub mod testutils {
         use super::*;
 
@@ -1381,6 +1399,7 @@ pub mod tests {
             data_length: u32,
             direction: bool,
         }
+
         impl MockRealControlEndpointReadStatic {
             pub fn new() -> Self {
                 Self {
@@ -1440,11 +1459,13 @@ pub mod tests {
         pub struct MockRealInEndpoint {
             data_length: usize,
         }
+
         impl MockRealInEndpoint {
             pub fn new() -> Self {
                 Self { data_length: 0 }
             }
         }
+
         impl RealInEndpointHandle for MockRealInEndpoint {
             type TrbCompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
@@ -1465,6 +1486,7 @@ pub mod tests {
                 })
             }
         }
+
         impl BaseEndpointHandle for MockRealInEndpoint {
             type CompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
@@ -1488,6 +1510,7 @@ pub mod tests {
                 Self {}
             }
         }
+
         impl RealOutEndpointHandle for MockRealOutEndpoint {
             type TrbCompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<OutTrbProcessingResult>> + Send + 'a>>;
@@ -1504,6 +1527,7 @@ pub mod tests {
                 })
             }
         }
+
         impl BaseEndpointHandle for MockRealOutEndpoint {
             type CompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
@@ -1518,5 +1542,87 @@ pub mod tests {
                 Box::pin(async { Ok(()) })
             }
         }
+    }
+
+    // Initialize test environment using the MockRealControlEndpointReadStatic
+    //
+    // Use the ControlEndpointHandle to submit some TransferTrb.
+    // Use the UnboundedReceiver to directly check events meant for a EventRing.
+    fn init_control_endpoint_handle_test<T: RealControlEndpointHandle>(
+        real_ep: T,
+    ) -> (MockInterrupter, ControlEndpointHandle<T>) {
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::control(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, interrupter) = MockInterrupter::new();
+
+        let control_endpoint = ControlEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+        (interrupter, control_endpoint)
+    }
+
+    /// Wrapper to simplify creating a successful expected EventTrb for comparison.
+    fn expected_event(trb_pointer: u64, trb_transfer_length: u32, event_data: bool) -> EventTrb {
+        EventTrb::new_transfer_event_trb(
+            trb_pointer,
+            trb_transfer_length,
+            CompletionCode::Success,
+            event_data,
+            ENDPOINT_ID,
+            SLOT_ID,
+        )
+    }
+
+    #[tokio::test]
+    async fn submit_shortest_possible_control_in_request() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![setup_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
     }
 }
