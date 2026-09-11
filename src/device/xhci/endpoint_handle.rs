@@ -1879,4 +1879,88 @@ pub mod tests {
 
         assert!(interrupter.is_empty());
     }
+
+    #[tokio::test]
+    async fn submitting_out_of_order_or_unfinished_sequence_does_not_prevent_the_following_valid_sequence_of_trb(
+    ) {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let status_stage_out_of_order = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+        let setup_stage_incomplete_sequence = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let setup_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![
+            status_stage_out_of_order,
+            setup_stage_incomplete_sequence,
+            setup_stage,
+            status_stage,
+        ];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            control_endpoint.next_completion().await.ok();
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        // Usually an endpoint should halt after encountering an error.
+
+        // This test does not include a full endpoint and thus can not stop.
+
+        // If we do not halt we expect to encounter the rest of the Control Request
+        // to be unexpected/out of order TRB's and send a CompletionCode::TrbError.
+
+        // If a new Control Request Initializes we expect it to work regardless
+        // of previous aggregation state.
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+
+        // Repeating the spontaneous new control request chain again:
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FOURTH_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
 }
