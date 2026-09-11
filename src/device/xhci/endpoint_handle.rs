@@ -1450,6 +1450,51 @@ pub mod tests {
             }
         }
 
+        // expecting to receive 0xda7a via an out request
+        #[derive(Debug)]
+        pub struct MockRealControlEndpointExpectDataPattern {}
+
+        #[expect(dead_code)]
+        impl MockRealControlEndpointExpectDataPattern {
+            pub fn new() -> Self {
+                Self {}
+            }
+        }
+
+        impl RealControlEndpointHandle for MockRealControlEndpointExpectDataPattern {
+            type TrbCompletionFuture<'a> = Pin<
+                Box<
+                    dyn Future<Output = anyhow::Result<ControlRequestProcessingResult>> + Send + 'a,
+                >,
+            >;
+
+            fn submit_control_request(&mut self, request: UsbRequest) -> anyhow::Result<()> {
+                assert_eq!(request.data, 0xda7a_u64.to_le_bytes()[..2]);
+                Ok(())
+            }
+
+            fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+                Box::pin(async {
+                    let result = ControlRequestProcessingResult::SuccessfulControlOut;
+                    Ok(result)
+                })
+            }
+        }
+
+        impl BaseEndpointHandle for MockRealControlEndpointExpectDataPattern {
+            type CompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+            fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+
+            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+        }
         impl BaseEndpointHandle for MockRealControlEndpointReadStatic {
             type CompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
