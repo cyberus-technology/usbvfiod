@@ -8,7 +8,7 @@ builtins.listToAttrs (
       name = "interrupt-endpoint-usb-${usbVersion}";
       virtualDevices = [
         {
-          type = "hid-device";
+          type = "hid";
           inherit usbVersion; # note: this changes the /dev/input/by-id path used in the script (xhci/ehci bus number)
           usbPort = 1; # note: this changes the /dev/input/by-id path used in the script
           udevRule.symlink = "keyboard";

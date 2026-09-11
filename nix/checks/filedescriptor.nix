@@ -7,7 +7,7 @@ testutils.mkUsbTest {
   useFileDescriptor = true;
   virtualDevices = [
     {
-      type = "blockdevice";
+      type = "block";
       usbVersion = "3";
     }
   ];

@@ -7,7 +7,7 @@
     name = "reattach-attached";
     virtualDevices = [
       {
-        type = "blockdevice";
+        type = "block";
       }
     ];
     testScript = ''

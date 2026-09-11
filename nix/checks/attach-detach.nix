@@ -43,7 +43,7 @@ builtins.listToAttrs (
       name = "attach-detach-usb-${usbVersion}";
       virtualDevices = [
         {
-          type = "blockdevice";
+          type = "block";
           inherit usbVersion;
           udevRule.symlink = "usbdevice";
           attachedOnStartup = "host";
