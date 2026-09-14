@@ -58,7 +58,7 @@ builtins.listToAttrs (
       name = "blockdevice-usb-${usbVersion}";
       virtualDevices = [
         {
-          type = "blockdevice";
+          type = "block";
           inherit usbVersion;
         }
       ];

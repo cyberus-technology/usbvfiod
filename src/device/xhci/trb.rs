@@ -824,7 +824,7 @@ pub enum TransferTrbVariant {
     StatusStage(StatusStageTrbData),
     Isoch,
     EventData(EventDataTrbData),
-    NoOp,
+    NoOp(NoOpTrbData),
     #[allow(unused)]
     Unrecognized(RawTrbBuffer, TrbParseError),
 }
@@ -851,7 +851,7 @@ impl TransferTrbVariant {
             trb_types::STATUS_STAGE => parse(Self::StatusStage, bytes),
             trb_types::ISOCH => Self::Isoch,
             trb_types::EVENT_DATA => parse(Self::EventData, bytes),
-            trb_types::NO_OP => Self::NoOp,
+            trb_types::NO_OP => parse(Self::NoOp, bytes),
             trb_type => Self::Unrecognized(bytes, TrbParseError::UnknownTrbType(trb_type)),
         }
     }
@@ -1087,6 +1087,47 @@ impl TrbData for EventDataTrbData {
 
         Ok(Self {
             event_data,
+            chain,
+            interrupt_on_completion,
+        })
+    }
+}
+
+/// NoOp TRB data structure.
+///
+/// See XHCI specification Section 6.4.1.4 for the complete TRB layout.
+#[derive(Debug, PartialEq, Eq)]
+pub struct NoOpTrbData {
+    pub chain: bool,
+    pub interrupt_on_completion: bool,
+}
+
+impl TrbData for NoOpTrbData {
+    /// Parse data of a NoOp TRB.
+    ///
+    /// Only `TransferTrb::try_from` should call this function.
+    ///
+    /// # Limitations
+    ///
+    /// The function currently does not check if the slice respects RsvdZ
+    /// fields.
+    fn parse(trb_bytes: RawTrbBuffer) -> Result<Self, TrbParseError> {
+        let trb_type = trb_bytes[13] >> 2;
+        assert_eq!(
+            trb_types::NO_OP,
+            trb_type,
+            "NoOpTrbData::parse called on TRB data with incorrect TRB type ({trb_type:#x})"
+        );
+
+        let chain = trb_bytes[12] & 0x10 != 0;
+        if chain {
+            // specification chapter 4.11.7
+            // "[...] software shall never set the Chain bit of a No Op TRB t o '1' [...]"
+            warn!("Encountered chain bit on NoOp TRB");
+        }
+        let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
+
+        Ok(Self {
             chain,
             interrupt_on_completion,
         })

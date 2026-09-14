@@ -305,6 +305,7 @@ fn extract_recipient_and_type(request_type: u8) -> (Recipient, ControlType) {
 
 pub struct NormalEndpointHandle<EpType: EndpointType + 'static, Dir: EndpointDirection + 'static> {
     id: u8,
+    request_length: usize,
     device_wrapper: Arc<NusbDeviceWrapper>,
     endpoint: Option<Endpoint<EpType, Dir>>,
 }
@@ -313,6 +314,7 @@ impl<EpType: EndpointType, Dir: EndpointDirection> NormalEndpointHandle<EpType, 
     const fn new(id: u8, device_wrapper: Arc<NusbDeviceWrapper>) -> Self {
         Self {
             id,
+            request_length: 0,
             device_wrapper,
             endpoint: None,
         }
@@ -376,25 +378,45 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
         Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
 
     fn submit(&mut self, len: usize) -> anyhow::Result<()> {
-        let endpoint = self.endpoint();
-        let request_len = determine_buffer_size(len, endpoint.max_packet_size());
-        let buf = Buffer::new(request_len);
-        endpoint.submit(buf);
+        self.request_length = len;
+
+        match len {
+            0 => {
+                // NoOp
+            }
+            _ => {
+                let endpoint = self.endpoint();
+                let request_len = determine_buffer_size(len, endpoint.max_packet_size());
+                let buf = Buffer::new(request_len);
+                endpoint.submit(buf);
+            }
+        }
 
         Ok(())
     }
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
-            let Completion {
-                buffer: data,
-                actual_len: _,
-                status,
-            } = self.endpoint().next_complete().await;
-            let data = data.into_vec();
-            let status = map_status(status);
+            match self.request_length {
+                0 => {
+                    // NoOp
+                    Ok(InTrbProcessingResult {
+                        status: InTrbProcessingStatus::Success,
+                        data: vec![],
+                    })
+                }
+                _ => {
+                    let Completion {
+                        buffer: data,
+                        actual_len: _,
+                        status,
+                    } = self.endpoint().next_complete().await;
+                    let data = data.into_vec();
+                    let status = map_status(status);
 
-            Ok(InTrbProcessingResult { status, data })
+                    Ok(InTrbProcessingResult { status, data })
+                }
+            }
         })
     }
 }

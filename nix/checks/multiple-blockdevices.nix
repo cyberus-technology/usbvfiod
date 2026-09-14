@@ -10,7 +10,7 @@ testutils.mkUsbTest {
         usb:
         builtins.map
           (num: {
-            type = "blockdevice";
+            type = "block";
             usbVersion = "${usb}";
             usbPort = num;
             udevRule.symlink = "usb-${usb}-device-${builtins.toString num}";
