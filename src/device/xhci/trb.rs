@@ -1149,6 +1149,30 @@ pub enum TrbParseError {
     RsvdZViolation,
 }
 
+#[derive(Debug, Clone)]
+pub struct SupportedEndpointTrb<T> {
+    pub variant: T,
+    pub addr: u64,
+    pub cycle_bit: bool,
+}
+
+impl<T> SupportedEndpointTrb<T>
+where
+    T: TryFrom<TransferTrbVariant, Error = TransferTrbVariant>,
+{
+    pub fn new(addr: u64, trb_buffer: [u8; 16]) -> Result<Self, TransferTrbVariant> {
+        let cycle_bit = trb_buffer[12] & 0x1 != 0;
+        let trb = TransferTrbVariant::parse(trb_buffer);
+        let variant = T::try_from(trb)?;
+
+        Ok(Self {
+            variant,
+            addr,
+            cycle_bit,
+        })
+    }
+}
+
 #[cfg(test)]
 pub mod testutils {
     use super::*;

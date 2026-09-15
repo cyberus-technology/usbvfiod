@@ -22,8 +22,8 @@ use crate::device::{
             RealOutEndpointHandle,
         },
         trb::{
-            CompletionCode, EventDataTrb, EventTrb, NoOpTrb, NormalTrb, RawTrb, TransferTrb,
-            TransferTrbVariant,
+            CompletionCode, EventDataTrb, EventTrb, NoOpTrb, NormalTrb, RawTrb,
+            SupportedEndpointTrb, TransferTrb, TransferTrbVariant,
         },
         usbrequest::UsbRequest,
     },
@@ -601,56 +601,47 @@ impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for OutEndpointHandle<ROEH>
 }
 
 #[derive(Debug)]
-struct SupportedInEndpointTrb {
-    variant: SupportedInEndpointTrbVariant,
-    addr: u64,
-    cycle_bit: bool,
-}
-
-#[derive(Debug)]
-enum SupportedInEndpointTrbVariant {
+enum SupportedNormalEndpointTrb {
     Normal(NormalTrb),
     EventData(EventDataTrb),
     NoOp(NoOpTrb),
 }
 
-impl TryFrom<TransferTrbVariant> for SupportedInEndpointTrbVariant {
+impl TryFrom<TransferTrbVariant> for SupportedNormalEndpointTrb {
     type Error = TransferTrbVariant;
 
-    fn try_from(value: TransferTrbVariant) -> Result<Self, Self::Error> {
-        match value {
-            TransferTrbVariant::Normal(data) => Ok(Self::Normal(data)),
-            TransferTrbVariant::EventData(data) => Ok(Self::EventData(data)),
-            TransferTrbVariant::NoOp(data) => Ok(Self::NoOp(data)),
+    fn try_from(trb: TransferTrbVariant) -> Result<Self, Self::Error> {
+        match trb {
+            TransferTrbVariant::Normal(t) => Ok(Self::Normal(t)),
+            TransferTrbVariant::EventData(t) => Ok(Self::EventData(t)),
+            TransferTrbVariant::NoOp(t) => Ok(Self::NoOp(t)),
             variant => Err(variant),
         }
     }
 }
 
-impl SupportedInEndpointTrb {
+impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
     const fn chain(&self) -> bool {
         match &self.variant {
-            SupportedInEndpointTrbVariant::Normal(normal_trb_data) => normal_trb_data.chain,
-            SupportedInEndpointTrbVariant::EventData(event_data_trb_data) => {
-                event_data_trb_data.chain
-            }
-            SupportedInEndpointTrbVariant::NoOp(noop) => noop.chain,
+            SupportedNormalEndpointTrb::Normal(normal) => normal.chain,
+            SupportedNormalEndpointTrb::EventData(event_data) => event_data.chain,
+            SupportedNormalEndpointTrb::NoOp(noop) => noop.chain,
         }
     }
 
     const fn transfer_length(&self) -> usize {
         match &self.variant {
-            SupportedInEndpointTrbVariant::Normal(data) => data.transfer_length as usize,
-            SupportedInEndpointTrbVariant::EventData(_) => 0,
-            SupportedInEndpointTrbVariant::NoOp(_) => 0,
+            SupportedNormalEndpointTrb::Normal(normal) => normal.transfer_length as usize,
+            SupportedNormalEndpointTrb::EventData(_) => 0,
+            SupportedNormalEndpointTrb::NoOp(_) => 0,
         }
     }
 }
 
 #[derive(Debug)]
 enum TdBasedNormalSubmissionState {
-    CollectingTd(Vec<SupportedInEndpointTrb>),
-    AwaitingRealTransfer(Vec<SupportedInEndpointTrb>),
+    CollectingTd(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
+    AwaitingRealTransfer(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
     UnsupportedTrb,
 }
 
@@ -706,31 +697,27 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
             }
         };
 
-        let transfer_trb_variant = TransferTrbVariant::parse(trb.buffer);
-        let supported_trb_variant =
-            match SupportedInEndpointTrbVariant::try_from(transfer_trb_variant) {
-                Ok(supported_trb) => supported_trb,
-                Err(transfer_trb) => {
-                    warn!(
+        let supported_trb = match SupportedEndpointTrb::<SupportedNormalEndpointTrb>::new(
+            trb.address,
+            trb.buffer,
+        ) {
+            Ok(supported_trb) => supported_trb,
+            Err(transfer_trb) => {
+                warn!(
                     "Encountered unsupported TRB on In Endpoint (slot {}, ep {}): {transfer_trb:?}",
                     self.slot_id, self.endpoint_id
                 );
-                    self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
-                    return Ok(());
-                }
-            };
-        let cycle_bit = trb.buffer[12] & 0x1 != 0;
-        let supported_trb = SupportedInEndpointTrb {
-            variant: supported_trb_variant,
-            addr: trb.address,
-            cycle_bit,
+                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
+                return Ok(());
+            }
         };
+
         let end_of_td = !supported_trb.chain();
         trbs.push(supported_trb);
         if end_of_td {
             let td_request_length = trbs
                 .iter()
-                .map(SupportedInEndpointTrb::transfer_length)
+                .map(SupportedEndpointTrb::transfer_length)
                 .sum::<usize>();
 
             debug!(
@@ -782,7 +769,7 @@ fn process_real_transfer_response(
     endpoint_id: u8,
     slot_id: u8,
     completion: InTrbProcessingResult,
-    trbs: Vec<SupportedInEndpointTrb>,
+    trbs: Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>,
     event_sender: &EventSender,
     dma_bus: &BusDeviceRef,
     pcap_meta: EndpointPcapMeta,
@@ -844,15 +831,15 @@ enum TdProcessingState {
 impl<'a> TdProcessingInfo<'a> {
     fn process_trb(
         &mut self,
-        trb: SupportedInEndpointTrb,
+        trb: SupportedEndpointTrb<SupportedNormalEndpointTrb>,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         match trb.variant {
-            SupportedInEndpointTrbVariant::Normal(data) => {
-                self.process_normal_trb(trb.addr, trb.cycle_bit, data)
+            SupportedNormalEndpointTrb::Normal(normal) => {
+                self.process_normal_trb(trb.addr, trb.cycle_bit, normal)
             }
-            SupportedInEndpointTrbVariant::EventData(_data) => todo!(),
-            SupportedInEndpointTrbVariant::NoOp(data) => {
-                if data.interrupt_on_completion {
+            SupportedNormalEndpointTrb::EventData(_) => todo!(),
+            SupportedNormalEndpointTrb::NoOp(noop) => {
+                if noop.interrupt_on_completion {
                     let transfer_event = EventTrb::new_transfer_event_trb(
                         trb.addr,
                         0,
