@@ -401,6 +401,9 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         trb: &T,
         hardware_data: &mut Option<Vec<u8>>,
     ) -> anyhow::Result<()> {
+        // beginning of a TD
+        self.transfer_state.event_data_metadata.zero();
+
         let (completion_code, residual_length) = if let Some(hardware_data) = hardware_data {
             if hardware_data.is_empty() && self.transfer_state.td_completion_event {
                 // Subsequent after a short packet we skip slicing while still doing events.
@@ -409,9 +412,17 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     self.transfer_state.residual_length,
                 )
             } else {
-                self.copy_slice_to_guest(trb, hardware_data)?
+                let (completion_code, residual_bytes) =
+                    self.copy_slice_to_guest(trb, hardware_data)?;
+                self.transfer_state
+                    .event_data_metadata
+                    .add(trb.transfer_length() - residual_bytes);
+                (completion_code, residual_bytes)
             }
         } else {
+            self.transfer_state
+                .event_data_metadata
+                .add(trb.transfer_length());
             (CompletionCode::Success, 0)
         };
 
@@ -428,6 +439,9 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             );
             self.event_sender.send(event)?;
         }
+        self.transfer_state
+            .event_data_metadata
+            .previous_completion_code = completion_code;
         Ok(())
     }
 
