@@ -2522,6 +2522,53 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn submit_control_in_request_with_event_data_after_status_stage_trb() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_chain()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+        let event_data = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![setup_stage, status_stage, event_data];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(EVENT_DATA_FIELD, 0, true))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
     async fn submitting_out_of_order_or_unfinished_sequence_does_not_prevent_the_following_valid_sequence_of_trb(
     ) {
         let (mut interrupter, mut control_endpoint) =
