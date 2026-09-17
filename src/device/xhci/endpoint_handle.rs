@@ -1597,11 +1597,13 @@ pub mod tests {
 
     const SETUP_WLENGTH: u16 = 512;
     const TRANSFER_LENGTH: u32 = SETUP_WLENGTH as u32;
+    const EVENT_DATA_FIELD: u64 = 0xda7a;
 
     const TRB_TYPE_NORMAL: u8 = 0x1;
     const TRB_TYPE_SETUP_STAGE: u8 = 0x2;
     const TRB_TYPE_DATA_STAGE: u8 = 0x3;
     const TRB_TYPE_STATUS_STAGE: u8 = 0x4;
+    const TRB_TYPE_EVENT_DATA: u8 = 0x7;
 
     const SETUP_BM_REQUEST_TYPE_IN: u8 = 0x80;
     const SETUP_BM_REQUEST_TYPE_OUT: u8 = 0;
@@ -2367,6 +2369,66 @@ pub mod tests {
         assert_eq!(
             interrupter.await_event().await,
             Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_control_in_request_with_event_data_at_the_end_of_the_data_stage() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(0x2)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_chain()
+            .with_trb_type(0x3)
+            .with_direction()
+            .build();
+        let event_data = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_direction()
+            .build();
+        let status_stage = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(0x4)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage, event_data, status_stage];
+
+        for trb in input_trb {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(EVENT_DATA_FIELD, 512, true))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FOURTH_ADDRESS, 0, false))
         );
 
         assert!(interrupter.is_empty());
