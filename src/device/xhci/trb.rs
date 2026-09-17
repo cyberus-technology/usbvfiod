@@ -873,9 +873,9 @@ pub struct NormalTrb {
     pub data_pointer: u64,
     /// 17 Bit
     pub transfer_length: u32,
+    pub interrupt_on_short: bool,
     pub chain: bool,
     pub interrupt_on_completion: bool,
-    pub interrupt_on_short: bool,
     pub immediate_data: bool,
 }
 
@@ -903,17 +903,17 @@ impl TrbData for NormalTrb {
         let tl_bytes: [u8; 4] = [trb_bytes[8], trb_bytes[9], trb_bytes[10] & 0x01, 0];
         let transfer_length = u32::from_le_bytes(tl_bytes);
 
-        let chain = trb_bytes[12] & 0x10 != 0;
         let interrupt_on_short = trb_bytes[12] & 0x04 != 0;
+        let chain = trb_bytes[12] & 0x10 != 0;
         let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
         let immediate_data = trb_bytes[12] & 0x40 != 0;
 
         Ok(Self {
             data_pointer,
             transfer_length,
+            interrupt_on_short,
             chain,
             interrupt_on_completion,
-            interrupt_on_short,
             immediate_data,
         })
     }
@@ -990,6 +990,7 @@ pub struct DataStageTrb {
     pub transfer_length: u32,
     pub chain: bool,
     pub interrupt_on_completion: bool,
+    pub interrupt_on_short: bool,
     pub immediate_data: bool,
     pub direction: bool,
 }
@@ -1018,14 +1019,17 @@ impl TrbData for DataStageTrb {
         let tl_bytes: [u8; 4] = [trb_bytes[8], trb_bytes[9], trb_bytes[10] & 0x01, 0];
         let transfer_length = u32::from_le_bytes(tl_bytes);
 
+        let interrupt_on_short = trb_bytes[12] & 0x04 != 0;
         let chain = trb_bytes[12] & 0x10 != 0;
         let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
         let immediate_data = trb_bytes[12] & 0x40 != 0;
+
         let direction = trb_bytes[14] & 0x1 != 0;
 
         Ok(Self {
             data_pointer,
             transfer_length,
+            interrupt_on_short,
             chain,
             interrupt_on_completion,
             immediate_data,
@@ -1578,6 +1582,7 @@ mod tests {
         let expected = TransferTrbVariant::DataStage(DataStageTrb {
             data_pointer: 0x1122334455667788,
             transfer_length: 0x0010,
+            interrupt_on_short: false,
             chain: false,
             interrupt_on_completion: false,
             immediate_data: false,
