@@ -864,6 +864,7 @@ impl TransferTrbVariant {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalTrbData {
     pub data_pointer: u64,
+    /// 17 Bit
     pub transfer_length: u32,
     pub chain: bool,
     pub interrupt_on_completion: bool,
@@ -965,7 +966,8 @@ impl TrbData for SetupStageTrbData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataStageTrbData {
     pub data_pointer: u64,
-    pub transfer_length: u16,
+    /// 17 Bit
+    pub transfer_length: u32,
     pub chain: bool,
     pub interrupt_on_completion: bool,
     pub immediate_data: bool,
@@ -993,8 +995,8 @@ impl TrbData for DataStageTrbData {
         let dp_bytes: [u8; 8] = trb_bytes[0..8].try_into().unwrap();
         let data_pointer = u64::from_le_bytes(dp_bytes);
 
-        let tl_bytes: [u8; 2] = trb_bytes[8..10].try_into().unwrap();
-        let transfer_length = u16::from_le_bytes(tl_bytes);
+        let tl_bytes: [u8; 4] = [trb_bytes[8], trb_bytes[9], trb_bytes[10] & 0x01, 0];
+        let transfer_length = u32::from_le_bytes(tl_bytes);
 
         let chain = trb_bytes[12] & 0x10 != 0;
         let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
