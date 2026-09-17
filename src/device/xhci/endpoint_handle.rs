@@ -88,6 +88,22 @@ pub struct ControlTransfer {
     pub direction: bool,
     /// Might only be partial data for a Control Transfer.
     pub usb_request: UsbRequest,
+    /// The TD Completion Event for a Short Packet shall set this value. In other
+    /// cases this can be ignored.
+    ///
+    /// When a ShortPacket occurs exactly on the transfer_length, the following
+    /// trb will be handled without any leftover hardware_data. Use this to know
+    /// if the TD Completion Event already happened and the other state is
+    /// prepared for subsequent short packet events or if this needs to set state
+    /// and send the TD Completion Event.
+    pub td_completion_event: bool,
+    /// The TD Completion Event for a Short Packet shall set this value. In other
+    /// cases this can be ignored.
+    ///
+    /// After a ShortPacket, subsequent events shall use the same value for the
+    /// `TransferEventTrb.trb_transfer_length` field (count of not written bytes
+    /// in the TD completion event).
+    pub residual_length: u32,
 }
 
 impl ControlTransfer {
@@ -96,6 +112,8 @@ impl ControlTransfer {
             state: ControlTransferState::ExpectSetupStageTrb,
             direction,
             usb_request,
+            td_completion_event: false,
+            residual_length: 0,
         }
     }
 }
@@ -310,28 +328,68 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
         self.event_sender.send(event)
     }
 
-    fn copy_slice_to_guest<T: TrbDmaInfo>(&self, trb: &T, hardware_data: &mut Vec<u8>) {
-        // check length for short packet
-        if hardware_data.len() < trb.transfer_length() as usize {
-            // TODO This is a very minimal handling of a short packet that the
-            // linux driver will tolerate. Windows and others might need
-            // proper/spec compliant handling.
+    /// Copy as much `hardware_data` to guest memory as the `trb.transfer_length``
+    /// requires. Do not touch the memory for which there is no more `hardware_data`.
+    ///
+    /// The Transfer Event TRB is then supposed to tell system software how many
+    /// bytes were written. This is not done in this Function.
+    ///
+    /// returns (CompletionCode, residual byte count (not written) from the given trb.transfer_length)
+    fn copy_slice_to_guest<T: TrbDmaInfo>(
+        &mut self,
+        trb: &T,
+        hardware_data: &mut Vec<u8>,
+    ) -> anyhow::Result<(CompletionCode, u32)> {
+        let len = min(hardware_data.len(), trb.transfer_length() as usize);
+        let byte_slice: Vec<u8> = hardware_data.drain(0..len).collect();
+        self.dma_bus.write_bulk(trb.data_pointer(), &byte_slice);
+        // SAFETY: The min() call above ensures that `len <= trb.transfer_length()`.
+        let residual_length = trb.transfer_length() - len as u32;
 
-            warn!(
-                "ControlEndpoint in slot {} encountered ShortPacket (incomplete implementation)",
-                self.slot_id
-            );
-
-            let len = hardware_data.len();
-            let mut byte_slice: Vec<u8> = hardware_data.drain(0..len).collect();
-            byte_slice.resize(trb.transfer_length() as usize, 0);
-            self.dma_bus.write_bulk(trb.data_pointer(), &byte_slice);
-        } else {
-            let byte_slice: Vec<u8> = hardware_data
-                .drain(0..trb.transfer_length() as usize)
-                .collect();
-            self.dma_bus.write_bulk(trb.data_pointer(), &byte_slice);
+        match residual_length {
+            0 => Ok((CompletionCode::Success, 0)),
+            _ => {
+                self.transfer_state.td_completion_event = true;
+                self.transfer_state.residual_length = residual_length;
+                Ok((CompletionCode::ShortPacket, residual_length))
+            }
         }
+    }
+
+    fn realize_dma_trb<T: TrbDmaInfo>(
+        &mut self,
+        address: u64,
+        trb: &T,
+        hardware_data: &mut Option<Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        let (completion_code, residual_length) = if let Some(hardware_data) = hardware_data {
+            if hardware_data.is_empty() && self.transfer_state.td_completion_event {
+                // Subsequent after a short packet we skip slicing while still doing events.
+                (
+                    CompletionCode::ShortPacket,
+                    self.transfer_state.residual_length,
+                )
+            } else {
+                self.copy_slice_to_guest(trb, hardware_data)?
+            }
+        } else {
+            (CompletionCode::Success, 0)
+        };
+
+        if (completion_code == CompletionCode::ShortPacket && trb.has_interrupt_on_short())
+            || trb.has_interrupt_on_completion()
+        {
+            let event = EventTrb::new_transfer_event_trb(
+                address,
+                residual_length,
+                completion_code,
+                false,
+                self.endpoint_id,
+                self.slot_id,
+            );
+            self.event_sender.send(event)?;
+        }
+        Ok(())
     }
 
     /// if hardware_data.is_some() { IN } else { OUT }
@@ -347,22 +405,10 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                     }
                 }
                 SupportedControlEndpointTrb::DataStage(data) => {
-                    if let Some(hardware_data) = hardware_data {
-                        self.copy_slice_to_guest(data, hardware_data);
-                    }
-
-                    if data.interrupt_on_completion {
-                        self.transfer_event_success(trb.addr)?;
-                    }
+                    self.realize_dma_trb(trb.addr, data, hardware_data)?;
                 }
                 SupportedControlEndpointTrb::Normal(normal) => {
-                    if let Some(hardware_data) = hardware_data {
-                        self.copy_slice_to_guest(normal, hardware_data);
-                    }
-
-                    if normal.interrupt_on_completion {
-                        self.transfer_event_success(trb.addr)?;
-                    }
+                    self.realize_dma_trb(trb.addr, normal, hardware_data)?;
                 }
                 SupportedControlEndpointTrb::StatusStage(status) => {
                     if status.interrupt_on_completion {

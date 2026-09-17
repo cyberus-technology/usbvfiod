@@ -862,6 +862,8 @@ pub trait TrbDmaInfo {
     fn data_pointer(&self) -> u64;
     fn transfer_length(&self) -> u32;
     fn has_immediate_data(&self) -> bool;
+    fn has_interrupt_on_short(&self) -> bool;
+    fn has_interrupt_on_completion(&self) -> bool;
 }
 
 /// Normal TRB data structure (simplified representation).
@@ -928,6 +930,12 @@ impl TrbDmaInfo for NormalTrb {
     }
     fn has_immediate_data(&self) -> bool {
         self.immediate_data
+    }
+    fn has_interrupt_on_short(&self) -> bool {
+        self.interrupt_on_short
+    }
+    fn has_interrupt_on_completion(&self) -> bool {
+        self.interrupt_on_completion
     }
 }
 
@@ -1047,6 +1055,12 @@ impl TrbDmaInfo for DataStageTrb {
     }
     fn has_immediate_data(&self) -> bool {
         self.immediate_data
+    }
+    fn has_interrupt_on_short(&self) -> bool {
+        self.interrupt_on_short
+    }
+    fn has_interrupt_on_completion(&self) -> bool {
+        self.interrupt_on_completion
     }
 }
 
