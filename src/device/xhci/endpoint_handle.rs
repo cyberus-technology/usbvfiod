@@ -2432,4 +2432,155 @@ pub mod tests {
 
         assert!(interrupter.is_empty());
     }
+
+    #[tokio::test]
+    async fn tolerate_wrong_status_stage_direction_mapping_short_out() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage_out = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let status_stage_out = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        // xhci specification Table 4-7: USB SETUP Data to Data Stage TRB and Status Stage TRB mapping:
+        let bad_input_trb = vec![setup_stage_out, status_stage_out];
+
+        for trb in bad_input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tolerate_wrong_status_stage_direction_mapping_long_out() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage_in = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage_in = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_direction()
+            .build();
+        let status_stage_in = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        // xhci specification Table 4-7: USB SETUP Data to Data Stage TRB and Status Stage TRB mapping:
+        let bad_input_trb = vec![setup_stage_in, data_stage_in, status_stage_in];
+
+        for trb in bad_input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tolerate_wrong_status_stage_direction_mapping_long_in() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage_out = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage_out = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .build();
+        let status_stage_out = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        // xhci specification Table 4-7: USB SETUP Data to Data Stage TRB and Status Stage TRB mapping:
+        let bad_input_trb = vec![setup_stage_out, data_stage_out, status_stage_out];
+
+        for trb in bad_input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
 }
