@@ -141,7 +141,7 @@ pub mod tests {
             }
 
             fn control_endpoint_handle(&self) -> Self::RCEH {
-                MockRealControlEndpointReadStatic::new()
+                MockRealControlEndpointReadStatic::new(None)
             }
 
             fn bulk_in_endpoint_handle(&self, _endpoint_id: u8) -> Self::RBIEH {
