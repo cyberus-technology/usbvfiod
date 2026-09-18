@@ -1443,17 +1443,20 @@ pub mod tests {
         use super::*;
 
         // will return `vec![42; requested length]`
+        // if given a max_returned_data, it will return no more than that number of bytes
         #[derive(Debug)]
         pub struct MockRealControlEndpointReadStatic {
             data_length: u32,
             direction: bool,
+            max_returned_data: Option<u32>,
         }
 
         impl MockRealControlEndpointReadStatic {
-            pub fn new() -> Self {
+            pub fn new(max_returned_data: Option<u32>) -> Self {
                 Self {
                     data_length: 0,
                     direction: false,
+                    max_returned_data,
                 }
             }
         }
@@ -1469,8 +1472,11 @@ pub mod tests {
                 // fake request is instantly submitted but we need to remember the direction for next_complete
                 const IN: u8 = 0b10000000;
                 self.direction = (request.request_type & IN) == IN;
-                self.data_length = request.length;
-
+                self.data_length = if let Some(max_returned_data) = self.max_returned_data {
+                    min(max_returned_data, request.length)
+                } else {
+                    request.length
+                };
                 Ok(())
             }
 
@@ -1725,7 +1731,7 @@ pub mod tests {
     #[tokio::test]
     async fn submit_shortest_possible_control_in_request() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
@@ -1767,7 +1773,7 @@ pub mod tests {
     #[tokio::test]
     async fn submit_shortest_possible_control_in_request_with_data_stage() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
@@ -1822,7 +1828,7 @@ pub mod tests {
     #[tokio::test]
     async fn submit_control_in_with_empty_wlength_but_have_transferred_data() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
@@ -1878,7 +1884,7 @@ pub mod tests {
     #[tokio::test]
     async fn submit_control_out_with_empty_wlength_but_have_transferred_data() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
@@ -1933,7 +1939,7 @@ pub mod tests {
     #[tokio::test]
     async fn submit_control_in_with_less_wlength_than_expected_data() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
@@ -2009,7 +2015,7 @@ pub mod tests {
     #[tokio::test]
     async fn submit_control_in_with_more_wlength_than_expected_data() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
@@ -2080,7 +2086,7 @@ pub mod tests {
     #[tokio::test]
     async fn submit_control_out_with_some_wlength_but_do_not_automatically_expect_data() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
@@ -2122,7 +2128,7 @@ pub mod tests {
     #[tokio::test]
     async fn submit_second_illegal_data_stage_trb() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
@@ -2266,7 +2272,7 @@ pub mod tests {
     async fn submitting_out_of_order_or_unfinished_sequence_does_not_prevent_the_following_valid_sequence_of_trb(
     ) {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let status_stage_out_of_order = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_interrupt_on_completion()
@@ -2501,7 +2507,7 @@ pub mod tests {
     #[tokio::test]
     async fn tolerate_wrong_status_stage_direction_mapping_short_out() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage_out = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
@@ -2545,7 +2551,7 @@ pub mod tests {
     #[tokio::test]
     async fn tolerate_wrong_status_stage_direction_mapping_long_out() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage_in = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
@@ -2601,7 +2607,7 @@ pub mod tests {
     #[tokio::test]
     async fn tolerate_wrong_status_stage_direction_mapping_long_in() {
         let (mut interrupter, mut control_endpoint) =
-            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new(None));
 
         let setup_stage_out = RawTrbBuilder::new(FIRST_ADDRESS)
             .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
