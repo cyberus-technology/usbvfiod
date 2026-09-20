@@ -64,6 +64,16 @@ pub struct Cli {
     /// Do not use ANSI color codes in the output.
     #[arg(long)]
     pub no_color: bool,
+
+    /// Maximum number of concurrent vfio-user clients.
+    ///
+    /// The default of 1 preserves the historical behaviour: serve exactly one
+    /// client and exit as soon as it disconnects. Values greater than 1 keep
+    /// usbvfiod alive across client hand-overs, which is required for a
+    /// same-host live migration: the destination VMM connects while the source
+    /// VMM is still connected.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub max_clients: usize,
 }
 
 /// The location of the server socket for the vfio-user client connection.

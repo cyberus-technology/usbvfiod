@@ -8,7 +8,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use nusb::MaybeFuture;
 use tokio::runtime;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use usbvfiod::hotplug_protocol::{device_paths::resolve_path, response::Response};
 use vfio_bindings::bindings::vfio::{
@@ -330,10 +330,17 @@ impl<CRD: CompleteRealDevice> ServerBackend for XhciBackend<CRD> {
                 flags.try_into().expect("Failed to convert flags"),
             )?;
 
-            // Guest provided invalid memory region setup - no reasonable recovery possible
-            self.dma_bus.add(address, Arc::new(mseg)).unwrap();
+            // A reconnecting client (e.g. the destination VMM taking over the
+            // device after a live migration) re-maps the very same guest memory
+            // range, so replace a previous mapping at this address instead of
+            // failing with an overlap error.
+            self.dma_bus.add(address, Arc::new(mseg)).map_err(|err| {
+                std::io::Error::other(format!("failed to map DMA region at {address:#x}: {err}"))
+            })?;
         } else {
-            todo!("Memory region without file descriptor");
+            return Err(std::io::Error::other(
+                "DMA region without file descriptor is not supported",
+            ));
         }
 
         Ok(())
@@ -342,14 +349,22 @@ impl<CRD: CompleteRealDevice> ServerBackend for XhciBackend<CRD> {
     fn dma_unmap(
         &mut self,
         _flags: vfio_user::DmaUnmapFlags,
-        _address: u64,
-        _size: u64,
+        address: u64,
+        size: u64,
     ) -> Result<(), std::io::Error> {
-        todo!()
+        debug!("dma_unmap address = {address:#x} size = {size:#x}");
+
+        self.dma_bus.remove_range(address, size).map_err(|err| {
+            std::io::Error::other(format!("failed to unmap DMA region at {address:#x}: {err}"))
+        })
     }
 
     fn reset(&mut self) -> Result<(), std::io::Error> {
-        todo!()
+        // usbvfiod advertises itself as not resettable, and avoiding device
+        // resets is the entire point of the suspend/migration work (R4).
+        // Answer explicitly instead of panicking if a client asks anyway.
+        warn!("ignoring VFIO_USER_DEVICE_RESET request (device is not resettable)");
+        Err(std::io::Error::other("device reset is not supported"))
     }
 
     fn set_irqs(
@@ -386,7 +401,16 @@ impl<CRD: CompleteRealDevice> ServerBackend for XhciBackend<CRD> {
             _ => Arc::new(DummyInterruptLine::default()),
         };
 
-        self.controller.connect_irq(irq);
+        self.controller.connect_irq(Arc::clone(&irq));
+
+        // A live migration hands the device over to a new client. Any transfer
+        // that completed while the *previous* client's interrupt line was still
+        // installed has its completion event in the guest's event ring, but the
+        // interrupt itself was delivered to a line the departing VMM will never
+        // service. Raise one interrupt now so the guest re-examines the event
+        // ring and picks those completions up; a spurious MSI-X interrupt is
+        // harmless because the guest simply finds nothing new to process.
+        irq.interrupt();
 
         Ok(())
     }
