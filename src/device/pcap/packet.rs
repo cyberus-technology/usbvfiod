@@ -71,9 +71,11 @@ const fn endpoint_address(
     xhci_endpoint_id: u8,
 ) -> u8 {
     if matches!(transfer_type, UsbTransferType::Control) {
-        match control_direction.expect("control direction is required") {
-            UsbDirection::HostToDevice => 0,
-            UsbDirection::DeviceToHost => 0x80,
+        match control_direction {
+            Some(UsbDirection::HostToDevice) => 0,
+            Some(UsbDirection::DeviceToHost) => 0x80,
+            // If a control endpoint receives a malformed setup trb we can not parse/know the direction.
+            None => 0,
         }
     } else {
         xhci_endpoint_id.rotate_right(1)
