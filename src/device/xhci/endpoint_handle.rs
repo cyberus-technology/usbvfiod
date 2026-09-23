@@ -1692,7 +1692,7 @@ pub mod tests {
 
     use crate::device::xhci::endpoint_handle::tests::testutils::{
         MockRealControlEndpointExpectDataPattern, MockRealControlEndpointHardwareError,
-        MockRealControlEndpointReadStatic,
+        MockRealControlEndpointReadStatic, MockRealInEndpoint,
     };
     use crate::device::xhci::interrupter::tests::testutils::MockInterrupter;
     use crate::device::{bus::testutils::TestBusDevice, xhci::trb::testutils::RawTrbBuilder};
@@ -1713,6 +1713,7 @@ pub mod tests {
     const DMA_POINTER_1: u64 = 0x200;
     const DMA_POINTER_2: u64 = 0x400;
     const DMA_POINTER_3: u64 = 0x600;
+    const DMA_POINTER_4: u64 = 0x800;
 
     const SETUP_WLENGTH: u16 = 512;
     const TRANSFER_LENGTH: u32 = SETUP_WLENGTH as u32;
@@ -3580,6 +3581,115 @@ pub mod tests {
         assert_eq!(
             interrupter.await_event().await,
             Some(expected_event(SIXTH_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_multi_trb_bulk_in_transfer_with_event_data() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = MockRealInEndpoint::new();
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, mut interrupter) = MockInterrupter::new();
+
+        let mut bulk_in_endpoint = TdBasedInEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        let normal_1 = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x6) // remaining TD Size: 1536
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_2 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_2)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x4) // remaining TD Size: 1024
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_3 = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_pointer(DMA_POINTER_3)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x2) // remaining TD Size: 512
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data_1 = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_direction()
+            .build();
+        let normal_4 = RawTrbBuilder::new(FIFTH_ADDRESS)
+            .with_data_pointer(DMA_POINTER_4)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data_2 = RawTrbBuilder::new(SIXTH_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![
+            normal_1,
+            normal_2,
+            normal_3,
+            event_data_1,
+            normal_4,
+            event_data_2,
+        ];
+
+        for trb in input_trb {
+            bulk_in_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                bulk_in_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(EVENT_DATA_FIELD, TRANSFER_LENGTH * 3, true))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(EVENT_DATA_FIELD, TRANSFER_LENGTH, true))
         );
 
         assert!(interrupter.is_empty());
