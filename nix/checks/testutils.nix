@@ -131,7 +131,7 @@ let
       isSystemUser = true;
       group = "usbaccess";
     };
-    boot.kernelModules = [ "kvm" ];
+    boot.initrd.kernelModules = [ "kvm" ];
 
     # interactive debugging over ssh
     services.openssh = {
