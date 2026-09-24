@@ -168,7 +168,7 @@ impl RealControlEndpointHandle for ControlEndpointHandle {
             let result = (self.response_receiver.recv().await)
                 // background worker is dead and has dropped the response sender
                 // maybe we want to error here instead
-                .map_or(ControlRequestProcessingResult::TransactionError, |res| res);
+                .unwrap_or(ControlRequestProcessingResult::TransactionError);
 
             Ok(result)
         })
