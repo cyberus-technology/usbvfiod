@@ -2024,6 +2024,64 @@ pub mod tests {
         assert!(interrupter.is_empty());
     }
 
+    /// Xhci specification chapter 4.11.2.2 Setup Stage, Data Stage, and Status Stage TRBs:
+    ///
+    /// > Some (non-compliant) USB devices use the SETUP Data wLength field as a
+    /// > custom parameter for non-data control transfers. xHCI implementations should
+    /// > not tie a non-zero wLength value to the existence of a Data Stage TD in a control
+    /// > transfer to ensure compatibility with those devices.
+    /// >
+    /// > [...]
+    /// >
+    /// > - If a Data Stage TD does not follow a Setup Stage TD, where wLength > ‘0’.
+    /// >
+    /// > [...]
+    /// >
+    /// > This condition violates the definition of a USB Control Transfer, however this condition should be ignored by the
+    /// > xHC to ensure legacy device compatibility. The Setup Stage Transfer Type (TRT) field strictly indicates the
+    /// > presence and the Direction of the Data Stage TD, and determines the direction of the Status Stage TD so the
+    /// > wLength field should be ignored by the xHC.
+    #[tokio::test]
+    async fn submit_control_out_with_some_wlength_but_do_not_automatically_expect_data() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
+            // some vendor specific stuff
+            .with_setup_wlength(0x6767)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        let input_trb = vec![setup_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
     #[tokio::test]
     async fn submit_second_illegal_data_stage_trb() {
         let (mut interrupter, mut control_endpoint) =
