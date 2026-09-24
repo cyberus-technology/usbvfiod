@@ -306,8 +306,11 @@ let
         in
         {
           wantedBy = [ "multi-user.target" ];
-          requires = if useFileDescriptor then [ "usbvfiod.socket" ] else [ "usbvfiod.service" ];
-          after = lib.mkIf (!useFileDescriptor) [ "usbvfiod.service" ];
+          requires = [
+            "dev-kvm.device"
+          ]
+          ++ (if useFileDescriptor then [ "usbvfiod.socket" ] else [ "usbvfiod.service" ]);
+          after = [ "dev-kvm.device" ] ++ (if useFileDescriptor then [ ] else [ "usbvfiod.service" ]);
           serviceConfig = {
             Restart = "on-failure";
             RestartSec = "2s";
@@ -508,7 +511,13 @@ let
           };
           # Create a udev rule for every device listed that enables it.
           udev.extraRules = lib.concatStrings (
-            builtins.map (
+            [
+              ''
+                # Create a systemd device unit for `/dev/kvm` so the VMM service can depend on it.
+                KERNEL=="kvm" TAG+="systemd"
+              ''
+            ]
+            ++ builtins.map (
               device:
               if device.udevRule.enable then
                 let
