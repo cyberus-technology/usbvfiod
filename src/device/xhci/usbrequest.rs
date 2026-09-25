@@ -15,6 +15,11 @@ pub struct UsbRequest {
     pub value: u16,
     pub index: u16,
     /// The sum of an unknown amount of 17 bit `transfer_length` fields.
+    ///
+    /// Note that some non-compliant devices might want to use the wLength field
+    /// for vendor specific data and not have a Data Stage TD. We drop the wLength
+    /// and are not able to support those devices. See xhci specification chapter
+    /// 4.11.2.2 Setup Stage, Data Stage, and Status Stage TRBs.
     pub length: u32,
     pub data_pointer: Option<u64>,
     pub data: Vec<u8>,
