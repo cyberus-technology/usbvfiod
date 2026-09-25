@@ -11,7 +11,7 @@ pub trait RealControlEndpointHandle: BaseEndpointHandle {
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ControlRequestProcessingResult {
     Disconnect,
     Stall,

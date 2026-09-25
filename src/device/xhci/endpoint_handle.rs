@@ -1,14 +1,14 @@
 use std::{
+    cmp::min,
     fmt::Debug,
     future::Future,
     mem::{self},
-    ops::ControlFlow,
     pin::Pin,
 };
 
 use anyhow::anyhow;
 use replace_with::replace_with_or_abort;
-use tracing::{debug, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::device::{
     bus::BusDeviceRef,
@@ -22,8 +22,9 @@ use crate::device::{
             RealOutEndpointHandle,
         },
         trb::{
-            CompletionCode, EventDataTrbData, EventTrb, NoOpTrbData, NormalTrbData, RawTrb,
-            TransferTrb, TransferTrbVariant,
+            CompletionCode, DataStageTrb, EventDataTrb, EventTrb, NoOpTrb, NormalTrb, RawTrb,
+            SetupStageTrb, StatusStageTrb, SupportedEndpointTrb, TransferTrb, TransferTrbVariant,
+            TrbDmaInfo,
         },
         usbrequest::UsbRequest,
     },
@@ -44,7 +45,7 @@ pub trait EndpointHandle: BaseEndpointHandle {
 /// - Some((addr, cs)) indicates that the stall/error happened on an earlier TRB but we notice it only
 ///   now because we aggregated all TRBs of a TD before talking to the real device; the endpoint
 ///   state machine should wind the dequeue pointer (and associated cycle state) back to this TRB.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrbProcessingResult {
     Ok,
     Stall(Option<(u64, bool)>),
@@ -79,16 +80,121 @@ impl BaseEndpointHandle for DummyEndpointHandle {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct ControlTransfer {
+    /// State for verifying a valid Control Transfer sequence.
+    pub state: ControlTransferState,
+    /// if direction { IN } else { OUT }
+    pub direction: bool,
+    /// Might only be partial data for a Control Transfer.
+    pub usb_request: UsbRequest,
+}
+
+impl ControlTransfer {
+    const fn new(direction: bool, usb_request: UsbRequest) -> Self {
+        Self {
+            state: ControlTransferState::ExpectSetupStageTrb,
+            direction,
+            usb_request,
+        }
+    }
+}
+
+/// Track how far we are with parsing the Control Transfer (chain of TRB).
+///
+/// Note: Event Data TRB handling is not yet implemented.
+///
+/// ```mermaid
+/// graph TD;
+///
+///     expect_setup_stage_trb((expect_setup_stage_trb))
+///     maybe_data((maybe_data))
+///     more_data((more_data))
+///     expect_status_stage_trb((expect_status_stage_trb))
+///     expect_event_data_as_final_trb((expect_event_data_as_final_trb))
+///
+///     expect_setup_stage_trb--(received setup_stage_trb)-->maybe_data
+///     expect_setup_stage_trb--(any other trb)-->expect_setup_stage_trb
+///
+///     maybe_data--(received setup_stage_trb)-->maybe_data
+///     maybe_data--(status_stage, with chain)-->expect_event_data_as_final_trb
+///     maybe_data--(status_stage, no chain or any other trb)-->expect_setup_stage_trb
+///     maybe_data--(data_stage, no chain)-->expect_status_stage_trb
+///     maybe_data--(data_stage, with chain)-->more_data
+///
+///     more_data--(received setup_stage_trb)-->maybe_data
+///     more_data--(any other trb)-->expect_setup_stage_trb
+///     more_data--(normal or event_data, with chain)-->more_data
+///     more_data--(normal or event_data, no chain)-->expect_status_stage_trb
+///
+///     expect_status_stage_trb--(received setup_stage)-->maybe_data
+///     expect_status_stage_trb--(status_stage, with chain)-->expect_event_data_as_final_trb
+///     expect_status_stage_trb--(status_stage, no chain or any other trb)-->expect_setup_stage_trb
+///
+///     expect_event_data_as_final_trb--(received setup_stage)-->maybe_data
+///     expect_event_data_as_final_trb--(event_data, no chain or any other trb)-->expect_setup_stage_trb
+/// ```
+#[derive(Debug, PartialEq, Eq)]
+pub enum ControlTransferState {
+    /// Nothing happened yet. Awaiting a Setup Stage Trb and dropping any other
+    /// Trb (they will not reach the hardware device).
+    ExpectSetupStageTrb,
+    /// Either collect data if a Data Stage Trb is received or skip the Data
+    /// Stage TD altogether if a Status Stage Trb is received.
+    MaybeDataStageTrb,
+    MoreData,
+    /// Finished processing the Data Stage if there was one.
+    ExpectStatusStageTrb,
+}
+
+#[derive(Debug, Clone)]
+pub enum SupportedControlEndpointTrb {
+    SetupStage(SetupStageTrb),
+    DataStage(DataStageTrb),
+    StatusStage(StatusStageTrb),
+    Normal(NormalTrb),
+    EventData(EventDataTrb),
+}
+
+impl TryFrom<TransferTrbVariant> for SupportedControlEndpointTrb {
+    type Error = TransferTrbVariant;
+
+    fn try_from(trb: TransferTrbVariant) -> Result<Self, Self::Error> {
+        match trb {
+            TransferTrbVariant::SetupStage(t) => Ok(Self::SetupStage(t)),
+            TransferTrbVariant::DataStage(t) => Ok(Self::DataStage(t)),
+            TransferTrbVariant::StatusStage(t) => Ok(Self::StatusStage(t)),
+            TransferTrbVariant::Normal(t) => Ok(Self::Normal(t)),
+            TransferTrbVariant::EventData(t) => Ok(Self::EventData(t)),
+            variant => Err(variant),
+        }
+    }
+}
+
+impl From<SupportedControlEndpointTrb> for TransferTrbVariant {
+    fn from(trb: SupportedControlEndpointTrb) -> Self {
+        match trb {
+            SupportedControlEndpointTrb::SetupStage(t) => Self::SetupStage(t),
+            SupportedControlEndpointTrb::DataStage(t) => Self::DataStage(t),
+            SupportedControlEndpointTrb::StatusStage(t) => Self::StatusStage(t),
+            SupportedControlEndpointTrb::Normal(t) => Self::Normal(t),
+            SupportedControlEndpointTrb::EventData(t) => Self::EventData(t),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ControlEndpointHandle<RCEH: RealControlEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
     pcap_meta: EndpointPcapMeta,
     real_ep: RCEH,
-    trb_parser: ControlRequestParser,
     dma_bus: BusDeviceRef,
     event_sender: EventSender,
-    submission_state: ControlSubmissionState,
+    /// Aggregating a chain of TRB received from system software. Used for the current architecture with the submit() and next_completion() loop.
+    submission_state: ControlSubmission,
+    /// Tracking the Control Transfer information without perceiving individual TRB.
+    transfer_state: ControlTransfer,
 }
 
 impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
@@ -105,24 +211,193 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
             endpoint_id,
             pcap_meta,
             real_ep,
-            trb_parser: ControlRequestParser::new(dma_bus.clone()),
             dma_bus,
             event_sender,
-            submission_state: ControlSubmissionState::NoTrbSubmitted,
+            submission_state: ControlSubmission::default(),
+            transfer_state: ControlTransfer::new(false, UsbRequest::default()),
         }
+    }
+
+    /// Overwrite any previous Control Transfer state. Resets the tracked chain
+    /// and drops the aggregated TRBs.
+    fn instantiate_setup_trb(&mut self, addr: u64, trb: &SetupStageTrb) {
+        let usb_request = UsbRequest {
+            address: addr,
+            request_type: trb.request_type,
+            request: trb.request,
+            value: trb.value,
+            index: trb.index,
+            length: 0, // Aggregate all Data Stage TD and do not use the unreliable wLength field.
+            data_pointer: None,
+            data: vec![],
+        };
+
+        let direction = trb.request_type & 0x80 != 0;
+        let new_transfer_state = ControlTransfer::new(direction, usb_request);
+
+        replace_with_or_abort(&mut self.transfer_state, |_| new_transfer_state);
+    }
+
+    /// for Control In
+    fn collect_transfer_length<T: TrbDmaInfo>(&mut self, trb: &T) {
+        let transfer_length = if trb.has_immediate_data() {
+            min(8, trb.transfer_length())
+        } else {
+            trb.transfer_length()
+        };
+
+        self.transfer_state.usb_request.length = self
+            .transfer_state
+            .usb_request
+            .length
+            .wrapping_add(transfer_length);
+    }
+
+    /// for Control Out
+    fn collect_transfer_data<T: TrbDmaInfo>(&mut self, trb: &T) {
+        if trb.has_immediate_data() {
+            // Only event data should follow when immediate data is used here
+            // but we do not check for that and allow multiple immediate data
+            // TRB in the data stage TD.
+
+            let length = min(8, trb.transfer_length());
+            self.transfer_state
+                .usb_request
+                .data
+                .append(&mut trb.data_pointer().to_le_bytes()[..length as usize].to_vec());
+        } else {
+            let mut data_slice = vec![0u8; trb.transfer_length() as usize];
+            self.dma_bus.read_bulk(trb.data_pointer(), &mut data_slice);
+
+            self.transfer_state.usb_request.data.append(&mut data_slice);
+        }
+    }
+
+    /// Send an EventTrb with CompletionCode::Success for all currently
+    /// collected TRB. Then removes all stored TRB.
+    fn clean_current_trbs(&mut self) -> anyhow::Result<()> {
+        info!("We report success for the so far collected TRB of the Control Transfer.");
+        for trb in &self.submission_state.trbs {
+            let interrupt_on_completion = match &trb.variant {
+                SupportedControlEndpointTrb::SetupStage(setup) => setup.interrupt_on_completion,
+                SupportedControlEndpointTrb::DataStage(data) => data.interrupt_on_completion,
+                SupportedControlEndpointTrb::Normal(normal) => normal.interrupt_on_completion,
+                SupportedControlEndpointTrb::StatusStage(status) => status.interrupt_on_completion,
+                SupportedControlEndpointTrb::EventData(event_data) => {
+                    event_data.interrupt_on_completion
+                }
+            };
+            if interrupt_on_completion {
+                self.transfer_event_success(trb.addr)?;
+            }
+        }
+
+        self.submission_state.trbs.clear();
+
+        Ok(())
+    }
+
+    /// Send a basic Transfer Event TRB with trb_transfer_length = 0 and CompletionCode::Success.
+    fn transfer_event_success(&self, address: u64) -> anyhow::Result<()> {
+        let event = EventTrb::new_transfer_event_trb(
+            address,
+            0,
+            CompletionCode::Success,
+            false,
+            self.endpoint_id,
+            self.slot_id,
+        );
+        self.event_sender.send(event)
+    }
+
+    fn copy_slice_to_guest<T: TrbDmaInfo>(&self, trb: &T, hardware_data: &mut Vec<u8>) {
+        // check length for short packet
+        if hardware_data.len() < trb.transfer_length() as usize {
+            // TODO This is a very minimal handling of a short packet that the
+            // linux driver will tolerate. Windows and others might need
+            // proper/spec compliant handling.
+
+            warn!(
+                "ControlEndpoint in slot {} encountered ShortPacket (incomplete implementation)",
+                self.slot_id
+            );
+
+            let len = hardware_data.len();
+            let mut byte_slice: Vec<u8> = hardware_data.drain(0..len).collect();
+            byte_slice.resize(trb.transfer_length() as usize, 0);
+            self.dma_bus.write_bulk(trb.data_pointer(), &byte_slice);
+        } else {
+            let byte_slice: Vec<u8> = hardware_data
+                .drain(0..trb.transfer_length() as usize)
+                .collect();
+            self.dma_bus.write_bulk(trb.data_pointer(), &byte_slice);
+        }
+    }
+
+    /// if hardware_data.is_some() { IN } else { OUT }
+    fn realize_control_chain(&mut self, hardware_data: &mut Option<Vec<u8>>) -> anyhow::Result<()> {
+        debug!("realize_control_chain with data: {:?}", hardware_data);
+
+        let trbs = mem::take(&mut self.submission_state.trbs);
+        for trb in trbs {
+            match &trb.variant {
+                SupportedControlEndpointTrb::SetupStage(setup) => {
+                    if setup.interrupt_on_completion {
+                        self.transfer_event_success(trb.addr)?;
+                    }
+                }
+                SupportedControlEndpointTrb::DataStage(data) => {
+                    if let Some(hardware_data) = hardware_data {
+                        self.copy_slice_to_guest(data, hardware_data);
+                    }
+
+                    if data.interrupt_on_completion {
+                        self.transfer_event_success(trb.addr)?;
+                    }
+                }
+                SupportedControlEndpointTrb::Normal(normal) => {
+                    if let Some(hardware_data) = hardware_data {
+                        self.copy_slice_to_guest(normal, hardware_data);
+                    }
+
+                    if normal.interrupt_on_completion {
+                        self.transfer_event_success(trb.addr)?;
+                    }
+                }
+                SupportedControlEndpointTrb::StatusStage(status) => {
+                    if status.interrupt_on_completion {
+                        self.transfer_event_success(trb.addr)?;
+                    }
+                }
+                SupportedControlEndpointTrb::EventData(event) => {
+                    todo!("handle event data: {:?}", event);
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
-#[derive(Debug, Default)]
+/// Track communication between us and the host hardware.
+#[derive(Debug, Default, Clone)]
+struct ControlSubmission {
+    state: ControlSubmissionState,
+    trbs: Vec<SupportedEndpointTrb<SupportedControlEndpointTrb>>,
+}
+
+#[derive(Debug, Default, Clone)]
 enum ControlSubmissionState {
     #[default]
     NoTrbSubmitted,
-    ParserConsumedTrb,
-    // store address of trb that failed to parse.
-    // needs to be specified inside the transfer event indicating the error.
+    /// Collect a Control Transfer: Setup TD, Data TD and Status TD.
+    /// Find any errors the driver could make.
+    CollectingTd,
     ParserError(u64),
-    AwaitingControlIn(UsbRequest),
-    AwaitingControlOut(UsbRequest),
+    UnexpectedTrb(u64, TransferTrbVariant),
+    /// A valid chain has been received and a hardware request is submitted.
+    /// Find any errors the USB device could make.
+    AwaitingControlRequest,
 }
 
 impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<RCEH> {
@@ -130,28 +405,197 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
         Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
 
     fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
-        let trb_address = trb.address;
-        if let ControlFlow::Break(res) = self.trb_parser.trb(trb) {
-            match res {
-                Ok(request) => {
-                    let request_copy = request.clone_without_data();
-                    let is_out_request = request.request_type & 0x80 == 0;
+        // Verify the TRB itself is good for this Endpoint.
+        let supported_trb = match SupportedEndpointTrb::<SupportedControlEndpointTrb>::new(
+            trb.address,
+            trb.buffer,
+        ) {
+            Ok(supported_trb) => supported_trb,
+            Err(transfer_trb) => {
+                if let TransferTrbVariant::Unrecognized(_, _) = &transfer_trb {
+                    info!(
+                        "Failed to parse Transfer Trb on Control Endpoint. slot {}",
+                        self.slot_id
+                    );
+                    self.submission_state.state = ControlSubmissionState::ParserError(trb.address);
+                } else {
+                    warn!(
+                        "Encountered unsupported TRB on Control Endpoint (slot {}): {transfer_trb:?}",
+                        self.slot_id
+                    );
 
-                    pcap::control_submission(self.pcap_meta, &request);
-
-                    self.real_ep.submit_control_request(request)?;
-
-                    self.submission_state = match is_out_request {
-                        true => ControlSubmissionState::AwaitingControlOut(request_copy),
-                        false => ControlSubmissionState::AwaitingControlIn(request_copy),
-                    };
+                    self.submission_state.state =
+                        ControlSubmissionState::UnexpectedTrb(trb.address, transfer_trb);
                 }
-                Err(_) => {
-                    self.submission_state = ControlSubmissionState::ParserError(trb_address);
-                }
+                return Ok(());
             }
-        } else {
-            self.submission_state = ControlSubmissionState::ParserConsumedTrb;
+        };
+
+        trace!("Control Endpoint got a supported TRB: {:?}", supported_trb);
+
+        // Verify the chain is building a valid Control Transfer.
+        match &self.transfer_state.state {
+            ControlTransferState::ExpectSetupStageTrb => match &supported_trb.variant {
+                SupportedControlEndpointTrb::SetupStage(trb) => {
+                    self.instantiate_setup_trb(supported_trb.addr, trb);
+                    self.submission_state.trbs.push(supported_trb);
+                    self.transfer_state.state = ControlTransferState::MaybeDataStageTrb;
+                    self.submission_state.state = ControlSubmissionState::CollectingTd;
+                }
+                _ => {
+                    info!(
+                        "invalid control transfer sequence; expected Setup Stage Trb, got: {:?}",
+                        supported_trb
+                    );
+
+                    self.submission_state.state = ControlSubmissionState::UnexpectedTrb(
+                        supported_trb.addr,
+                        supported_trb.variant.into(),
+                    );
+                }
+            },
+            ControlTransferState::MaybeDataStageTrb => match &supported_trb.variant {
+                SupportedControlEndpointTrb::SetupStage(setup) => {
+                    info!(
+                            "received Setup Stage TRB, abort ongoing control transfer in ControlTransferState::MaybeDataStageTrb in favour of this new one"
+                        );
+
+                    self.clean_current_trbs()?;
+
+                    self.instantiate_setup_trb(supported_trb.addr, setup);
+                    self.submission_state.trbs.push(supported_trb);
+                    self.transfer_state.state = ControlTransferState::MaybeDataStageTrb;
+                    self.submission_state.state = ControlSubmissionState::CollectingTd;
+                }
+                SupportedControlEndpointTrb::DataStage(data) => {
+                    if data.chain {
+                        self.transfer_state.state = ControlTransferState::MoreData;
+                    } else {
+                        self.transfer_state.state = ControlTransferState::ExpectStatusStageTrb;
+                    }
+
+                    if self.transfer_state.direction {
+                        self.collect_transfer_length(data);
+                    } else {
+                        self.collect_transfer_data(data);
+                    }
+
+                    self.submission_state.trbs.push(supported_trb);
+                    self.submission_state.state = ControlSubmissionState::CollectingTd;
+                }
+                SupportedControlEndpointTrb::StatusStage(status) => {
+                    if status.chain {
+                        todo!("event data")
+                    } else {
+                        let usb_request = &self.transfer_state.usb_request;
+                        pcap::control_submission(self.pcap_meta, usb_request);
+                        self.real_ep.submit_control_request(usb_request.clone())?;
+                        self.submission_state.state =
+                            ControlSubmissionState::AwaitingControlRequest;
+
+                        self.transfer_state.state = ControlTransferState::ExpectSetupStageTrb;
+                    }
+
+                    self.submission_state.trbs.push(supported_trb);
+                }
+                _ => {
+                    info!(
+                        "invalid control transfer sequence; expected Setup Stage Trb, got: {:?}",
+                        supported_trb
+                    );
+
+                    self.transfer_state.state = ControlTransferState::ExpectSetupStageTrb;
+
+                    self.submission_state.state = ControlSubmissionState::UnexpectedTrb(
+                        supported_trb.addr,
+                        supported_trb.variant.into(),
+                    );
+                }
+            },
+            ControlTransferState::MoreData => match &supported_trb.variant {
+                SupportedControlEndpointTrb::SetupStage(trb) => {
+                    info!(
+                            "received Setup Stage TRB, abort ongoing control transfer in ControlTransferState::MoreData in favour of this new one"
+                        );
+
+                    self.clean_current_trbs()?;
+
+                    self.instantiate_setup_trb(supported_trb.addr, trb);
+                    self.submission_state.trbs.push(supported_trb);
+                    self.transfer_state.state = ControlTransferState::MaybeDataStageTrb;
+                    self.submission_state.state = ControlSubmissionState::CollectingTd;
+                }
+                SupportedControlEndpointTrb::Normal(normal) => {
+                    if normal.chain {
+                        self.transfer_state.state = ControlTransferState::MoreData;
+                    } else {
+                        self.transfer_state.state = ControlTransferState::ExpectStatusStageTrb;
+                    }
+
+                    if self.transfer_state.direction {
+                        self.collect_transfer_length(normal);
+                    } else {
+                        self.collect_transfer_data(normal);
+                    }
+
+                    self.submission_state.trbs.push(supported_trb);
+                    self.submission_state.state = ControlSubmissionState::CollectingTd;
+                }
+                _ => {
+                    info!(
+                        "invalid control transfer sequence; expected Setup Stage Trb, got: {:?}",
+                        supported_trb
+                    );
+
+                    self.transfer_state.state = ControlTransferState::ExpectSetupStageTrb;
+                    self.submission_state.state = ControlSubmissionState::UnexpectedTrb(
+                        supported_trb.addr,
+                        supported_trb.variant.into(),
+                    );
+                }
+            },
+
+            ControlTransferState::ExpectStatusStageTrb => match &supported_trb.variant {
+                SupportedControlEndpointTrb::SetupStage(setup) => {
+                    info!(
+                        "received Setup Stage TRB, abort ongoing control transfer in ControlTransferState::ExpectStatusStageTrb in favour of this new one"
+                    );
+
+                    self.clean_current_trbs()?;
+
+                    self.instantiate_setup_trb(supported_trb.addr, setup);
+                    self.submission_state.trbs.push(supported_trb);
+                    self.transfer_state.state = ControlTransferState::MaybeDataStageTrb;
+                    self.submission_state.state = ControlSubmissionState::CollectingTd;
+                }
+                SupportedControlEndpointTrb::StatusStage(status) => {
+                    if status.chain {
+                        todo!("event data")
+                    } else {
+                        let usb_request = &self.transfer_state.usb_request;
+                        pcap::control_submission(self.pcap_meta, usb_request);
+                        self.real_ep.submit_control_request(usb_request.clone())?;
+                        self.submission_state.state =
+                            ControlSubmissionState::AwaitingControlRequest;
+
+                        self.transfer_state.state = ControlTransferState::ExpectSetupStageTrb;
+                    }
+
+                    self.submission_state.trbs.push(supported_trb);
+                }
+                _ => {
+                    info!(
+                        "invalid control transfer sequence; expected Setup Stage Trb, got: {:?}",
+                        supported_trb
+                    );
+
+                    self.transfer_state.state = ControlTransferState::ExpectSetupStageTrb;
+                    self.submission_state.state = ControlSubmissionState::UnexpectedTrb(
+                        supported_trb.addr,
+                        supported_trb.variant.into(),
+                    );
+                }
+            },
         }
 
         Ok(())
@@ -159,84 +603,106 @@ impl<RCEH: RealControlEndpointHandle> EndpointHandle for ControlEndpointHandle<R
 
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
-            let result = match self.submission_state {
-                ControlSubmissionState::ParserConsumedTrb => TrbProcessingResult::Ok,
-                ControlSubmissionState::ParserError(trb_address) => {
-                    pcap::trb_error(self.pcap_meta, trb_address);
+            let result = match &self.submission_state.state {
+                ControlSubmissionState::NoTrbSubmitted => {
+                    unreachable!("internal error: Always set a different ControlSubmissionState in submit_trb().")
+                }
+                ControlSubmissionState::CollectingTd => TrbProcessingResult::Ok,
+                ControlSubmissionState::ParserError(address) => {
+                    pcap::trb_error(self.pcap_meta, *address);
+
+                    // Construct the event for the bad TRB first because of the borrow checker.
                     let event = EventTrb::new_transfer_event_trb(
-                        trb_address,
+                        *address,
                         0,
                         CompletionCode::TrbError,
                         false,
                         self.endpoint_id,
                         self.slot_id,
                     );
+
+                    // Backtrack to send healthy events and drop all collected trbs until...
+                    self.clean_current_trbs()?;
+
+                    // ...we hit the bad one and have to report the event for it.
                     self.event_sender.send(event)?;
+
                     TrbProcessingResult::TrbError
                 }
-                ControlSubmissionState::AwaitingControlIn(ref usb_request) => {
-                    let processing_result = self.real_ep.next_completion().await?;
-                    match processing_result {
-                        ControlRequestProcessingResult::SuccessfulControlIn(data) => {
-                            debug!("got data from control in: {data:?}");
-                            pcap::control_completion_in(self.pcap_meta, usb_request.address, &data);
-                            if let Some(data_pointer) = usb_request.data_pointer {
-                                debug!("writing data to {data_pointer}");
-                                self.dma_bus.write_bulk(data_pointer, &data);
-                            }
+                ControlSubmissionState::UnexpectedTrb(address, variant) => {
+                    warn!("unexpected trb from address: {} as: {:?}", address, variant);
 
-                            let event = EventTrb::new_transfer_event_trb(
+                    pcap::trb_error(self.pcap_meta, *address);
+
+                    // Construct the event for the bad TRB first because of the borrow checker.
+                    let event = EventTrb::new_transfer_event_trb(
+                        *address,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+
+                    // Backtrack to send healthy events and drop all collected trbs until...
+                    self.clean_current_trbs()?;
+
+                    // ...we hit the bad one and have to report the event for it.
+                    self.event_sender.send(event)?;
+
+                    self.transfer_state.state = ControlTransferState::ExpectSetupStageTrb;
+
+                    TrbProcessingResult::TrbError
+                }
+                ControlSubmissionState::AwaitingControlRequest => {
+                    let processing_result = self.real_ep.next_completion().await?;
+
+                    match processing_result {
+                        ControlRequestProcessingResult::SuccessfulControlIn(hardware_data) => {
+                            let usb_request = &self.transfer_state.usb_request;
+                            pcap::control_completion_in(
+                                self.pcap_meta,
                                 usb_request.address,
-                                0,
-                                CompletionCode::Success,
-                                false,
-                                self.endpoint_id,
-                                self.slot_id,
+                                &hardware_data,
                             );
-                            self.event_sender.send(event)?;
+
+                            self.realize_control_chain(&mut Some(hardware_data))?;
 
                             TrbProcessingResult::Ok
                         }
-                        ControlRequestProcessingResult::SuccessfulControlOut => unreachable!(),
-                        processing_error => {
-                            pcap::control_in_error(self.pcap_meta, usb_request, &processing_error);
-                            self.handle_processing_error(processing_error, usb_request.address)?
-                        }
-                    }
-                }
-                ControlSubmissionState::AwaitingControlOut(ref usb_request) => {
-                    let processing_result = self.real_ep.next_completion().await?;
-                    match processing_result {
-                        ControlRequestProcessingResult::SuccessfulControlIn(_) => {
-                            unreachable!()
-                        }
                         ControlRequestProcessingResult::SuccessfulControlOut => {
+                            let usb_request = &self.transfer_state.usb_request;
                             pcap::control_completion_out(
                                 self.pcap_meta,
                                 usb_request.address,
-                                u32::from(usb_request.length),
+                                usb_request.length,
                             );
-                            let event = EventTrb::new_transfer_event_trb(
-                                usb_request.address,
-                                0,
-                                CompletionCode::Success,
-                                false,
-                                self.endpoint_id,
-                                self.slot_id,
-                            );
-                            self.event_sender.send(event)?;
+
+                            self.realize_control_chain(&mut None)?;
 
                             TrbProcessingResult::Ok
                         }
                         processing_error => {
-                            pcap::control_out_error(self.pcap_meta, usb_request, &processing_error);
+                            let usb_request = &self.transfer_state.usb_request;
+                            if self.transfer_state.direction {
+                                pcap::control_in_error(
+                                    self.pcap_meta,
+                                    usb_request,
+                                    &processing_error,
+                                );
+                            } else {
+                                pcap::control_out_error(
+                                    self.pcap_meta,
+                                    usb_request,
+                                    &processing_error,
+                                );
+                            }
                             self.handle_processing_error(processing_error, usb_request.address)?
                         }
                     }
                 }
-                ControlSubmissionState::NoTrbSubmitted => unreachable!(),
             };
-            self.submission_state = ControlSubmissionState::NoTrbSubmitted;
+            self.submission_state.state = ControlSubmissionState::NoTrbSubmitted;
 
             Ok(result)
         })
@@ -301,103 +767,17 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
                 TrbProcessingResult::TransactionError(None)
             }
             ControlRequestProcessingResult::SuccessfulControlIn(_) => {
-                panic!("SuccessfulControlIn should be handled elsewhere")
+                unreachable!(
+                    "internal error: Don't try processing an error with a successful ControlRequestProcessingResult."
+                )
             }
             ControlRequestProcessingResult::SuccessfulControlOut => {
-                panic!("SuccessfulControlOut should be handled elsewhere")
+                unreachable!(
+                    "internal error: Don't try processing an error with a successful ControlRequestProcessingResult."
+                )
             }
         };
         Ok(mapped)
-    }
-}
-
-#[derive(Debug)]
-struct ControlRequestParser {
-    state: ControlRequestParserState,
-    dma_bus: BusDeviceRef,
-    request_builder: UsbRequest,
-}
-
-impl ControlRequestParser {
-    fn new(dma_bus: BusDeviceRef) -> Self {
-        Self {
-            state: ControlRequestParserState::Initial,
-            dma_bus,
-            request_builder: Default::default(),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum ControlRequestParserState {
-    Initial,
-    SetupStageConsumed,
-    DataStageConsumed,
-}
-
-impl ControlRequestParser {
-    fn trb(&mut self, trb: RawTrb) -> ControlFlow<Result<UsbRequest, ()>> {
-        let transfer_trb = TransferTrbVariant::parse(trb.buffer);
-
-        loop {
-            match &self.state {
-                ControlRequestParserState::Initial => match transfer_trb {
-                    TransferTrbVariant::SetupStage(setup_trb_data) => {
-                        let request = UsbRequest {
-                            address: 0,
-                            request_type: setup_trb_data.request_type,
-                            request: setup_trb_data.request,
-                            value: setup_trb_data.value,
-                            index: setup_trb_data.index,
-                            length: setup_trb_data.length,
-                            data_pointer: None,
-                            data: None,
-                        };
-                        self.request_builder = request;
-                        self.state = ControlRequestParserState::SetupStageConsumed;
-                        return ControlFlow::Continue(());
-                    }
-                    _ => return ControlFlow::Break(Err(())),
-                },
-                ControlRequestParserState::SetupStageConsumed => match transfer_trb {
-                    TransferTrbVariant::DataStage(data_trb_data) => {
-                        let data = if data_trb_data.immediate_data {
-                            if self.request_builder.length > 8 {
-                                todo!("using IDT with length > 8");
-                            }
-                            data_trb_data.data_pointer.to_le_bytes()
-                                [..self.request_builder.length as usize]
-                                .to_vec()
-                        } else {
-                            let mut data = vec![0; self.request_builder.length as usize];
-                            self.dma_bus
-                                .read_bulk(data_trb_data.data_pointer, &mut data);
-                            data
-                        };
-
-                        self.request_builder.data = Some(data);
-                        self.request_builder.data_pointer = Some(data_trb_data.data_pointer);
-                        self.state = ControlRequestParserState::DataStageConsumed;
-                        return ControlFlow::Continue(());
-                    }
-                    TransferTrbVariant::StatusStage(_) => {
-                        self.state = ControlRequestParserState::DataStageConsumed;
-                        continue;
-                    }
-                    _ => return ControlFlow::Break(Err(())),
-                },
-                ControlRequestParserState::DataStageConsumed => match transfer_trb {
-                    TransferTrbVariant::StatusStage(_) => {
-                        self.request_builder.address = trb.address;
-                        let request = mem::take(&mut self.request_builder);
-                        self.request_builder = UsbRequest::default();
-                        self.state = ControlRequestParserState::Initial;
-                        return ControlFlow::Break(Ok(request));
-                    }
-                    _ => return ControlFlow::Break(Err(())),
-                },
-            }
-        }
     }
 }
 
@@ -601,56 +981,47 @@ impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for OutEndpointHandle<ROEH>
 }
 
 #[derive(Debug)]
-struct SupportedInEndpointTrb {
-    variant: SupportedInEndpointTrbVariant,
-    addr: u64,
-    cycle_bit: bool,
+enum SupportedNormalEndpointTrb {
+    Normal(NormalTrb),
+    EventData(EventDataTrb),
+    NoOp(NoOpTrb),
 }
 
-#[derive(Debug)]
-enum SupportedInEndpointTrbVariant {
-    Normal(NormalTrbData),
-    EventData(EventDataTrbData),
-    NoOp(NoOpTrbData),
-}
-
-impl TryFrom<TransferTrbVariant> for SupportedInEndpointTrbVariant {
+impl TryFrom<TransferTrbVariant> for SupportedNormalEndpointTrb {
     type Error = TransferTrbVariant;
 
-    fn try_from(value: TransferTrbVariant) -> Result<Self, Self::Error> {
-        match value {
-            TransferTrbVariant::Normal(data) => Ok(Self::Normal(data)),
-            TransferTrbVariant::EventData(data) => Ok(Self::EventData(data)),
-            TransferTrbVariant::NoOp(data) => Ok(Self::NoOp(data)),
+    fn try_from(trb: TransferTrbVariant) -> Result<Self, Self::Error> {
+        match trb {
+            TransferTrbVariant::Normal(t) => Ok(Self::Normal(t)),
+            TransferTrbVariant::EventData(t) => Ok(Self::EventData(t)),
+            TransferTrbVariant::NoOp(t) => Ok(Self::NoOp(t)),
             variant => Err(variant),
         }
     }
 }
 
-impl SupportedInEndpointTrb {
+impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
     const fn chain(&self) -> bool {
         match &self.variant {
-            SupportedInEndpointTrbVariant::Normal(normal_trb_data) => normal_trb_data.chain,
-            SupportedInEndpointTrbVariant::EventData(event_data_trb_data) => {
-                event_data_trb_data.chain
-            }
-            SupportedInEndpointTrbVariant::NoOp(noop) => noop.chain,
+            SupportedNormalEndpointTrb::Normal(normal) => normal.chain,
+            SupportedNormalEndpointTrb::EventData(event_data) => event_data.chain,
+            SupportedNormalEndpointTrb::NoOp(noop) => noop.chain,
         }
     }
 
     const fn transfer_length(&self) -> usize {
         match &self.variant {
-            SupportedInEndpointTrbVariant::Normal(data) => data.transfer_length as usize,
-            SupportedInEndpointTrbVariant::EventData(_) => 0,
-            SupportedInEndpointTrbVariant::NoOp(_) => 0,
+            SupportedNormalEndpointTrb::Normal(normal) => normal.transfer_length as usize,
+            SupportedNormalEndpointTrb::EventData(_) => 0,
+            SupportedNormalEndpointTrb::NoOp(_) => 0,
         }
     }
 }
 
 #[derive(Debug)]
 enum TdBasedNormalSubmissionState {
-    CollectingTd(Vec<SupportedInEndpointTrb>),
-    AwaitingRealTransfer(Vec<SupportedInEndpointTrb>),
+    CollectingTd(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
+    AwaitingRealTransfer(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
     UnsupportedTrb,
 }
 
@@ -706,31 +1077,27 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
             }
         };
 
-        let transfer_trb_variant = TransferTrbVariant::parse(trb.buffer);
-        let supported_trb_variant =
-            match SupportedInEndpointTrbVariant::try_from(transfer_trb_variant) {
-                Ok(supported_trb) => supported_trb,
-                Err(transfer_trb) => {
-                    warn!(
+        let supported_trb = match SupportedEndpointTrb::<SupportedNormalEndpointTrb>::new(
+            trb.address,
+            trb.buffer,
+        ) {
+            Ok(supported_trb) => supported_trb,
+            Err(transfer_trb) => {
+                warn!(
                     "Encountered unsupported TRB on In Endpoint (slot {}, ep {}): {transfer_trb:?}",
                     self.slot_id, self.endpoint_id
                 );
-                    self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
-                    return Ok(());
-                }
-            };
-        let cycle_bit = trb.buffer[12] & 0x1 != 0;
-        let supported_trb = SupportedInEndpointTrb {
-            variant: supported_trb_variant,
-            addr: trb.address,
-            cycle_bit,
+                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
+                return Ok(());
+            }
         };
+
         let end_of_td = !supported_trb.chain();
         trbs.push(supported_trb);
         if end_of_td {
             let td_request_length = trbs
                 .iter()
-                .map(SupportedInEndpointTrb::transfer_length)
+                .map(SupportedEndpointTrb::transfer_length)
                 .sum::<usize>();
 
             debug!(
@@ -782,7 +1149,7 @@ fn process_real_transfer_response(
     endpoint_id: u8,
     slot_id: u8,
     completion: InTrbProcessingResult,
-    trbs: Vec<SupportedInEndpointTrb>,
+    trbs: Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>,
     event_sender: &EventSender,
     dma_bus: &BusDeviceRef,
     pcap_meta: EndpointPcapMeta,
@@ -844,15 +1211,15 @@ enum TdProcessingState {
 impl<'a> TdProcessingInfo<'a> {
     fn process_trb(
         &mut self,
-        trb: SupportedInEndpointTrb,
+        trb: SupportedEndpointTrb<SupportedNormalEndpointTrb>,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         match trb.variant {
-            SupportedInEndpointTrbVariant::Normal(data) => {
-                self.process_normal_trb(trb.addr, trb.cycle_bit, data)
+            SupportedNormalEndpointTrb::Normal(normal) => {
+                self.process_normal_trb(trb.addr, trb.cycle_bit, normal)
             }
-            SupportedInEndpointTrbVariant::EventData(_data) => todo!(),
-            SupportedInEndpointTrbVariant::NoOp(data) => {
-                if data.interrupt_on_completion {
+            SupportedNormalEndpointTrb::EventData(_) => todo!(),
+            SupportedNormalEndpointTrb::NoOp(noop) => {
+                if noop.interrupt_on_completion {
                     let transfer_event = EventTrb::new_transfer_event_trb(
                         trb.addr,
                         0,
@@ -872,7 +1239,7 @@ impl<'a> TdProcessingInfo<'a> {
         &mut self,
         addr: u64,
         cs: bool,
-        trb_data: NormalTrbData,
+        trb_data: NormalTrb,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         match self.state {
             TdProcessingState::Default => {
@@ -1005,15 +1372,53 @@ impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for TdBasedInEndpointHandle<
 pub mod tests {
     use super::*;
 
+    use crate::device::xhci::endpoint_handle::tests::testutils::{
+        MockRealControlEndpointExpectDataPattern, MockRealControlEndpointHardwareError,
+        MockRealControlEndpointReadStatic,
+    };
+    use crate::device::xhci::interrupter::tests::testutils::MockInterrupter;
+    use crate::device::{bus::testutils::TestBusDevice, xhci::trb::testutils::RawTrbBuilder};
+    use crate::dynamic_bus::DynamicBus;
+
+    use std::sync::Arc;
+
+    const SLOT_ID: u8 = 1;
+    const ENDPOINT_ID: u8 = 1;
+
+    const FIRST_ADDRESS: u64 = 0x10;
+    const SECOND_ADDRESS: u64 = 0x20;
+    const THIRD_ADDRESS: u64 = 0x30;
+    const FOURTH_ADDRESS: u64 = 0x40;
+    const FIFTH_ADDRESS: u64 = 0x50;
+
+    const DMA_POINTER_1: u64 = 0x200;
+    const DMA_POINTER_2: u64 = 0x400;
+    const DMA_POINTER_3: u64 = 0x600;
+
+    const SETUP_WLENGTH: u16 = 512;
+    const TRANSFER_LENGTH: u32 = SETUP_WLENGTH as u32;
+
+    const TRB_TYPE_NORMAL: u8 = 0x1;
+    const TRB_TYPE_SETUP_STAGE: u8 = 0x2;
+    const TRB_TYPE_DATA_STAGE: u8 = 0x3;
+    const TRB_TYPE_STATUS_STAGE: u8 = 0x4;
+
+    const SETUP_BM_REQUEST_TYPE_IN: u8 = 0x80;
+    const SETUP_BM_REQUEST_TYPE_OUT: u8 = 0;
+
+    const SETUP_TRANSFER_TYPE_OUT_DATA: u8 = 0x2;
+    const SETUP_TRANSFER_TYPE_IN_DATA: u8 = 0x3;
+
     pub mod testutils {
         use super::*;
 
         // will return `vec![42; requested length]`
         #[derive(Debug)]
         pub struct MockRealControlEndpointReadStatic {
-            data_length: u16,
+            data_length: u32,
             direction: bool,
         }
+
         impl MockRealControlEndpointReadStatic {
             pub fn new() -> Self {
                 Self {
@@ -1053,6 +1458,94 @@ pub mod tests {
             }
         }
 
+        // expecting to receive 0xda7a via an out request
+        #[derive(Debug)]
+        pub struct MockRealControlEndpointExpectDataPattern {}
+
+        impl MockRealControlEndpointExpectDataPattern {
+            pub fn new() -> Self {
+                Self {}
+            }
+        }
+
+        impl RealControlEndpointHandle for MockRealControlEndpointExpectDataPattern {
+            type TrbCompletionFuture<'a> = Pin<
+                Box<
+                    dyn Future<Output = anyhow::Result<ControlRequestProcessingResult>> + Send + 'a,
+                >,
+            >;
+
+            fn submit_control_request(&mut self, request: UsbRequest) -> anyhow::Result<()> {
+                assert_eq!(request.data, 0xda7a_u64.to_le_bytes()[..2]);
+                Ok(())
+            }
+
+            fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+                Box::pin(async {
+                    let result = ControlRequestProcessingResult::SuccessfulControlOut;
+                    Ok(result)
+                })
+            }
+        }
+
+        impl BaseEndpointHandle for MockRealControlEndpointExpectDataPattern {
+            type CompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+            fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+
+            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        // expecting to receive 0xda7a via an out request
+        #[derive(Debug)]
+        pub struct MockRealControlEndpointHardwareError {
+            error: ControlRequestProcessingResult,
+        }
+
+        impl MockRealControlEndpointHardwareError {
+            pub fn new(error: ControlRequestProcessingResult) -> Self {
+                Self { error }
+            }
+        }
+
+        impl RealControlEndpointHandle for MockRealControlEndpointHardwareError {
+            type TrbCompletionFuture<'a> = Pin<
+                Box<
+                    dyn Future<Output = anyhow::Result<ControlRequestProcessingResult>> + Send + 'a,
+                >,
+            >;
+
+            fn submit_control_request(&mut self, _request: UsbRequest) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+                Box::pin(async { Ok(self.error.clone()) })
+            }
+        }
+
+        impl BaseEndpointHandle for MockRealControlEndpointHardwareError {
+            type CompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+            fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+
+            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+        }
+
         impl BaseEndpointHandle for MockRealControlEndpointReadStatic {
             type CompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
@@ -1073,11 +1566,13 @@ pub mod tests {
         pub struct MockRealInEndpoint {
             data_length: usize,
         }
+
         impl MockRealInEndpoint {
             pub fn new() -> Self {
                 Self { data_length: 0 }
             }
         }
+
         impl RealInEndpointHandle for MockRealInEndpoint {
             type TrbCompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
@@ -1098,6 +1593,7 @@ pub mod tests {
                 })
             }
         }
+
         impl BaseEndpointHandle for MockRealInEndpoint {
             type CompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
@@ -1121,6 +1617,7 @@ pub mod tests {
                 Self {}
             }
         }
+
         impl RealOutEndpointHandle for MockRealOutEndpoint {
             type TrbCompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<OutTrbProcessingResult>> + Send + 'a>>;
@@ -1137,6 +1634,7 @@ pub mod tests {
                 })
             }
         }
+
         impl BaseEndpointHandle for MockRealOutEndpoint {
             type CompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
@@ -1151,5 +1649,960 @@ pub mod tests {
                 Box::pin(async { Ok(()) })
             }
         }
+    }
+
+    // Initialize test environment using the MockRealControlEndpointReadStatic
+    //
+    // Use the ControlEndpointHandle to submit some TransferTrb.
+    // Use the UnboundedReceiver to directly check events meant for a EventRing.
+    fn init_control_endpoint_handle_test<T: RealControlEndpointHandle>(
+        real_ep: T,
+    ) -> (MockInterrupter, ControlEndpointHandle<T>) {
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::control(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, interrupter) = MockInterrupter::new();
+
+        let control_endpoint = ControlEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+        (interrupter, control_endpoint)
+    }
+
+    /// Wrapper to simplify creating a successful expected EventTrb for comparison.
+    fn expected_event(trb_pointer: u64, trb_transfer_length: u32, event_data: bool) -> EventTrb {
+        EventTrb::new_transfer_event_trb(
+            trb_pointer,
+            trb_transfer_length,
+            CompletionCode::Success,
+            event_data,
+            ENDPOINT_ID,
+            SLOT_ID,
+        )
+    }
+
+    #[tokio::test]
+    async fn submit_shortest_possible_control_in_request() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![setup_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_shortest_possible_control_in_request_with_data_stage() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_direction()
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_control_in_with_empty_wlength_but_have_transferred_data() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            // use vendor specific theoretically spec violating data in wLength
+            .with_setup_wlength(0x0)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_direction()
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false)),
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_control_out_with_empty_wlength_but_have_transferred_data() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
+            // use vendor specific theoretically spec violating data in wLength
+            .with_setup_wlength(0x0)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false)),
+            "second trb"
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_control_in_with_less_wlength_than_expected_data() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            // system software made a mistake; should be SETUP_WLENGTH*3 or TRANSFER_LENGTH*3
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_direction()
+            .build();
+        let normal_1 = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_pointer(DMA_POINTER_2)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_2 = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_data_pointer(DMA_POINTER_3)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let status_stage = RawTrbBuilder::new(FIFTH_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage, normal_1, normal_2, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FOURTH_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIFTH_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_control_in_with_more_wlength_than_expected_data() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            // system software made a mistake; should be TRANSFER_LENGTH*3
+            .with_setup_wlength(SETUP_WLENGTH * 3)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_direction()
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    /// Xhci specification chapter 4.11.2.2 Setup Stage, Data Stage, and Status Stage TRBs:
+    ///
+    /// > Some (non-compliant) USB devices use the SETUP Data wLength field as a
+    /// > custom parameter for non-data control transfers. xHCI implementations should
+    /// > not tie a non-zero wLength value to the existence of a Data Stage TD in a control
+    /// > transfer to ensure compatibility with those devices.
+    /// >
+    /// > [...]
+    /// >
+    /// > - If a Data Stage TD does not follow a Setup Stage TD, where wLength > ‘0’.
+    /// >
+    /// > [...]
+    /// >
+    /// > This condition violates the definition of a USB Control Transfer, however this condition should be ignored by the
+    /// > xHC to ensure legacy device compatibility. The Setup Stage Transfer Type (TRT) field strictly indicates the
+    /// > presence and the Direction of the Data Stage TD, and determines the direction of the Status Stage TD so the
+    /// > wLength field should be ignored by the xHC.
+    #[tokio::test]
+    async fn submit_control_out_with_some_wlength_but_do_not_automatically_expect_data() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
+            // some vendor specific stuff
+            .with_setup_wlength(0x6767)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        let input_trb = vec![setup_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_second_illegal_data_stage_trb() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage_1 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_direction()
+            .build();
+        let data_stage_2 = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_direction()
+            .build();
+        let status_stage = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage_1, data_stage_2, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            control_endpoint.next_completion().await.ok();
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                THIRD_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        // Usually an endpoint should halt after encountering an error.
+
+        // This test does not include a full endpoint and thus can not stop.
+
+        // If we do not halt we expect to encounter the rest of the Control Request
+        // to be unexpected/out of order TRB's and send a CompletionCode::TrbError.
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FOURTH_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_control_out_request_with_data_stage_using_immediate_data() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointExpectDataPattern::new());
+
+        const DMA_POINTER: u64 = 0xeb8bda7a;
+        const TRANSFER_LENGTH: u32 = 2;
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_OUT_DATA)
+            .build();
+        let data_stage = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_immediate_data()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        let input_trb = vec![setup_stage, data_stage, status_stage];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submitting_out_of_order_or_unfinished_sequence_does_not_prevent_the_following_valid_sequence_of_trb(
+    ) {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let status_stage_out_of_order = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+        let setup_stage_incomplete_sequence = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let setup_stage = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![
+            status_stage_out_of_order,
+            setup_stage_incomplete_sequence,
+            setup_stage,
+            status_stage,
+        ];
+
+        for trb in input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            control_endpoint.next_completion().await.ok();
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        // Usually an endpoint should halt after encountering an error.
+
+        // This test does not include a full endpoint and thus can not stop.
+
+        // If we do not halt we expect to encounter the rest of the Control Request
+        // to be unexpected/out of order TRB's and send a CompletionCode::TrbError.
+
+        // If a new Control Request Initializes we expect it to work regardless
+        // of previous aggregation state.
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+
+        // Repeating the spontaneous new control request chain again:
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FOURTH_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn control_request_returns_hardware_disconnect() {
+        let (mut interrupter, mut control_endpoint) = init_control_endpoint_handle_test(
+            MockRealControlEndpointHardwareError::new(ControlRequestProcessingResult::Disconnect),
+        );
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this mock hardware request should never fail");
+        control_endpoint.next_completion().await.ok();
+
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this mock hardware request should never fail");
+        // We can assert here because it is the last TRB of the control
+        // request chain, when the actual request happens and the error code is
+        // available.
+        assert_eq!(
+            control_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Disconnect)
+        );
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0,
+                CompletionCode::UsbTransactionError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn control_request_returns_hardware_stall() {
+        let (mut interrupter, mut control_endpoint) = init_control_endpoint_handle_test(
+            MockRealControlEndpointHardwareError::new(ControlRequestProcessingResult::Stall),
+        );
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this mock hardware request should never fail");
+        control_endpoint.next_completion().await.ok();
+
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this mock hardware request should never fail");
+        // We can assert here because it is the last TRB of the control
+        // request chain, when the actual request happens and the error code is
+        // available.
+        assert_eq!(
+            control_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Stall(None))
+        );
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0,
+                CompletionCode::StallError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn control_request_returns_hardware_transaction_error() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointHardwareError::new(
+                ControlRequestProcessingResult::TransactionError,
+            ));
+
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+        let status_stage = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        control_endpoint
+            .submit_trb(setup_stage)
+            .expect("this mock hardware request should never fail");
+        control_endpoint.next_completion().await.ok();
+
+        control_endpoint
+            .submit_trb(status_stage)
+            .expect("this mock hardware request should never fail");
+        // We can assert here because it is the last TRB of the control
+        // request chain, when the actual request happens and the error code is
+        // available.
+        assert_eq!(
+            control_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::TransactionError(None))
+        );
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0,
+                CompletionCode::UsbTransactionError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tolerate_wrong_status_stage_direction_mapping_short_out() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage_out = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let status_stage_out = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        // xhci specification Table 4-7: USB SETUP Data to Data Stage TRB and Status Stage TRB mapping:
+        let bad_input_trb = vec![setup_stage_out, status_stage_out];
+
+        for trb in bad_input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tolerate_wrong_status_stage_direction_mapping_long_out() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage_in = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage_in = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .with_direction()
+            .build();
+        let status_stage_in = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .with_direction()
+            .build();
+
+        // xhci specification Table 4-7: USB SETUP Data to Data Stage TRB and Status Stage TRB mapping:
+        let bad_input_trb = vec![setup_stage_in, data_stage_in, status_stage_in];
+
+        for trb in bad_input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tolerate_wrong_status_stage_direction_mapping_long_in() {
+        let (mut interrupter, mut control_endpoint) =
+            init_control_endpoint_handle_test(MockRealControlEndpointReadStatic::new());
+
+        let setup_stage_out = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_OUT)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .with_byte(14, SETUP_TRANSFER_TYPE_IN_DATA)
+            .build();
+        let data_stage_out = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_DATA_STAGE)
+            .build();
+        let status_stage_out = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_STATUS_STAGE)
+            .build();
+
+        // xhci specification Table 4-7: USB SETUP Data to Data Stage TRB and Status Stage TRB mapping:
+        let bad_input_trb = vec![setup_stage_out, data_stage_out, status_stage_out];
+
+        for trb in bad_input_trb.clone() {
+            control_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                control_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(THIRD_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
     }
 }
