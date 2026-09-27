@@ -5,7 +5,7 @@ let
   testScript = ''
     # Wait until the USB drive is recognized.
     out = cloud_hypervisor.wait_until_succeeds("lsusb -d ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId}", timeout=TWO_MINUTES)
-    search("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
+    t.assertIn("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
     cloud_hypervisor.wait_until_succeeds("lsblk /dev/sda", timeout=TWO_MINUTES)
 
     # Run the controller reset loop a few times.
@@ -24,7 +24,7 @@ let
 
       # Confirm raw block I/O still works after the controller reset.
       out = cloud_hypervisor.wait_until_succeeds("lsusb -d ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId}", timeout=TWO_MINUTES)
-      search("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
+      t.assertIn("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
       cloud_hypervisor.wait_until_succeeds("lsblk /dev/sda", timeout=TWO_MINUTES)
       cloud_hypervisor.succeed(f"printf after-reset-{i} > /tmp/after-reset-{i}.txt", timeout=ONE_MINUTE)
       cloud_hypervisor.succeed(f"dd if=/tmp/after-reset-{i}.txt of=/dev/sda bs=512 seek=2048 count=1 conv=sync,fsync status=none", timeout=ONE_MINUTE)

@@ -14,7 +14,7 @@ testutils.mkUsbTest {
   testScript = ''
     out = cloud_hypervisor.succeed("lsusb", timeout=ONE_MINUTE)
     print(out)
-    search("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
+    t.assertIn("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
 
     # A nested guest reboot will break the vfio-user connection and usbvfiod will exit 0.
     # When Cloud Hypervisor re-connects to the systemd socket usbvfiod will be restarted.

@@ -15,6 +15,7 @@ testutils.mkUsbTest {
     }
   ];
   testScript = ''
+    import re
     import subprocess
 
     # create a blockdevice
@@ -25,7 +26,7 @@ testutils.mkUsbTest {
 
       # Expect no attached devices.
       out = machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list", timeout=ONE_MINUTE)
-      search("No attached devices", out)
+      t.assertIn("No attached devices", out)
 
       # plug in a blockdevice
       print(machine.send_monitor_command("drive_add 0 id=hotplug,if=none,file=/tmp/hotplug.img,format=raw"))

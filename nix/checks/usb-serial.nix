@@ -20,14 +20,14 @@ testutils.mkUsbTest {
     # confirm usb device in the host
     out = machine.succeed("lsusb", timeout=ONE_MINUTE)
     print(out)
-    search("Future Technology Devices International", out)
-    search("Ltd FT232 Serial", out) # Using the rest of the name that is cut off errors for some reason.
+    t.assertIn("Future Technology Devices International", out)
+    t.assertIn("Ltd FT232 Serial", out) # Using the rest of the name that is cut off errors for some reason.
 
     # confirm usb device in the guest
     out = cloud_hypervisor.succeed("lsusb", timeout=ONE_MINUTE)
     print(out)
-    search("Future Technology Devices International", out)
-    search("Ltd FT232 Serial", out) # Using the rest of the name that is cut off errors for some reason.
+    t.assertIn("Future Technology Devices International", out)
+    t.assertIn("Ltd FT232 Serial", out) # Using the rest of the name that is cut off errors for some reason.
 
     # confirm attachment to the serial driver
     out = cloud_hypervisor.succeed("ls -l /dev/ttyUSB0", timeout=ONE_MINUTE)
@@ -49,7 +49,7 @@ testutils.mkUsbTest {
       # ...and use the socket buffer to receive in the host.
       out = ${symlink}.recv(32)
       print("socket in host received: " + out.decode())
-      search("guest is writing into the serial", out.decode())
+      t.assertIn("guest is writing into the serial", out.decode())
 
       # Write from the host...
       ${symlink}.sendall(b"host is writing into the emulated usb-serial device")
@@ -59,7 +59,7 @@ testutils.mkUsbTest {
       print(out)
       out = cloud_hypervisor.succeed('cat /tmp/screen_output.txt', timeout=ONE_MINUTE)
       print("ttyUSB in guest received: " + out)
-      search("host is writing into the emulated usb-serial device", out)
+      t.assertIn("host is writing into the emulated usb-serial device", out)
 
       # clean exit
       cloud_hypervisor.succeed(f'screen -S serialsession{i} -X quit', timeout=ONE_MINUTE)

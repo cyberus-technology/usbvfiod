@@ -155,7 +155,6 @@ let
   # currently: succeed() and wait_until_succeeds()
   # This will also add a QoL 'string in string' search function.
   nestedPythonClass = ''
-    import re
     import datetime
     from test_driver.errors import RequestedAssertionFailed
 
@@ -207,14 +206,6 @@ let
             print(f'\n<<<<<GUEST LOGS>>>>>\n\n{guest_out}\n\n<<<<<END GUEST LOGS>>>>>\n')
             raise Exception(f"cloud-hypervisor command failed/timed out: {command}") from e
           return(output)
-
-    def search(pattern: str, string: str):
-      if re.search(pattern, string):
-        return
-      else:
-        raise RequestedAssertionFailed(
-          f"pattern `{pattern}` not found in {string}"
-        )
   '';
 
   # The nested CI runs are really slow.
