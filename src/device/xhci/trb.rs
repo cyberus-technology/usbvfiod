@@ -1235,6 +1235,7 @@ pub mod testutils {
         pub buffer: RawTrbBuffer,
     }
     impl RawTrbBuilder {
+        const ISP: u8 = 0x4;
         const CH: u8 = 0x10;
         const IOC: u8 = 0x20;
         const IDT: u8 = 0x40;
@@ -1274,6 +1275,11 @@ pub mod testutils {
             let length_bytes: [u8; 4] = length.to_le_bytes();
             self.buffer[8..(2 + 8)].copy_from_slice(&length_bytes[0..2]);
             self.buffer[10] = length_bytes[2] & 0b1;
+            self
+        }
+
+        pub fn with_interrupt_on_short(mut self) -> Self {
+            self.buffer[12] |= Self::ISP;
             self
         }
 
