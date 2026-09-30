@@ -4,12 +4,14 @@
 }:
 let
   testScript = ''
+    import re
+
     # Run the attach-detach loop a few times.
     for i in range(1,20):
       print(f"ATTACH DETACH LOOP {i}")
       # List and print all attached devices.
       out = machine.wait_until_succeeds("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --list", timeout=ONE_MINUTE)
-      search("No attached devices", out)
+      t.assertIn("No attached devices", out)
 
       # Attach a device.
       out = machine.succeed("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --attach /dev/bus/usb/usbdevice", timeout=ONE_MINUTE)

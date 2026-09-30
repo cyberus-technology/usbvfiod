@@ -19,14 +19,14 @@
       # controller must detach the old instance and attach the new one.
       out = machine.succeed("${usbvfiod}/bin/remote --socket ${testutils.usbvfiodSocketHotplug} --attach /dev/bus/usb/testdevice", timeout=ONE_MINUTE)
       print(out)
-      search("SuccessfulOperation", out)
+      t.assertIn("SuccessfulOperation", out)
 
       # Confirm the controller explicitly detached the conflicting device before
       # continuing with the attach.
       out = machine.succeed("journalctl -u usbvfiod.service -b --no-pager", timeout=ONE_MINUTE)
       print(out)
-      search("A device with the same identifier is already attached and will be detached first", out)
-      search("Detached device", out)
+      t.assertIn("A device with the same identifier is already attached and will be detached first", out)
+      t.assertIn("Detached device", out)
 
       cloud_hypervisor.wait_until_succeeds("lsusb -d ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId}", timeout=TWO_MINUTES)
     '';

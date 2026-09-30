@@ -5,18 +5,18 @@ let
   testScript = ''
     # Confirm USB controller pops up in boot logs
     out = cloud_hypervisor.succeed("journalctl -b", timeout=ONE_MINUTE)
-    search("usb usb1: Product: xHCI Host Controller", out)
-    search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
+    t.assertIn("usb usb1: Product: xHCI Host Controller", out)
+    t.assertRegex(out, "hub 1-0:1\\.0: [0-9]+ ports? detected")
 
     # Confirm some diagnostic information
     out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=ONE_MINUTE)
-    search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
+    t.assertRegex(out, " +[1-9][0-9]* +PCI-MSIX.*xhci_hcd")
 
     # Wait until the usb drive we expect is recognized.
     out = cloud_hypervisor.wait_until_succeeds("lsusb -d ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId}", timeout=TWO_MINUTES)
-    search("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
+    t.assertIn("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
     out = cloud_hypervisor.succeed("sfdisk -l", timeout=ONE_MINUTE)
-    search("Disk /dev/sda:", out)
+    t.assertIn("Disk /dev/sda:", out)
 
     # Test partitioning
     cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda", timeout=ONE_MINUTE)

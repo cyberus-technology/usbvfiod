@@ -41,8 +41,8 @@ builtins.listToAttrs (
 
         # Check if the hexdump contains a ctrl event sequence
         # https://docs.kernel.org/input/input.html#event-interface
-        search("0001    001d    0001", out) # EV_KEY KEY_LEFTCTRL pressed
-        search("0001    001d    0000", out) # EV_KEY KEY_LEFTCTRL released
+        t.assertIn("0001    001d    0001", out) # EV_KEY KEY_LEFTCTRL pressed
+        t.assertIn("0001    001d    0000", out) # EV_KEY KEY_LEFTCTRL released
         print("done")
 
         # Make a clean exit since the test will wait for thread termination either way.
