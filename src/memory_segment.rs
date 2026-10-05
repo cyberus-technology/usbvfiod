@@ -208,7 +208,92 @@ impl BusDevice for MemorySegment {
         }
     }
 
-    // TODO Implement read_bulk/write_bulk for efficiency.
+    fn read_bulk(&self, offset: u64, data: &mut [u8]) {
+        let len: u64 = data.len().try_into().unwrap();
+        assert!(
+            offset.checked_add(len).is_some_and(|end| end <= self.size),
+            "address overflow or out of bounds"
+        );
+
+        // SAFETY: We check that the whole range fits into the memory region.
+        let base = unsafe { self.mapping.as_ptr().add(offset.try_into().unwrap()) };
+
+        // Split the copy into an unaligned head, an 8-byte-aligned middle
+        // that is a multiple of 8 bytes long, and an unaligned tail.
+        //
+        // `align_offset` may in theory return `usize::MAX`. `min` turns that
+        // into a bytewise copy of everything, which is still correct.
+        let head = base.align_offset(8).min(data.len());
+        let middle = (data.len() - head) & !7;
+
+        let (data_head, rest) = data.split_at_mut(head);
+        let (data_middle, data_tail) = rest.split_at_mut(middle);
+
+        for (i, byte) in data_head.iter_mut().enumerate() {
+            // SAFETY: `base + i` is within asserted range; shared memory only accessed with atomics.
+            let atomic = unsafe { &*(base.add(i) as *const AtomicU8) };
+            *byte = atomic.load(Ordering::Relaxed);
+        }
+
+        for (i, chunk) in data_middle.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            // SAFETY: Only in-bounds, aligned accesses; shared memory only accessed with atomics.
+            let atomic = unsafe { &*(base.add(head + i * 8) as *const AtomicU64) };
+            chunk.copy_from_slice(&atomic.load(Ordering::Relaxed).to_ne_bytes());
+        }
+
+        let tail_start = head + middle;
+        for (i, byte) in data_tail.iter_mut().enumerate() {
+            // SAFETY: `base + tail_start + i` is within asserted range; shared memory only accessed with atomics.
+            let atomic = unsafe { &*(base.add(tail_start + i) as *const AtomicU8) };
+            *byte = atomic.load(Ordering::Relaxed);
+        }
+    }
+
+    fn write_bulk(&self, offset: u64, data: &[u8]) {
+        let len: u64 = data.len().try_into().unwrap();
+        assert!(
+            offset.checked_add(len).is_some_and(|end| end <= self.size),
+            "address overflow or out of bounds"
+        );
+
+        if !self.mapping.is_writable() {
+            return;
+        }
+
+        // SAFETY: We check that the whole range fits into the memory region.
+        let base = unsafe { self.mapping.as_ptr().add(offset.try_into().unwrap()) };
+
+        // Split the copy into an unaligned head, an 8-byte-aligned middle
+        // that is a multiple of 8 bytes long, and an unaligned tail.
+        //
+        // `align_offset` may in theory return `usize::MAX`. `min` turns that
+        // into a bytewise copy of everything, which is still correct.
+        let head = base.align_offset(8).min(data.len());
+        let middle = (data.len() - head) & !7;
+
+        let (data_head, rest) = data.split_at(head);
+        let (data_middle, data_tail) = rest.split_at(middle);
+
+        for (i, byte) in data_head.iter().enumerate() {
+            // SAFETY: `base + i` is within asserted range; shared memory only accessed with atomics.
+            let atomic = unsafe { &*(base.add(i) as *const AtomicU8) };
+            atomic.store(*byte, Ordering::Relaxed);
+        }
+
+        for (i, chunk) in data_middle.as_chunks::<8>().0.iter().enumerate() {
+            // SAFETY: Only in-bounds, aligned accesses; shared memory only accessed with atomics.
+            let atomic = unsafe { &*(base.add(head + i * 8) as *const AtomicU64) };
+            let value = u64::from_ne_bytes(*chunk);
+            atomic.store(value, Ordering::Relaxed);
+        }
+
+        let tail_start = head + middle;
+        for (i, byte) in data_tail.iter().enumerate() {
+            // SAFETY: `base + i` is within asserted range; shared memory only accessed with atomics.
+            let atomic = unsafe { &*(base.add(tail_start + i) as *const AtomicU8) };
+            atomic.store(*byte, Ordering::Relaxed);
+        }
+    }
 }
 
 #[cfg(test)]
