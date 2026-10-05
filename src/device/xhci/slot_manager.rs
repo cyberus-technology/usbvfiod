@@ -387,6 +387,7 @@ impl SlotWorker {
     }
 }
 
+/// xhci specification chapter 6.2.2
 #[derive(Debug)]
 struct Slot {
     id: u8,
@@ -417,6 +418,22 @@ impl Slot {
             endpoint_senders: [const { None }; 31].into(),
             ep_launch_requester: ep_launch_sender,
         }
+    }
+
+    /// index of the last valid Endpoint Context
+    fn write_context_entries(&self, index: u8) {
+        let base_address = match self.state {
+            // in Enabled we do not even know the address context where to write the state to
+            SlotState::Enabled => panic!("called write_context_entries in Enabled state"),
+            SlotState::Default(base_address) => base_address,
+            SlotState::Addressed(base_address) => base_address,
+            SlotState::Configured(base_address) => base_address,
+        };
+        let state_addr = base_address.wrapping_add(3);
+        self.dma_bus.write(
+            Request::new(state_addr, RequestSize::Size1),
+            (index << 3) as u64,
+        );
     }
 
     fn write_slot_state(&self) {
@@ -688,6 +705,7 @@ impl Slot {
 
         self.state = SlotState::Default(base_address);
         self.write_slot_state();
+        self.write_context_entries(1);
 
         Ok(CompletionCode::Success)
     }
