@@ -1,3 +1,5 @@
+use std::sync::atomic::fence;
+
 use tracing::{debug, trace};
 
 use crate::device::{
@@ -142,8 +144,22 @@ impl EventRing {
             todo!("The Event Ring is full!");
         }
 
-        self.dma_bus
-            .write_bulk(self.enqueue_pointer, &trb.to_bytes(self.cycle_state));
+        // write TRB with flipped cycle state first
+        let trb_bytes = trb.to_bytes(!self.cycle_state);
+        self.dma_bus.write_bulk(self.enqueue_pointer, &trb_bytes);
+
+        // ensure TRB contents are written before toggling cycle bit
+        fence(std::sync::atomic::Ordering::Release);
+
+        // cycle-bit toggle releases TRB to the driver
+        let byte12 = (trb_bytes[12] & !0x1) | if self.cycle_state { 0x1 } else { 0x0 };
+        self.dma_bus.write(
+            Request {
+                addr: self.enqueue_pointer.wrapping_add(12),
+                size: RequestSize::Size1,
+            },
+            byte12 as u64,
+        );
 
         self.trb_count -= 1;
 
