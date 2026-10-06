@@ -732,8 +732,6 @@ impl EndpointContext {
 
     /// DMA write the dequeue pointer and consumer cycle state of the endpoint's
     /// transfer ring.
-    ///
-    /// Call this function after retrieving TRBs from the transfer ring.
     pub fn set_dequeue_pointer_and_cycle_state(&self, dequeue_pointer: u64, cycle_state: bool) {
         assert!(
             dequeue_pointer & 0xf == 0,
