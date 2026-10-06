@@ -1,7 +1,9 @@
+use std::sync::atomic::{fence, Ordering::Acquire};
+
 use tracing::{trace, warn};
 
 use crate::device::{
-    bus::BusDeviceRef,
+    bus::{BusDeviceRef, Request, RequestSize},
     pci::constants::xhci::rings::TRB_SIZE,
     xhci::trb::{zeroed_trb_buffer, LinkTrb, RawTrb, RawTrbBuffer},
 };
@@ -91,6 +93,20 @@ impl LinkedRing {
     /// parse the transfer TRB and returns the result. If there is a fresh Link
     /// TRB, this function will return it!
     fn next_trb_raw(&self) -> Option<RawTrbBuffer> {
+        let byte12 = self.dma_bus.read(Request::new(
+            self.dequeue_pointer.wrapping_add(12),
+            RequestSize::Size1,
+        ));
+        let cycle_bit = byte12 & 0x1 != 0;
+
+        if cycle_bit != self.cycle_state {
+            // cycle-bit mismatch: no new TRB available
+            return None;
+        }
+
+        // prevent following loads for the whole TRB to reorder before the cycle-bit check
+        fence(Acquire);
+
         // retrieve TRB at current dequeue_pointer
         let mut trb_buffer = zeroed_trb_buffer();
         self.dma_bus
@@ -102,14 +118,6 @@ impl LinkedRing {
             trb_buffer
         );
 
-        // check if the TRB is fresh
-        let cycle_bit = trb_buffer[12] & 0x1 != 0;
-        if cycle_bit != self.cycle_state {
-            // cycle-bit mismatch: no new TRB available
-            return None;
-        }
-
-        // TRB is fresh; return it
         Some(trb_buffer)
     }
 
