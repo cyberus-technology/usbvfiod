@@ -18,7 +18,7 @@ testutils.mkUsbTest {
 
     # A nested guest reboot will break the vfio-user connection and usbvfiod will exit 0.
     # When Cloud Hypervisor re-connects to the systemd socket usbvfiod will be restarted.
-    out = cloud_hypervisor.succeed("systemctl reboot", timeout=ONE_MINUTE)
+    out = cloud_hypervisor.succeed("systemctl reboot --when=+1s", timeout=ONE_MINUTE)
     print(out)
 
     # confirm nested guest shutdown via usbvfiod exit message triggered by the closed vfio-user connection
