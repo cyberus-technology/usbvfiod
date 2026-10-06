@@ -232,7 +232,7 @@ impl TransferEventTrbData {
 /// Encodes the completion code that some event TRBs contain.
 ///
 /// Refer to Table 6-90 in the XHCI specification for detailed descriptions of each code.
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CompletionCode {
     Invalid = 0,
@@ -862,6 +862,8 @@ pub trait TrbDmaInfo {
     fn data_pointer(&self) -> u64;
     fn transfer_length(&self) -> u32;
     fn has_immediate_data(&self) -> bool;
+    fn has_interrupt_on_short(&self) -> bool;
+    fn has_interrupt_on_completion(&self) -> bool;
 }
 
 /// Normal TRB data structure (simplified representation).
@@ -873,9 +875,9 @@ pub struct NormalTrb {
     pub data_pointer: u64,
     /// 17 Bit
     pub transfer_length: u32,
+    pub interrupt_on_short: bool,
     pub chain: bool,
     pub interrupt_on_completion: bool,
-    pub interrupt_on_short: bool,
     pub immediate_data: bool,
 }
 
@@ -903,17 +905,17 @@ impl TrbData for NormalTrb {
         let tl_bytes: [u8; 4] = [trb_bytes[8], trb_bytes[9], trb_bytes[10] & 0x01, 0];
         let transfer_length = u32::from_le_bytes(tl_bytes);
 
-        let chain = trb_bytes[12] & 0x10 != 0;
         let interrupt_on_short = trb_bytes[12] & 0x04 != 0;
+        let chain = trb_bytes[12] & 0x10 != 0;
         let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
         let immediate_data = trb_bytes[12] & 0x40 != 0;
 
         Ok(Self {
             data_pointer,
             transfer_length,
+            interrupt_on_short,
             chain,
             interrupt_on_completion,
-            interrupt_on_short,
             immediate_data,
         })
     }
@@ -928,6 +930,12 @@ impl TrbDmaInfo for NormalTrb {
     }
     fn has_immediate_data(&self) -> bool {
         self.immediate_data
+    }
+    fn has_interrupt_on_short(&self) -> bool {
+        self.interrupt_on_short
+    }
+    fn has_interrupt_on_completion(&self) -> bool {
+        self.interrupt_on_completion
     }
 }
 
@@ -990,6 +998,7 @@ pub struct DataStageTrb {
     pub transfer_length: u32,
     pub chain: bool,
     pub interrupt_on_completion: bool,
+    pub interrupt_on_short: bool,
     pub immediate_data: bool,
     pub direction: bool,
 }
@@ -1018,14 +1027,17 @@ impl TrbData for DataStageTrb {
         let tl_bytes: [u8; 4] = [trb_bytes[8], trb_bytes[9], trb_bytes[10] & 0x01, 0];
         let transfer_length = u32::from_le_bytes(tl_bytes);
 
+        let interrupt_on_short = trb_bytes[12] & 0x04 != 0;
         let chain = trb_bytes[12] & 0x10 != 0;
         let interrupt_on_completion = trb_bytes[12] & 0x20 != 0;
         let immediate_data = trb_bytes[12] & 0x40 != 0;
+
         let direction = trb_bytes[14] & 0x1 != 0;
 
         Ok(Self {
             data_pointer,
             transfer_length,
+            interrupt_on_short,
             chain,
             interrupt_on_completion,
             immediate_data,
@@ -1043,6 +1055,12 @@ impl TrbDmaInfo for DataStageTrb {
     }
     fn has_immediate_data(&self) -> bool {
         self.immediate_data
+    }
+    fn has_interrupt_on_short(&self) -> bool {
+        self.interrupt_on_short
+    }
+    fn has_interrupt_on_completion(&self) -> bool {
+        self.interrupt_on_completion
     }
 }
 
@@ -1217,6 +1235,7 @@ pub mod testutils {
         pub buffer: RawTrbBuffer,
     }
     impl RawTrbBuilder {
+        const ISP: u8 = 0x4;
         const CH: u8 = 0x10;
         const IOC: u8 = 0x20;
         const IDT: u8 = 0x40;
@@ -1256,6 +1275,11 @@ pub mod testutils {
             let length_bytes: [u8; 4] = length.to_le_bytes();
             self.buffer[8..(2 + 8)].copy_from_slice(&length_bytes[0..2]);
             self.buffer[10] = length_bytes[2] & 0b1;
+            self
+        }
+
+        pub fn with_interrupt_on_short(mut self) -> Self {
+            self.buffer[12] |= Self::ISP;
             self
         }
 
@@ -1578,6 +1602,7 @@ mod tests {
         let expected = TransferTrbVariant::DataStage(DataStageTrb {
             data_pointer: 0x1122334455667788,
             transfer_length: 0x0010,
+            interrupt_on_short: false,
             chain: false,
             interrupt_on_completion: false,
             immediate_data: false,
