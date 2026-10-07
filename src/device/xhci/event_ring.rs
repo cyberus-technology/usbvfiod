@@ -5,7 +5,10 @@ use tracing::{debug, trace};
 use crate::device::{
     bus::{BusDeviceRef, Request, RequestSize},
     pci::constants::xhci::rings::{
-        event_ring::segments_table_entry_offsets::{SEGMENT_BASE, SIZE},
+        event_ring::{
+            segments_table_entry_offsets::{SEGMENT_BASE, SIZE},
+            SEGMENT_TABLE_ENTRY_SIZE,
+        },
         TRB_SIZE,
     },
     xhci::trb::EventTrb,
@@ -139,10 +142,10 @@ impl EventRing {
         // 1. Stop fetching new TRBs from the Transfer and Command Rings.
         // 2. Emit an Event Ring Full Error Event TRB to the Event Ring (if supported).
         // 3. Advance the Event Ring Enqueue Pointer (EREP) accordingly.
-        // 4. Wait for software (the host driver) to advance the Event Ring Dequeue Pointer (ERDP),
-        //    at which point normal event generation can resume.
-        if self.check_event_ring_full(base_address, segment_table_size, dequeue_pointer) {
-            todo!("The Event Ring is full!");
+        // 4. Wait for system software to use a Doorbell as a signal for free space
+        //    after advancing the Event Ring Dequeue Pointer (ERDP).
+        while self.check_event_ring_full(base_address, segment_table_size, dequeue_pointer) {
+            todo!("signal event ring full, then wait for a doorbell that signals we should recheck")
         }
 
         // write TRB with flipped cycle state first
@@ -193,18 +196,30 @@ impl EventRing {
         erst_size: u16,
         dequeue_pointer: u64,
     ) -> bool {
-        if self.trb_count == 1 {
-            let next_seg = (self.erst_count + 1) % erst_size;
+        trace!(
+            "check_event_ring_full with dequeue_pointer: 0x{:x}",
+            dequeue_pointer
+        );
 
-            let entry_addr = base_address.wrapping_add((next_seg as u64) * 16);
-            let next_seg_pointer = self.dma_bus.read(Request::new(
-                entry_addr.wrapping_add(SEGMENT_BASE),
+        let second_next_slot = if self.trb_count == 1 {
+            trace!("check_event_ring_full on self.trb_count == 1; check next segment");
+            let next_segment_table_entry_index = (self.erst_count + 1) % erst_size;
+            let next_segment_table_entry_address = base_address
+                .wrapping_add(next_segment_table_entry_index as u64 * SEGMENT_TABLE_ENTRY_SIZE);
+            self.dma_bus.read(Request::new(
+                next_segment_table_entry_address.wrapping_add(SEGMENT_BASE),
                 RequestSize::Size8,
-            ));
-
-            dequeue_pointer == next_seg_pointer
+            ))
         } else {
-            dequeue_pointer == self.enqueue_pointer.wrapping_add(TRB_SIZE as u64)
+            trace!("check_event_ring_full on self.trb_count != 1; check current segment");
+            self.enqueue_pointer.wrapping_add(TRB_SIZE as u64)
+        };
+
+        if dequeue_pointer == second_next_slot {
+            debug!("EventRing::check_event_ring_full: true");
+            true
+        } else {
+            false
         }
     }
 
@@ -220,7 +235,8 @@ impl EventRing {
             self.cycle_state = !self.cycle_state;
             self.erst_count = 0;
         }
-        let entry_addr = base_address.wrapping_add((self.erst_count as u64) * 16);
+        let entry_addr =
+            base_address.wrapping_add((self.erst_count as u64) * SEGMENT_TABLE_ENTRY_SIZE);
         self.enqueue_pointer = self.dma_bus.read(Request::new(
             entry_addr.wrapping_add(SEGMENT_BASE),
             RequestSize::Size8,
@@ -291,10 +307,9 @@ mod tests {
         let reg = EventRingRegistersDummy {
             erstsz: 3,
             erstba: 0x0,
-            erdp: 0x30,
+            erdp: 0x30 + 0x4, // set not yet implemented EHB
         };
         ring.configure(0x0, reg.erstsz);
-
         (ram, ring, reg)
     }
 
@@ -354,8 +369,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Event Ring is full")]
-    fn event_ring_panics_on_wraparound_mid_segment_full() {
+    #[should_panic(
+        expected = "not yet implemented: signal event ring full, then wait for a doorbell that signals we should recheck"
+    )]
+    fn event_ring_full_mid_segment() {
         let (_ram, mut ring, mut reg) = init_ram_and_ring_and_registers();
 
         // segment 0

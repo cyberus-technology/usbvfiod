@@ -440,6 +440,8 @@ pub mod xhci {
         }
         /// Constants specific to the event rings
         pub mod event_ring {
+            pub const SEGMENT_TABLE_ENTRY_SIZE: u64 = 16;
+
             /// The offsets to fields in Event Ring Segment Table Entries (ERSTE)
             pub mod segments_table_entry_offsets {
                 pub const SEGMENT_BASE: u64 = 0;
