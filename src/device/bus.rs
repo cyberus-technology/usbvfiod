@@ -732,10 +732,20 @@ pub mod testutils {
         }
 
         fn write(&self, req: Request, value: u64) {
-            if req.size != RequestSize::Size8 {
-                panic!("Only supporting 8-byte writes");
+            match req.size {
+                RequestSize::Size8 => {
+                    self.write_bulk(req.addr, &value.to_le_bytes());
+                }
+                RequestSize::Size4 => {
+                    self.write_bulk(req.addr, &(value as u32).to_le_bytes());
+                }
+                RequestSize::Size2 => {
+                    self.write_bulk(req.addr, &(value as u16).to_le_bytes());
+                }
+                RequestSize::Size1 => {
+                    self.write_bulk(req.addr, &[value as u8]);
+                }
             }
-            self.write_bulk(req.addr, &value.to_le_bytes());
         }
 
         fn read_bulk(&self, offset: u64, data: &mut [u8]) {
