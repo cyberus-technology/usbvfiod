@@ -232,46 +232,55 @@ impl TransferEventTrbData {
 /// Encodes the completion code that some event TRBs contain.
 ///
 /// Refer to Table 6-90 in the XHCI specification for detailed descriptions of each code.
-#[expect(dead_code)]
+#[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CompletionCode {
     Invalid = 0,
-    Success,
-    DataBufferError,
-    BabbleDetectedError,
-    UsbTransactionError,
-    TrbError,
-    StallError,
-    ResourceError,
-    BandwidthError,
-    NoSlotsAvailableError,
-    InvalidStreamTypeError,
-    SlotNotEnabledError,
-    EndpointNotEnabledError,
-    ShortPacket,
-    RingUnderrun,
-    RingOverrun,
-    VfEventRingFullError,
-    ParameterError,
-    BandwidthOverrunError,
-    ContextStateError,
-    NoPingResponseError,
-    EventRingFullError,
-    IncompatibleDeviceError,
-    MissedServiceError,
-    CommandRingStopped,
-    CommandAborted,
-    Stopped,
-    StoppedLengthInvalid,
-    StoppedShortedPacket,
-    MaxExitLatencyTooLargeError,
-    Reserved,
-    IsochBufferOverrun,
-    EventLostError,
-    UndefinedError,
-    InvalidStreamIdError,
-    SecondaryBandwidthError,
-    SplitTransactionError,
+    Success = 1,
+    DataBufferError = 2,
+    BabbleDetectedError = 3,
+    UsbTransactionError = 4,
+    TrbError = 5,
+    StallError = 6,
+    ResourceError = 7,
+    BandwidthError = 8,
+    NoSlotsAvailableError = 9,
+    InvalidStreamTypeError = 10,
+    SlotNotEnabledError = 11,
+    EndpointNotEnabledError = 12,
+    ShortPacket = 13,
+    RingUnderrun = 14,
+    RingOverrun = 15,
+    VfEventRingFullError = 16,
+    ParameterError = 17,
+    BandwidthOverrunError = 18,
+    ContextStateError = 19,
+    NoPingResponseError = 20,
+    EventRingFullError = 21,
+    IncompatibleDeviceError = 22,
+    MissedServiceError = 23,
+    CommandRingStopped = 24,
+    CommandAborted = 25,
+    Stopped = 26,
+    StoppedLengthInvalid = 27,
+    StoppedShortedPacket = 28,
+    MaxExitLatencyTooLargeError = 29,
+    // Reserved = 30,
+    IsochBufferOverrun = 31,
+    EventLostError = 32,
+    UndefinedError = 33,
+    InvalidStreamIdError = 34,
+    SecondaryBandwidthError = 35,
+    SplitTransactionError = 36,
+    // Reserved = 37 to 191
+    // Vendor Defined Error = 192 to 223
+    // Vendor Defined Info = 224 to 255
+}
+
+impl From<CompletionCode> for u8 {
+    fn from(value: CompletionCode) -> Self {
+        value as Self
+    }
 }
 
 /// A trait for types offering a higher-level view of raw TRB bytes.
