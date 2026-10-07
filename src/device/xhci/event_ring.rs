@@ -136,8 +136,8 @@ impl EventRing {
         // 1. Stop fetching new TRBs from the Transfer and Command Rings.
         // 2. Emit an Event Ring Full Error Event TRB to the Event Ring (if supported).
         // 3. Advance the Event Ring Enqueue Pointer (EREP) accordingly.
-        // 4. Wait for software (the host driver) to advance the Event Ring Dequeue Pointer (ERDP),
-        //    at which point normal event generation can resume.
+        // 4. Wait for system software to use a Doorbell as a signal for free space
+        //    after advancing the Event Ring Dequeue Pointer (ERDP).
         if self.check_event_ring_full(base_address, erst_size, dequeue_pointer) {
             todo!("The Event Ring is full!");
         }
@@ -168,26 +168,47 @@ impl EventRing {
     /// Checks whether the Event Ring is full, based on xHCI §4.9.4.
     ///
     /// # Return
-    /// - `true` if the Event Ring is full and an Event Ring Full Error Event should be enqueued at the current position.
-    /// - `false` if there is at least one more slot available.
+    /// - `true` if the Event Ring has one free slot and an Event Ring Full Error Event should be enqueued at the current position.
+    /// - `false` if there is at least two slots available.
     fn check_event_ring_full(
         &self,
         base_address: u64,
         erst_size: u32,
         dequeue_pointer: u64,
     ) -> bool {
-        if self.trb_count == 1 {
-            let next_seg = (self.erst_count + 1) % erst_size;
+        const EVENT_RING_SEGMENT_TABLE_ENTRY_SIZE: u64 = 16;
 
-            let entry_addr = base_address.wrapping_add((next_seg as u64) * 16);
-            let next_seg_pointer = self.dma_bus.read(Request::new(
-                entry_addr.wrapping_add(SEGMENT_BASE),
+        if self.trb_count == 1 {
+            trace!("check_event_ring_full on self.trb_count == 1");
+            trace!("dequeue_pointer: 0x{:x}", dequeue_pointer);
+
+            let next_segment_table_entry_index = (self.erst_count + 1) % erst_size;
+
+            let next_segment_table_entry_address = base_address.wrapping_add(
+                next_segment_table_entry_index as u64 * EVENT_RING_SEGMENT_TABLE_ENTRY_SIZE,
+            );
+
+            let next_segment_base_address = self.dma_bus.read(Request::new(
+                next_segment_table_entry_address.wrapping_add(SEGMENT_BASE),
                 RequestSize::Size8,
             ));
 
-            dequeue_pointer == next_seg_pointer
+            if dequeue_pointer == next_segment_base_address {
+                debug!("event ring has one free slot");
+                true
+            } else {
+                false
+            }
         } else {
-            dequeue_pointer == self.enqueue_pointer.wrapping_add(TRB_SIZE as u64)
+            trace!("check_event_ring_full on self.trb_count != 1");
+            trace!("dequeue_pointer: 0x{:x}", dequeue_pointer);
+
+            if dequeue_pointer == self.enqueue_pointer.wrapping_add(TRB_SIZE as u64) {
+                debug!("event ring has one free slot");
+                true
+            } else {
+                false
+            }
         }
     }
 
