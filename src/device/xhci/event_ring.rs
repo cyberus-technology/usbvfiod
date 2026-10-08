@@ -138,8 +138,8 @@ impl EventRing {
         // 1. Stop fetching new TRBs from the Transfer and Command Rings.
         // 2. Emit an Event Ring Full Error Event TRB to the Event Ring (if supported).
         // 3. Advance the Event Ring Enqueue Pointer (EREP) accordingly.
-        // 4. Wait for software (the host driver) to advance the Event Ring Dequeue Pointer (ERDP),
-        //    at which point normal event generation can resume.
+        // 4. Wait for system software to use a Doorbell as a signal for free space
+        //    after advancing the Event Ring Dequeue Pointer (ERDP).
         if self.check_event_ring_full(base_address, erst_size, dequeue_pointer) {
             todo!("The Event Ring is full!");
         }
@@ -184,26 +184,47 @@ impl EventRing {
     /// Checks whether the Event Ring is full, based on xHCI §4.9.4.
     ///
     /// # Return
-    /// - `true` if the Event Ring is full and an Event Ring Full Error Event should be enqueued at the current position.
-    /// - `false` if there is at least one more slot available.
+    /// - `true` if the Event Ring has one free slot and an Event Ring Full Error Event should be enqueued at the current position.
+    /// - `false` if there is at least two slots available.
     fn check_event_ring_full(
         &self,
         base_address: u64,
         erst_size: u32,
         dequeue_pointer: u64,
     ) -> bool {
-        if self.trb_count == 1 {
-            let next_seg = (self.erst_count + 1) % erst_size;
+        const EVENT_RING_SEGMENT_TABLE_ENTRY_SIZE: u64 = 16;
 
-            let entry_addr = base_address.wrapping_add((next_seg as u64) * 16);
-            let next_seg_pointer = self.dma_bus.read(Request::new(
-                entry_addr.wrapping_add(SEGMENT_BASE),
+        if self.trb_count == 1 {
+            trace!("check_event_ring_full on self.trb_count == 1");
+            trace!("dequeue_pointer: 0x{:x}", dequeue_pointer);
+
+            let next_segment_table_entry_index = (self.erst_count + 1) % erst_size;
+
+            let next_segment_table_entry_address = base_address.wrapping_add(
+                next_segment_table_entry_index as u64 * EVENT_RING_SEGMENT_TABLE_ENTRY_SIZE,
+            );
+
+            let next_segment_base_address = self.dma_bus.read(Request::new(
+                next_segment_table_entry_address.wrapping_add(SEGMENT_BASE),
                 RequestSize::Size8,
             ));
 
-            dequeue_pointer == next_seg_pointer
+            if dequeue_pointer == next_segment_base_address {
+                debug!("event ring has one free slot");
+                true
+            } else {
+                false
+            }
         } else {
-            dequeue_pointer == self.enqueue_pointer.wrapping_add(TRB_SIZE as u64)
+            trace!("check_event_ring_full on self.trb_count != 1");
+            trace!("dequeue_pointer: 0x{:x}", dequeue_pointer);
+
+            if dequeue_pointer == self.enqueue_pointer.wrapping_add(TRB_SIZE as u64) {
+                debug!("event ring has one free slot");
+                true
+            } else {
+                false
+            }
         }
     }
 
@@ -253,6 +274,7 @@ impl EventRing {
 #[cfg(test)]
 mod tests {
     use crate::device::bus::testutils::TestBusDevice;
+    use crate::device::xhci::trb::testutils::RawTrbBuilder;
     use crate::device::xhci::trb::CompletionCode;
     use std::sync::Arc;
 
@@ -355,6 +377,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Event Ring is full")]
     fn event_ring_panics_on_wraparound_mid_segment_full() {
+        const DEQUEUE_POINTER: u64 = 0x30 + 16;
         let (_ram, mut ring, mut reg) = init_ram_and_ring_and_registers();
 
         // segment 0
@@ -362,16 +385,19 @@ mod tests {
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 3
 
-        reg.erdp = 0x30 + 16;
+        reg.erdp = DEQUEUE_POINTER;
 
         // segment 1
+        reg.erdp = DEQUEUE_POINTER + 1; // set ERDP.Dequeue_ERST_Segment_Index
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
 
         // segment 2
+        reg.erdp = DEQUEUE_POINTER + 2; // set ERDP.Dequeue_ERST_Segment_Index
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2 and wraparound
 
         // segment 0
+        reg.erdp = DEQUEUE_POINTER; // set ERDP.Dequeue_ERST_Segment_Index
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
 
         // ring is full now, the new TRB could not be written
@@ -556,5 +582,110 @@ mod tests {
         // should be wraparounded
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp);
         assert_trb_written(&ram, 0x30, false);
+    }
+
+    #[test]
+    #[should_panic(expected = "not yet implemented: The Event Ring is full!")]
+    fn event_ring_full_single_segment() {
+        const TRB_TYPE_HOST_CONTROLLER_EVENT: u8 = 37;
+
+        /// These fields represent the high order bits of the 64-bit base address
+        /// of the Event Ring Segment. The memory structure referenced by this
+        /// physical memory pointer shall begin on a 64-byte address boundary.
+        const RING_SEGMENT_BASE: u32 = 0x40;
+
+        /// This field defines the number of TRBs supported by the ring segment,
+        /// Valid values for this field are 16 to 4096, i.e. an Event Ring segment
+        /// shall contain at least 16 entries.
+        const RING_SEGMENT_SIZE: u32 = 0x10;
+
+        /// the offset for the last 16 byte block
+        const LAST_SEGMENT_BLOCK: u64 = (RING_SEGMENT_BASE + RING_SEGMENT_SIZE * 16) as u64;
+        /// an address outside the event ring
+        const OUT_OF_SEGMENT: u64 = (RING_SEGMENT_BASE + RING_SEGMENT_SIZE * 16 + 16 + 1) as u64;
+
+        let erst_entry = [
+            RING_SEGMENT_BASE as u8,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            RING_SEGMENT_SIZE as u8,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+
+        // Initialize memory with a value !=0 but the relevant segment with ==0
+        // to easily see in logs when we go out of bounds.
+        let ram = Arc::new(TestBusDevice::new(&[42; 16 * 100]));
+        ram.write_bulk(0x0, &[0; (OUT_OF_SEGMENT - 1) as usize]);
+        ram.write_bulk(0x0, &erst_entry);
+        let mut ring = EventRing::new(ram.clone());
+
+        let reg = EventRingRegistersDummy {
+            erstsz: 0x1,                    // number of segments
+            erstba: 0x0,                    // segment table offset/base address
+            erdp: RING_SEGMENT_BASE as u64, // dequeue pointer on the event ring; system software will write this
+        };
+
+        ring.configure(0x0, RING_SEGMENT_SIZE);
+
+        let event_trb =
+            EventTrb::new_transfer_event_trb(0x0, 0, CompletionCode::Success, false, 0, 0);
+
+        // Fast forward the enqueue pointer close to the end of the segment.
+        for _ in 0..(RING_SEGMENT_SIZE - 2) {
+            ring.enqueue(&event_trb, reg.erstba, reg.erstsz, reg.erdp);
+        }
+
+        assert_eq!(
+            ring.enqueue_pointer,
+            (RING_SEGMENT_BASE + (RING_SEGMENT_SIZE - 2) * 16) as u64
+        );
+        assert!(ring.cycle_state);
+        assert_eq!(ring.trb_count, 2);
+        assert_eq!(ring.erst_count, 0);
+
+        // The second last space on the segment & ring will work since more than
+        // one free block is available.
+        ring.enqueue(&event_trb, reg.erstba, reg.erstsz, reg.erdp);
+
+        assert_eq!(ring.enqueue_pointer, (LAST_SEGMENT_BLOCK - 16));
+        assert!(ring.cycle_state);
+        assert_eq!(ring.trb_count, 1);
+        assert_eq!(ring.erst_count, 0);
+
+        // Use the last free block on this single segment ring.
+        ring.enqueue(&event_trb, reg.erstba, reg.erstsz, reg.erdp);
+
+        // Expect the last free space to be used for an "Event Ring Full Error".
+        let event_ring_full = RawTrbBuilder::new(LAST_SEGMENT_BLOCK)
+            .with_completion_code(CompletionCode::VfEventRingFullError)
+            .with_trb_type(TRB_TYPE_HOST_CONTROLLER_EVENT)
+            .build();
+
+        let mut trb = vec![0; 16];
+        ram.read_bulk(LAST_SEGMENT_BLOCK, &mut trb);
+
+        assert_eq!(
+            trb, event_ring_full.buffer,
+            "expected Event TRB with Event Ring Full Error"
+        );
+
+        // The enqueue pointer wrapped around and enqueue_pointer == dequeue_pointer
+        // without any space on the event ring.
+        assert_eq!(ring.enqueue_pointer, RING_SEGMENT_BASE as u64);
+        assert_eq!(ring.enqueue_pointer, reg.erdp);
+        assert!(!ring.cycle_state);
+        assert_eq!(ring.trb_count, 0);
+        assert_eq!(ring.erst_count, 0);
     }
 }

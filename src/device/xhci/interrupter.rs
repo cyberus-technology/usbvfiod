@@ -8,7 +8,7 @@ use crate::device::interrupt_line::{DummyInterruptLine, InterruptLine};
 use crate::device::pci::constants::xhci::runtime::IMOD_DEFAULT;
 use crate::device::xhci::controller_reset::ResetSender;
 use crate::device::xhci::event_ring::EventRing;
-use crate::device::xhci::registers::{ErstbaRegister, GenericRwRegister};
+use crate::device::xhci::registers::{ErdpRegister, ErstbaRegister, GenericRwRegister};
 use crate::device::xhci::trb::EventTrb;
 use crate::oneshot_anyhow::SendWithAnyhowError;
 use std::sync::Arc;
@@ -42,12 +42,12 @@ pub struct InterrupterRegisters {
     ///
     /// The minimum interval in 250ns increments between interrupts.
     pub interrupt_moderation_interval: GenericRwRegister,
-    /// ERSTBA: Event ring segment table base address
-    pub erst_base_address: ErstbaRegister,
     /// ERSTSZ: Event ring segment table size
     pub erst_size: GenericRwRegister,
+    /// ERSTBA: Event ring segment table base address
+    pub erst_base_address: ErstbaRegister,
     /// ERDP: Event ring dequeue pointer
-    pub eventring_dequeue_pointer: GenericRwRegister,
+    pub eventring_dequeue_pointer: ErdpRegister,
 }
 
 impl Default for InterrupterRegisters {
@@ -55,8 +55,8 @@ impl Default for InterrupterRegisters {
         Self {
             interrupt_management: Default::default(),
             interrupt_moderation_interval: GenericRwRegister::new(IMOD_DEFAULT),
-            erst_base_address: Default::default(),
             erst_size: Default::default(),
+            erst_base_address: Default::default(),
             eventring_dequeue_pointer: Default::default(),
         }
     }
@@ -201,7 +201,7 @@ impl EventWorker {
                         &event_trb,
                         self.registers.erst_base_address.erstba(),
                         self.registers.erst_size.read() as u32,
-                        self.registers.eventring_dequeue_pointer.read(),
+                        self.registers.eventring_dequeue_pointer.dequeue_pointer(),
                     );
                     self.interrupt_line.interrupt();
                     debug!("Sent event: {event_trb:?}");
