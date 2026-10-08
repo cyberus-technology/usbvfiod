@@ -360,6 +360,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Event Ring is full")]
     fn event_ring_panics_on_wraparound_mid_segment_full() {
+        const DEQUEUE_POINTER: u64 = 0x30 + 16;
         let (_ram, mut ring, mut reg) = init_ram_and_ring_and_registers();
 
         // segment 0
@@ -367,16 +368,19 @@ mod tests {
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 3
 
-        reg.erdp = 0x30 + 16;
+        reg.erdp = DEQUEUE_POINTER;
 
         // segment 1
+        reg.erdp = DEQUEUE_POINTER + 1; // set ERDP.Dequeue_ERST_Segment_Index
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
 
         // segment 2
+        reg.erdp = DEQUEUE_POINTER + 2; // set ERDP.Dequeue_ERST_Segment_Index
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2 and wraparound
 
         // segment 0
+        reg.erdp = DEQUEUE_POINTER; // set ERDP.Dequeue_ERST_Segment_Index
         ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
 
         // ring is full now, the new TRB could not be written
