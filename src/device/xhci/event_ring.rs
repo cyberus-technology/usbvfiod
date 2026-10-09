@@ -42,7 +42,7 @@ pub struct EventRing {
     /// The value is initialized to 0 (`ERST[0]`). When the current segment
     /// is exhausted, it advances to the next segment and wraps to 0 after
     /// the last segment.
-    erst_count: u32,
+    erst_count: u16,
     /// The producer cycle state.
     ///
     /// The driver tracks cycle state as well and can deduce the enqueue
@@ -88,8 +88,9 @@ impl EventRing {
     ///
     /// # Parameters
     ///
-    /// - `erstba`: base address of the Event Ring Segment Table (ERST).
-    pub fn configure(&mut self, base_address: u64, erst_size: u32) {
+    /// - `base_address`: base address of the Event Ring Segment Table (ERST).
+    /// - `erst_size`: entry count of the Event Ring Segment Table (ERST).
+    pub fn configure(&mut self, base_address: u64, erst_size: u16) {
         assert_eq!(base_address & 0x3f, 0, "unaligned event ring base address");
 
         assert!(
@@ -128,7 +129,7 @@ impl EventRing {
     pub fn enqueue(
         &mut self,
         trb: &EventTrb,
-        erst_size: u32,
+        segment_table_size: u16,
         base_address: u64,
         dequeue_pointer: u64,
     ) {
@@ -140,7 +141,7 @@ impl EventRing {
         // 3. Advance the Event Ring Enqueue Pointer (EREP) accordingly.
         // 4. Wait for software (the host driver) to advance the Event Ring Dequeue Pointer (ERDP),
         //    at which point normal event generation can resume.
-        if self.check_event_ring_full(base_address, erst_size, dequeue_pointer) {
+        if self.check_event_ring_full(base_address, segment_table_size, dequeue_pointer) {
             todo!("The Event Ring is full!");
         }
 
@@ -165,15 +166,15 @@ impl EventRing {
 
         trace!(
             "enqueued TRB in segment {} (total_segments={}) of event ring at address {:#x}. Space for {} more TRBs left in segment; cycle={}; (TRB: {:?})",
-            self.erst_count, erst_size,  self.enqueue_pointer, self.trb_count, self.cycle_state, trb
+            self.erst_count, segment_table_size,  self.enqueue_pointer, self.trb_count, self.cycle_state, trb
         );
 
-        self.advance_enqueue_pointer(base_address, erst_size);
+        self.advance_enqueue_pointer(base_address, segment_table_size);
     }
 
     /// Advances the enqueue pointer to the next slot in the event ring,
     /// wrapping to the start when the end of the segment is reached.
-    fn advance_enqueue_pointer(&mut self, base_address: u64, erst_size: u32) {
+    fn advance_enqueue_pointer(&mut self, base_address: u64, erst_size: u16) {
         if self.trb_count == 0 {
             self.advance_segment_or_wrap(base_address, erst_size);
         } else {
@@ -189,7 +190,7 @@ impl EventRing {
     fn check_event_ring_full(
         &self,
         base_address: u64,
-        erst_size: u32,
+        erst_size: u16,
         dequeue_pointer: u64,
     ) -> bool {
         if self.trb_count == 1 {
@@ -212,7 +213,7 @@ impl EventRing {
     /// Increments `erst_count` to move to the next segment. Wraps to segment 0
     /// and flips the producer cycle when the index reaches the end. Updates
     /// `enqueue_pointer` and `trb_count` from the selected ERST entry.
-    fn advance_segment_or_wrap(&mut self, base_address: u64, erst_size: u32) {
+    fn advance_segment_or_wrap(&mut self, base_address: u64, erst_size: u16) {
         self.erst_count += 1;
         let wrapped = self.erst_count == erst_size;
         if wrapped {
@@ -259,7 +260,7 @@ mod tests {
     use super::*;
 
     struct EventRingRegistersDummy {
-        erstsz: u32,
+        erstsz: u16,
         erstba: u64,
         erdp: u64,
     }

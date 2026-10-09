@@ -284,6 +284,27 @@ impl GenericRwRegister {
     }
 }
 
+/// Event Ring Segment Table Size Register (chapter 5.5.2.3.1)
+#[derive(Debug, Default, Clone)]
+pub struct ErstszRegister {
+    value: Arc<AtomicU64>,
+}
+
+impl ErstszRegister {
+    pub fn read(&self) -> u64 {
+        self.value.load(Ordering::Relaxed)
+    }
+
+    /// bit 0 to including 15
+    pub fn segment_table_size(&self) -> u16 {
+        self.value.load(Ordering::Relaxed) as u16
+    }
+
+    pub fn write(&self, new_value: u64) {
+        self.value.store(new_value, Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct ErstbaRegister {
     value: Arc<AtomicU64>,
@@ -428,5 +449,14 @@ mod tests {
             static_bits,
             "After creating this register we have some initial values."
         );
+    }
+
+    #[test]
+    fn write_erstsz_register_and_read_segment_table_size_field() {
+        let erstsz = ErstszRegister::default();
+        assert_eq!(erstsz.read(), 0);
+        erstsz.write(!0);
+        assert_eq!(erstsz.read(), !0);
+        assert_eq!(erstsz.segment_table_size(), 0xffff);
     }
 }
