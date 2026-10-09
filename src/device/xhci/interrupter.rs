@@ -8,7 +8,9 @@ use crate::device::interrupt_line::{DummyInterruptLine, InterruptLine};
 use crate::device::pci::constants::xhci::runtime::IMOD_DEFAULT;
 use crate::device::xhci::controller_reset::ResetSender;
 use crate::device::xhci::event_ring::EventRing;
-use crate::device::xhci::registers::{ErstbaRegister, ErstszRegister, GenericRwRegister};
+use crate::device::xhci::registers::{
+    ErdpRegister, ErstbaRegister, ErstszRegister, GenericRwRegister,
+};
 use crate::device::xhci::trb::EventTrb;
 use crate::oneshot_anyhow::SendWithAnyhowError;
 use std::sync::Arc;
@@ -47,7 +49,7 @@ pub struct InterrupterRegisters {
     /// ERSTBA: Event ring segment table base address
     pub erst_base_address: ErstbaRegister,
     /// ERDP: Event ring dequeue pointer
-    pub eventring_dequeue_pointer: GenericRwRegister,
+    pub eventring_dequeue_pointer: ErdpRegister,
 }
 
 impl Default for InterrupterRegisters {
@@ -201,7 +203,7 @@ impl EventWorker {
                         &event_trb,
                         self.registers.erst_size.segment_table_size(),
                         self.registers.erst_base_address.base_address(),
-                        self.registers.eventring_dequeue_pointer.read(),
+                        self.registers.eventring_dequeue_pointer.dequeue_pointer(),
                     );
                     self.interrupt_line.interrupt();
                     debug!("Sent event: {event_trb:?}");
