@@ -128,8 +128,8 @@ impl EventRing {
     pub fn enqueue(
         &mut self,
         trb: &EventTrb,
-        base_address: u64,
         erst_size: u32,
+        base_address: u64,
         dequeue_pointer: u64,
     ) {
         // TODO: Proper handling of full Event Ring
@@ -323,9 +323,9 @@ mod tests {
         let (ram, mut ring, mut reg) = init_ram_and_ring_and_registers();
 
         // segment 0
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 3
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 3
 
         assert_trb_written(&ram, 0x30, true);
         assert_trb_written(&ram, 0x30 + 16, true);
@@ -334,21 +334,21 @@ mod tests {
         reg.erdp = 0x30 + 32;
 
         // segment 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
 
         assert_trb_written(&ram, 0x60, true);
 
         reg.erdp = 0x60;
 
         // segment 2
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
 
         assert_trb_written(&ram, 0x70, true);
 
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2 and wraparound
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2 and wraparound
         assert_trb_written(&ram, 0x70 + 16, true);
 
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // write one more TRB after wraparound
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // write one more TRB after wraparound
         assert_trb_written(&ram, 0x30, false);
     }
 
@@ -358,25 +358,25 @@ mod tests {
         let (_ram, mut ring, mut reg) = init_ram_and_ring_and_registers();
 
         // segment 0
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 3
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 3
 
         reg.erdp = 0x30 + 16;
 
         // segment 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
 
         // segment 2
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2 and wraparound
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2 and wraparound
 
         // segment 0
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
 
         // ring is full now, the new TRB could not be written
         // and test should panic
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp);
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp);
     }
 
     #[test]
@@ -385,17 +385,17 @@ mod tests {
 
         // ring 1
         // segment 0
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 3
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 3
 
         // segment 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
 
         // segment 2
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
         reg.erdp = 0x30 + 16;
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2 and wraparound
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2 and wraparound
 
         // check the the last TRB's Cycle State of the ring
         assert_trb_written(&ram, 0x80, true);
@@ -403,25 +403,25 @@ mod tests {
         // ring 2
         // segment 0
         reg.erdp = 0x30 + 16 * 5;
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 3
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 3
 
         // segment 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
         reg.erdp = 0x30 + 32;
 
         // segment 2
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
         assert_trb_written(&ram, 0x70, false);
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2 and wraparound
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2 and wraparound
 
         // check the the last TRB's Cycle State of the ring
         assert_trb_written(&ram, 0x80, false);
 
         // ring 3
         // segment 0
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
         assert_trb_written(&ram, 0x30, true);
     }
 
@@ -429,7 +429,7 @@ mod tests {
     fn event_ring_reset_clears_local_state() {
         let (_ram, mut ring, reg) = init_ram_and_ring_and_registers();
 
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp);
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp);
         assert_ne!(ring.enqueue_pointer, 0);
         assert_ne!(ring.trb_count, 0);
         assert!(ring.cycle_state);
@@ -479,29 +479,29 @@ mod tests {
         ring.configure(reg.erstba, reg.erstsz);
 
         // segment 0
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2
 
         reg.erdp = 0x30 + 16;
         // increase ERSTSZ to 3
         reg.erstsz = 3;
 
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 3
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 3
         assert_trb_written(&ram, 0x30 + 32, true);
 
         // should enter segment 1 without wraparound
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp);
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp);
         assert_trb_written(&ram, 0x60, true);
 
         // continue write until the ring is full
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1 in segment 2
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2 in segment 2
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1 in segment 2
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2 in segment 2
         assert_trb_written(&ram, 0x70, true);
         assert_trb_written(&ram, 0x70 + 16, true);
 
         // write one more TRB, it should be wraparound now
         reg.erdp = 0x30 + 32;
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp);
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp);
         assert_trb_written(&ram, 0x30, false);
     }
 
@@ -509,21 +509,21 @@ mod tests {
     fn event_ring_dynamic_shrink_to_1() {
         let (ram, mut ring, mut reg) = init_ram_and_ring_and_registers();
 
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2
 
         reg.erdp = 0x30 + 16;
 
         // before write the last TRB to segment 0, shrink ERSTSZ to 1
         reg.erstsz = 1;
 
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 3
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 3
         assert_trb_written(&ram, 0x50, true);
 
         reg.erdp = 0x30 + 32;
 
         // wraparound
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp);
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp);
         assert_trb_written(&ram, 0x30, false);
     }
 
@@ -532,8 +532,8 @@ mod tests {
         let (ram, mut ring, mut reg) = init_ram_and_ring_and_registers();
 
         // segment 0
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2
 
         // modify the segment 1
         let erste_new = [
@@ -545,16 +545,16 @@ mod tests {
         ram.write_bulk(0x0, &erste_new);
         reg.erstsz = 2;
 
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 3 in segment 0
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 3 in segment 0
         reg.erdp = 0x30 + 32;
 
         // new segment 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 1
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp); // TRB 2
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 1
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp); // TRB 2
         assert_trb_written(&ram, 0x60 + 16, true);
 
         // should be wraparounded
-        ring.enqueue(&dummy_trb(), reg.erstba, reg.erstsz, reg.erdp);
+        ring.enqueue(&dummy_trb(), reg.erstsz, reg.erstba, reg.erdp);
         assert_trb_written(&ram, 0x30, false);
     }
 }
