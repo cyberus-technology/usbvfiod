@@ -334,6 +334,26 @@ impl ErstbaRegister {
     }
 }
 
+/// Event Ring Dequeue Pointer Register (chapter 5.5.2.3.3)
+#[derive(Debug, Default, Clone)]
+pub struct ErdpRegister {
+    value: Arc<AtomicU64>,
+}
+
+impl ErdpRegister {
+    pub fn read(&self) -> u64 {
+        self.value.load(Ordering::Relaxed)
+    }
+
+    pub fn dequeue_pointer(&self) -> u64 {
+        self.value.load(Ordering::Relaxed) & !0xf
+    }
+
+    pub fn write(&self, new_value: u64) {
+        self.value.store(new_value, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::device::xhci::interrupter::Interrupter;
@@ -467,5 +487,14 @@ mod tests {
         erstba.write(!0);
         assert_eq!(erstba.read(), !0);
         assert_eq!(erstba.base_address(), !0x3f);
+    }
+
+    #[test]
+    fn write_erdp_register_and_read_dequeue_pointer_field() {
+        let erdp = ErdpRegister::default();
+        assert_eq!(erdp.read(), 0);
+        erdp.write(!0);
+        assert_eq!(erdp.read(), !0);
+        assert_eq!(erdp.dequeue_pointer(), !0xf);
     }
 }
