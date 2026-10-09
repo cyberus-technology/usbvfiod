@@ -55,8 +55,8 @@ impl Default for InterrupterRegisters {
         Self {
             interrupt_management: Default::default(),
             interrupt_moderation_interval: GenericRwRegister::new(IMOD_DEFAULT),
-            erst_base_address: Default::default(),
             erst_size: Default::default(),
+            erst_base_address: Default::default(),
             eventring_dequeue_pointer: Default::default(),
         }
     }
@@ -163,7 +163,7 @@ impl EventWorker {
         loop {
             self.wait_for_event_ring_configuration().await?;
             self.event_ring.configure(
-                self.registers.erst_base_address.erstba(),
+                self.registers.erst_base_address.base_address(),
                 self.registers.erst_size.segment_table_size(),
             );
 
@@ -200,7 +200,7 @@ impl EventWorker {
                     self.event_ring.enqueue(
                         &event_trb,
                         self.registers.erst_size.segment_table_size(),
-                        self.registers.erst_base_address.erstba(),
+                        self.registers.erst_base_address.base_address(),
                         self.registers.eventring_dequeue_pointer.read(),
                     );
                     self.interrupt_line.interrupt();

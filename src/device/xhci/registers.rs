@@ -316,8 +316,8 @@ impl ErstbaRegister {
         self.value.load(Ordering::Relaxed)
     }
 
-    pub fn erstba(&self) -> u64 {
-        self.value.load(Ordering::Relaxed) & !0x1f
+    pub fn base_address(&self) -> u64 {
+        self.value.load(Ordering::Relaxed) & !0x3f
     }
 
     pub fn write(&self, new_value: u64) {
@@ -458,5 +458,14 @@ mod tests {
         erstsz.write(!0);
         assert_eq!(erstsz.read(), !0);
         assert_eq!(erstsz.segment_table_size(), 0xffff);
+    }
+
+    #[test]
+    fn write_erstba_register_and_read_base_address_register_field() {
+        let erstba = ErstbaRegister::default();
+        assert_eq!(erstba.read(), 0);
+        erstba.write(!0);
+        assert_eq!(erstba.read(), !0);
+        assert_eq!(erstba.base_address(), !0x3f);
     }
 }
