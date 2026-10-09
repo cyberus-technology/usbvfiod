@@ -8,7 +8,7 @@ use crate::device::interrupt_line::{DummyInterruptLine, InterruptLine};
 use crate::device::pci::constants::xhci::runtime::IMOD_DEFAULT;
 use crate::device::xhci::controller_reset::ResetSender;
 use crate::device::xhci::event_ring::EventRing;
-use crate::device::xhci::registers::{ErstbaRegister, GenericRwRegister};
+use crate::device::xhci::registers::{ErstbaRegister, ErstszRegister, GenericRwRegister};
 use crate::device::xhci::trb::EventTrb;
 use crate::oneshot_anyhow::SendWithAnyhowError;
 use std::sync::Arc;
@@ -42,10 +42,10 @@ pub struct InterrupterRegisters {
     ///
     /// The minimum interval in 250ns increments between interrupts.
     pub interrupt_moderation_interval: GenericRwRegister,
+    /// ERSTSZ: Event ring segment table size
+    pub erst_size: ErstszRegister,
     /// ERSTBA: Event ring segment table base address
     pub erst_base_address: ErstbaRegister,
-    /// ERSTSZ: Event ring segment table size
-    pub erst_size: GenericRwRegister,
     /// ERDP: Event ring dequeue pointer
     pub eventring_dequeue_pointer: GenericRwRegister,
 }
@@ -164,7 +164,7 @@ impl EventWorker {
             self.wait_for_event_ring_configuration().await?;
             self.event_ring.configure(
                 self.registers.erst_base_address.erstba(),
-                self.registers.erst_size.read() as u32,
+                self.registers.erst_size.segment_table_size(),
             );
 
             self.run_configured().await?;
@@ -199,7 +199,7 @@ impl EventWorker {
                 InterrupterMessage::SendEvent(event_trb) => {
                     self.event_ring.enqueue(
                         &event_trb,
-                        self.registers.erst_size.read() as u32,
+                        self.registers.erst_size.segment_table_size(),
                         self.registers.erst_base_address.erstba(),
                         self.registers.eventring_dequeue_pointer.read(),
                     );
