@@ -1287,6 +1287,13 @@ pub mod testutils {
             self
         }
 
+        /// for event trb
+        pub fn with_completion_code(mut self, completion_code: CompletionCode) -> Self {
+            let completion_code_byte: u8 = completion_code.into();
+            self.buffer[11] |= completion_code_byte;
+            self
+        }
+
         pub fn with_interrupt_on_short(mut self) -> Self {
             self.buffer[12] |= Self::ISP;
             self

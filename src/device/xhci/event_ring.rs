@@ -271,6 +271,7 @@ impl EventRing {
 mod tests {
     use crate::device::bus::testutils::TestBusDevice;
     use crate::device::xhci::registers::{ErdpRegister, ErstbaRegister, ErstszRegister};
+    use crate::device::xhci::trb::testutils::RawTrbBuilder;
     use crate::device::xhci::trb::CompletionCode;
     use std::sync::Arc;
 
@@ -905,5 +906,53 @@ mod tests {
 
         // wraparound
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "not yet implemented: signal event ring full, then wait for a doorbell that signals we should recheck"
+    )]
+    fn event_ring_full_error_event() {
+        let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(1));
+
+        // have only two remaining slots
+        assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
+        reg.erdp.write(RING_SEGMENT_0_BASE + TRB_SIZE as u64 * 2);
+
+        // two slots free
+        ring.enqueue(
+            &dummy_event_trb(),
+            reg.erstsz.segment_table_size(),
+            reg.erstba.base_address(),
+            reg.erdp.dequeue_pointer(),
+        );
+
+        // one slot free
+        ring.enqueue(
+            &dummy_event_trb(),
+            reg.erstsz.segment_table_size(),
+            reg.erstba.base_address(),
+            reg.erdp.dequeue_pointer(),
+        );
+
+        // NOTE: The following is not reached due to the "not yet implemented".
+        const TRB_TYPE_HOST_CONTROLLER_EVENT: u8 = 37;
+
+        // Expect the last free space to be used for an "Event Ring Full Error".
+        let address = RING_SEGMENT_0_BASE + TRB_SIZE as u64;
+        let event_ring_full_error = RawTrbBuilder::new(address)
+            .with_completion_code(CompletionCode::EventRingFullError)
+            .with_trb_type(TRB_TYPE_HOST_CONTROLLER_EVENT)
+            .with_cycle()
+            .build();
+
+        let mut trb = vec![0; 16];
+        ram.read_bulk(address, &mut trb);
+
+        // The second dummy_event_trb() was not written, instead it is used for the error.
+        assert_eq!(
+            trb, event_ring_full_error.buffer,
+            "expected Event TRB with Event Ring Full Error"
+        );
     }
 }
