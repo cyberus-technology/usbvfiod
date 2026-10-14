@@ -179,7 +179,7 @@ impl DcbaapRegister {
     }
 
     pub fn write(&self, new_value: u64) {
-        self.value.store(new_value & !0x1f, Ordering::Relaxed);
+        self.value.store(new_value & !0x3f, Ordering::Relaxed);
     }
 
     pub fn reset(&self) {
