@@ -75,6 +75,35 @@ impl PortscRegister {
         let port_link_state_write_strobe_bit = new_value & portsc::LWS != 0;
         let port_link_state_bits = new_value & portsc::PLS;
 
+        let unwritable = new_value
+            & (portsc::CCS | 0b100 | portsc::OCA | portsc::PORT_SPEED | portsc::CAS | portsc::DR);
+        if unwritable != 0 {
+            warn!(
+                "attempted portsc write on unwritable bits: 0b{:b}",
+                unwritable
+            );
+        }
+
+        // We do not handle but are aware of these exceptions:
+        // - portsc::PP is hardwired to true on our controller
+        let unhandled = new_value
+            & (portsc::PED
+                | portsc::PIC
+                | portsc::CSC
+                | portsc::PEC
+                | portsc::OCC
+                | portsc::PLC
+                | portsc::CEC
+                | portsc::WCE
+                | portsc::WDE
+                | portsc::WOE);
+        if unhandled != 0 {
+            warn!(
+                "not fully implemented portsc. dropped bits: 0b{:b}",
+                unhandled
+            );
+        }
+
         match self.value.fetch_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
@@ -102,6 +131,9 @@ impl PortscRegister {
                     );
                     Self::update_with_mask(&mut new_reg, port_link_state_bits, portsc::PLS);
                 }
+
+                trace!("possible incomplete update portsc from: 0b{:b}", reg);
+                trace!("possible incomplete update portsc to:   0b{:b}", new_reg);
 
                 Some(new_reg)
             },
