@@ -239,6 +239,16 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 }
                 WorkerState::Terminating(sender) => {
                     self.context.set_state(endpoint_state::DISABLED);
+
+                    // when doing a device reset the default control endpoint needs
+                    // to persist the dequeue pointer. Since upon endpoint
+                    // configuration the context is used this prevents a whole
+                    // new state to ensure having the control endpoint in running
+                    // state by doing a deconfigure and configure.
+                    let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
+                    self.context
+                        .set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
+
                     sender.send_anyhow(())?;
                     break;
                 }

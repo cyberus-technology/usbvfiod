@@ -686,6 +686,11 @@ impl Slot {
             self.deconfigure_endpoint(ep_id).await?;
         }
 
+        // make sure the ep 1 has endpoint_state::RUNNING
+        // when configured the context is used to initialize dequeue pointer and cycle state
+        self.deconfigure_endpoint(1).await?;
+        self.configure_endpoint(1, base_address).await?;
+
         self.state = SlotState::Default(base_address);
         self.write_slot_state();
 
