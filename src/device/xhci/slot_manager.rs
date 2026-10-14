@@ -355,8 +355,6 @@ impl SlotWorker {
     }
 
     async fn disable_slot(&mut self, slot_id: u8) -> anyhow::Result<CompletionCode> {
-        assert!(slot_id >= 1 && slot_id <= self.config_reg.num_slots_enabled());
-
         let slot = match self
             .slots
             .get_mut(slot_id as usize)
