@@ -72,6 +72,8 @@ impl PortscRegister {
 
         let port_reset_bit = new_value & portsc::PR != 0;
         let warm_port_reset_bit = new_value & portsc::WPR != 0;
+        let port_link_state_write_strobe_bit = new_value & portsc::LWS != 0;
+        let port_link_state_bits = new_value & portsc::PLS;
 
         match self.value.fetch_update(
             std::sync::atomic::Ordering::Relaxed,
@@ -84,6 +86,21 @@ impl PortscRegister {
                 }
                 if warm_port_reset_bit {
                     Self::warm_port_reset(&mut new_reg, self.usb_version);
+                }
+                if port_link_state_write_strobe_bit {
+                    // NOTES:
+                    // Qemu only react for values PLS_U0, PLS_U3 and PLS_RESUME.
+                    // USB 3 might attempt to use PLS_U1 or PLS_U2 (low power states).
+                    if port_link_state_bits >> 5 == 3 {
+                        warn!("system software is suspending with PLS value 3");
+                    }
+
+                    trace!(
+                        "switching portsc::PLS from {} to {}",
+                        reg & portsc::PLS >> 5,
+                        port_link_state_bits >> 5
+                    );
+                    Self::update_with_mask(&mut new_reg, port_link_state_bits, portsc::PLS);
                 }
 
                 Some(new_reg)
