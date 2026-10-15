@@ -17,7 +17,8 @@ use crate::device::{
         hotplug_endpoint_handle::BaseEndpointHandle,
         interrupter::EventSender,
         real_endpoint_handle::{
-            ControlRequestProcessingResult, InTrbProcessingResult, InTrbProcessingStatus,
+            ControlRequestProcessingResult, InTrbProcessingResult,
+            InTrbProcessingStatus::{self},
             OutTrbProcessingResult, RealControlEndpointHandle, RealInEndpointHandle,
             RealOutEndpointHandle,
         },
@@ -964,277 +965,6 @@ fn handle_event_data_trb_normal_ep(
     Ok(())
 }
 
-#[derive(Debug, Default, Clone)]
-enum NormalSubmissionState {
-    #[default]
-    NoTrbSubmitted,
-    UnsupportedTrbType(RawTrb),
-    AwaitingRealTransfer(u64, NormalTrb),
-    ConsumedEventDataTrb,
-}
-
-#[derive(Debug)]
-pub struct OutEndpointHandle<ROEH: RealOutEndpointHandle> {
-    slot_id: u8,
-    endpoint_id: u8,
-    pcap_meta: EndpointPcapMeta,
-    real_ep: ROEH,
-    dma_bus: BusDeviceRef,
-    event_sender: EventSender,
-    submission_state: NormalSubmissionState,
-    edtla: Edtla,
-    completion_code: CompletionCode,
-}
-
-impl<ROEH: RealOutEndpointHandle> OutEndpointHandle<ROEH> {
-    pub fn new(
-        slot_id: u8,
-        endpoint_id: u8,
-        pcap_meta: EndpointPcapMeta,
-        real_ep: ROEH,
-        dma_bus: BusDeviceRef,
-        event_sender: EventSender,
-    ) -> Self {
-        Self {
-            slot_id,
-            endpoint_id,
-            pcap_meta,
-            real_ep,
-            dma_bus,
-            event_sender,
-            submission_state: NormalSubmissionState::NoTrbSubmitted,
-            edtla: Edtla::default(),
-            completion_code: CompletionCode::Success,
-        }
-    }
-
-    fn handle_normal_trb_pre_hardware(
-        &mut self,
-        address: u64,
-        trb: NormalTrb,
-    ) -> anyhow::Result<()> {
-        trace!("handle_normal_trb_pre_hardware Out");
-
-        let data = if trb.immediate_data {
-            let length = min(trb.transfer_length, 8);
-            trb.data_pointer.to_le_bytes()[..length as usize].to_vec()
-        } else {
-            let mut data = vec![0; trb.transfer_length as usize];
-            self.dma_bus.read_bulk(trb.data_pointer, &mut data);
-            data
-        };
-
-        self.real_ep.submit(data.clone())?;
-        pcap::out_submission(self.pcap_meta, address, &data, trb.transfer_length);
-
-        self.submission_state = NormalSubmissionState::AwaitingRealTransfer(address, trb);
-
-        Ok(())
-    }
-
-    fn handle_normal_trb_post_hardware(
-        &mut self,
-        address: u64,
-        trb: NormalTrb,
-    ) -> anyhow::Result<()> {
-        trace!("handle_normal_trb_post_hardware Out");
-
-        self.edtla.add(trb.transfer_length);
-
-        if trb.interrupt_on_completion {
-            let event = EventTrb::new_transfer_event_trb(
-                address,
-                0,
-                CompletionCode::Success,
-                false,
-                self.endpoint_id,
-                self.slot_id,
-            );
-            self.event_sender.send(event)?;
-        }
-
-        pcap::out_completion(self.pcap_meta, address, trb.transfer_length);
-
-        self.completion_code = CompletionCode::Success;
-
-        // The TRB chain is done so we reset after just finishing it.
-        if !trb.chain {
-            self.edtla.zero();
-        }
-
-        Ok(())
-    }
-
-    fn handle_event_data_trb(&mut self, trb: EventDataTrb) -> anyhow::Result<()> {
-        handle_event_data_trb_normal_ep(
-            &trb,
-            &mut self.edtla,
-            self.completion_code,
-            self.endpoint_id,
-            self.slot_id,
-            &self.event_sender,
-        )?;
-
-        self.submission_state = NormalSubmissionState::ConsumedEventDataTrb;
-        Ok(())
-    }
-}
-
-impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
-    type TrbCompletionFuture<'a> =
-        Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
-
-    fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
-        assert!(
-            matches!(self.submission_state, NormalSubmissionState::NoTrbSubmitted),
-            "submit_trb called twice without calling next_completion"
-        );
-
-        match TransferTrbVariant::parse(trb.buffer) {
-            TransferTrbVariant::Normal(normal) => {
-                self.handle_normal_trb_pre_hardware(trb.address, normal)?;
-            }
-            TransferTrbVariant::EventData(event_data) => {
-                self.handle_event_data_trb(event_data)?;
-            }
-            _ => self.submission_state = NormalSubmissionState::UnsupportedTrbType(trb),
-        }
-
-        Ok(())
-    }
-
-    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
-        assert!(
-            !matches!(self.submission_state, NormalSubmissionState::NoTrbSubmitted),
-            "next_completion called without prior submit_trb"
-        );
-
-        Box::pin(async {
-            let result = match &self.submission_state {
-                NormalSubmissionState::ConsumedEventDataTrb => {
-                    trace!(
-                        "Slot {} Endpoint {} Consumed Event Data Trb",
-                        self.slot_id,
-                        self.endpoint_id
-                    );
-                    TrbProcessingResult::Ok
-                }
-                NormalSubmissionState::UnsupportedTrbType(ref trb) => {
-                    let transfer_event = EventTrb::new_transfer_event_trb(
-                        trb.address,
-                        0,
-                        CompletionCode::TrbError,
-                        false,
-                        self.endpoint_id,
-                        self.slot_id,
-                    );
-                    self.event_sender.send(transfer_event)?;
-
-                    TrbProcessingResult::TrbError
-                }
-                NormalSubmissionState::AwaitingRealTransfer(address, normal) => {
-                    match &self.real_ep.next_completion().await? {
-                        OutTrbProcessingResult::Disconnect => {
-                            info!(
-                                "Device has been disconnected. slot {} ep {}",
-                                self.slot_id, self.endpoint_id
-                            );
-                            pcap::out_error(
-                                self.pcap_meta,
-                                *address,
-                                &OutTrbProcessingResult::Disconnect,
-                                &[],
-                            );
-
-                            let event = EventTrb::new_transfer_event_trb(
-                                *address,
-                                0,
-                                CompletionCode::UsbTransactionError,
-                                false,
-                                self.endpoint_id,
-                                self.slot_id,
-                            );
-                            self.event_sender.send(event)?;
-
-                            TrbProcessingResult::Disconnect
-                        }
-                        OutTrbProcessingResult::Stall => {
-                            debug!(
-                                "Device Stall while waiting for hardware response. slot {} ep {}",
-                                self.slot_id, self.endpoint_id
-                            );
-                            pcap::out_error(
-                                self.pcap_meta,
-                                *address,
-                                &OutTrbProcessingResult::Stall,
-                                &[],
-                            );
-
-                            let event = EventTrb::new_transfer_event_trb(
-                                *address,
-                                0,
-                                CompletionCode::StallError,
-                                false,
-                                self.endpoint_id,
-                                self.slot_id,
-                            );
-                            self.event_sender.send(event)?;
-
-                            // We do not need to rewind the dequeue pointer (hence the None)
-                            // here like the IN endpoint with TD aggregation would need to do.
-                            TrbProcessingResult::Stall(None)
-                        }
-                        OutTrbProcessingResult::TransactionError => {
-                            info!("Transaction Error while waiting for hardware response. slot {} ep {}",
-                                self.slot_id, self.endpoint_id);
-                            pcap::out_error(
-                                self.pcap_meta,
-                                *address,
-                                &OutTrbProcessingResult::TransactionError,
-                                &[],
-                            );
-
-                            let event = EventTrb::new_transfer_event_trb(
-                                *address,
-                                0,
-                                CompletionCode::UsbTransactionError,
-                                false,
-                                self.endpoint_id,
-                                self.slot_id,
-                            );
-                            self.event_sender.send(event)?;
-
-                            TrbProcessingResult::TransactionError(None)
-                        }
-                        OutTrbProcessingResult::Success => {
-                            self.handle_normal_trb_post_hardware(*address, normal.clone())?;
-                            TrbProcessingResult::Ok
-                        }
-                    }
-                }
-                NormalSubmissionState::NoTrbSubmitted => {
-                    unreachable!("internal error: Always set a different ControlSubmissionState in submit_trb().")
-                }
-            };
-            self.submission_state = NormalSubmissionState::NoTrbSubmitted;
-
-            Ok(result)
-        })
-    }
-}
-
-impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for OutEndpointHandle<ROEH> {
-    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
-
-    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async { self.real_ep.cancel().await })
-    }
-
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async { self.real_ep.clear_halt().await })
-    }
-}
-
 #[derive(Debug)]
 enum SupportedNormalEndpointTrb {
     Normal(NormalTrb),
@@ -1283,6 +1013,253 @@ enum TdBasedNormalSubmissionState {
 impl Default for TdBasedNormalSubmissionState {
     fn default() -> Self {
         Self::CollectingTd(vec![])
+    }
+}
+
+// endpointhandle
+
+#[derive(Debug)]
+pub struct TdBasedOutEndpointHandle<ROEH: RealOutEndpointHandle> {
+    slot_id: u8,
+    endpoint_id: u8,
+    pcap_meta: EndpointPcapMeta,
+    real_ep: ROEH,
+    dma_bus: BusDeviceRef,
+    event_sender: EventSender,
+    submission_state: TdBasedNormalSubmissionState,
+}
+
+impl<ROEH: RealOutEndpointHandle> TdBasedOutEndpointHandle<ROEH> {
+    pub fn new(
+        slot_id: u8,
+        endpoint_id: u8,
+        pcap_meta: EndpointPcapMeta,
+        real_ep: ROEH,
+        dma_bus: BusDeviceRef,
+        event_sender: EventSender,
+    ) -> Self {
+        Self {
+            slot_id,
+            endpoint_id,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+            submission_state: TdBasedNormalSubmissionState::default(),
+        }
+    }
+}
+
+impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<ROEH> {
+    type TrbCompletionFuture<'a> =
+        Pin<Box<dyn Future<Output = anyhow::Result<TrbProcessingResult>> + Send + 'a>>;
+
+    fn submit_trb(&mut self, trb: RawTrb) -> anyhow::Result<()> {
+        let trbs = match &mut self.submission_state {
+            TdBasedNormalSubmissionState::CollectingTd(trbs) => trbs,
+            state => {
+                return Err(anyhow!(
+                    "TdBasedInEndpointHandle called while in state {state:?}; there is a logic error somewhere"
+                ));
+            }
+        };
+
+        let supported_trb = match SupportedEndpointTrb::<SupportedNormalEndpointTrb>::new(
+            trb.address,
+            trb.buffer,
+        ) {
+            Ok(supported_trb) => supported_trb,
+            Err(transfer_trb) => {
+                warn!(
+                    "Encountered unsupported TRB on In Endpoint (slot {}, ep {}): {transfer_trb:?}",
+                    self.slot_id, self.endpoint_id
+                );
+                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
+                return Ok(());
+            }
+        };
+
+        let end_of_td = !supported_trb.chain();
+        trbs.push(supported_trb);
+        if end_of_td {
+            let data: Vec<u8> = trbs
+                .iter()
+                .flat_map(|trb| match &trb.variant {
+                    SupportedNormalEndpointTrb::Normal(normal) => {
+                        let mut buffer = vec![0u8; normal.transfer_length() as usize];
+                        self.dma_bus.read_bulk(normal.data_pointer(), &mut buffer);
+                        buffer
+                    }
+                    _ => {
+                        vec![0u8; 0]
+                    }
+                })
+                .collect();
+
+            debug!(
+                "Submitting on ep {} some data of len {} bytes",
+                self.endpoint_id,
+                data.len()
+            );
+
+            pcap::out_submission(self.pcap_meta, trbs[0].addr, &data, data.len() as u32);
+            self.real_ep.submit(data)?;
+
+            replace_with_or_abort(&mut self.submission_state, |old_state| {
+                let TdBasedNormalSubmissionState::CollectingTd(trbs) = old_state else {
+                    unreachable!("verified the state is CollectingTd at the start of the function");
+                };
+                TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs)
+            });
+        }
+
+        Ok(())
+    }
+
+    fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+        Box::pin(async {
+            match &mut self.submission_state {
+                TdBasedNormalSubmissionState::CollectingTd(_) => Ok(TrbProcessingResult::Ok),
+                TdBasedNormalSubmissionState::UnsupportedTrb => {
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    Ok(TrbProcessingResult::TrbError)
+                }
+                TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs) => {
+                    let completion = self.real_ep.next_completion().await?;
+                    // TODO pcap::out_completion(self.pcap_meta, trb, bytes);
+
+                    let trbs = mem::take(trbs);
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    let processing_result = process_real_transfer_response_out(
+                        self.endpoint_id,
+                        self.slot_id,
+                        completion,
+                        trbs,
+                        &self.event_sender,
+                        &self.dma_bus,
+                        self.pcap_meta,
+                    )?;
+                    Ok(processing_result)
+                }
+            }
+        })
+    }
+}
+
+fn process_real_transfer_response_out(
+    endpoint_id: u8,
+    slot_id: u8,
+    completion: OutTrbProcessingResult,
+    trbs: Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>,
+    event_sender: &EventSender,
+    _dma_bus: &BusDeviceRef,
+    pcap_meta: EndpointPcapMeta,
+) -> anyhow::Result<TrbProcessingResult> {
+    debug!(
+        "received device response for out td with code {:?}",
+        completion
+    );
+
+    match completion {
+        OutTrbProcessingResult::Success => {
+            pcap::out_completion(pcap_meta, trbs[0].addr, !0);
+
+            let mut edtla = Edtla::default();
+
+            for trb in trbs {
+                trace!(
+                    "adding to edtla of {} the value {}",
+                    edtla.get(),
+                    trb.transfer_length()
+                );
+                // SAFETY: not safe
+                edtla.add(trb.transfer_length() as u32);
+
+                match &trb.variant {
+                    SupportedNormalEndpointTrb::Normal(normal) => {
+                        if normal.interrupt_on_completion {
+                            let transfer_event = EventTrb::new_transfer_event_trb(
+                                trb.addr,
+                                0,
+                                CompletionCode::Success,
+                                false,
+                                endpoint_id,
+                                slot_id,
+                            );
+                            event_sender.send(transfer_event)?;
+                        }
+                    }
+                    SupportedNormalEndpointTrb::EventData(event) => {
+                        handle_event_data_trb_normal_ep(
+                            event,
+                            &mut edtla,
+                            CompletionCode::Success,
+                            endpoint_id,
+                            slot_id,
+                            event_sender,
+                        )?;
+                    }
+                    SupportedNormalEndpointTrb::NoOp(noop) => {
+                        if noop.interrupt_on_completion {
+                            let transfer_event = EventTrb::new_transfer_event_trb(
+                                trb.addr,
+                                0,
+                                CompletionCode::Success,
+                                false,
+                                endpoint_id,
+                                slot_id,
+                            );
+                            event_sender.send(transfer_event)?;
+                        }
+                    }
+                }
+            }
+            Ok(TrbProcessingResult::Ok)
+        }
+        failed => {
+            pcap::out_error(pcap_meta, trbs[0].addr, &failed, &[]);
+
+            let (completion_code, processing_result) = match failed {
+                OutTrbProcessingResult::Disconnect => (
+                    CompletionCode::UsbTransactionError,
+                    TrbProcessingResult::Disconnect,
+                ),
+                OutTrbProcessingResult::Stall => (
+                    CompletionCode::StallError,
+                    TrbProcessingResult::Stall(Some((trbs[0].addr, trbs[0].cycle_bit))),
+                ),
+                OutTrbProcessingResult::TransactionError => (
+                    CompletionCode::UsbTransactionError,
+                    TrbProcessingResult::TransactionError(Some((trbs[0].addr, trbs[0].cycle_bit))),
+                ),
+                _ => unreachable!(),
+            };
+            let transfer_event = EventTrb::new_transfer_event_trb(
+                trbs[0].addr,
+                0,
+                completion_code,
+                false,
+                endpoint_id,
+                slot_id,
+            );
+            event_sender.send(transfer_event)?;
+            Ok(processing_result)
+        }
+    }
+}
+
+impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for TdBasedOutEndpointHandle<ROEH> {
+    type CompletionFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async {
+            self.submission_state = TdBasedNormalSubmissionState::default();
+            self.real_ep.cancel().await
+        })
+    }
+
+    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
+        Box::pin(async { self.real_ep.clear_halt().await })
     }
 }
 
@@ -1415,12 +1392,12 @@ fn process_real_transfer_response(
         completion.data.len(),
     );
 
-    let mut td_info = TdProcessingInfo {
+    let mut td_info = TdProcessingInfoIn {
         event_sender,
         dma_bus,
         pcap_meta,
         status: completion.status,
-        state: TdProcessingState::Default,
+        state: TdProcessingStateIn::Default,
         data: &completion.data,
         endpoint_id,
         slot_id,
@@ -1444,7 +1421,7 @@ fn process_real_transfer_response(
     Ok(TrbProcessingResult::Ok)
 }
 
-struct TdProcessingInfo<'a> {
+struct TdProcessingInfoIn<'a> {
     // always the same
     endpoint_id: u8,
     slot_id: u8,
@@ -1454,19 +1431,19 @@ struct TdProcessingInfo<'a> {
     // per TD data
     status: InTrbProcessingStatus,
     // updated every TRB
-    state: TdProcessingState,
+    state: TdProcessingStateIn,
     data: &'a [u8],
     edtla: Edtla,
 }
 
-enum TdProcessingState {
+enum TdProcessingStateIn {
     Default,
     // no more data, skip forward to next TD
     /// missing bytes
     ShortTransfer(usize),
 }
 
-impl<'a> TdProcessingInfo<'a> {
+impl<'a> TdProcessingInfoIn<'a> {
     fn process_trb(
         &mut self,
         trb: SupportedEndpointTrb<SupportedNormalEndpointTrb>,
@@ -1502,7 +1479,7 @@ impl<'a> TdProcessingInfo<'a> {
         trb_data: NormalTrb,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         match self.state {
-            TdProcessingState::Default => {
+            TdProcessingStateIn::Default => {
                 pcap::in_submission(self.pcap_meta, addr, trb_data.transfer_length);
 
                 let bytes_requested = trb_data.transfer_length as usize;
@@ -1536,7 +1513,7 @@ impl<'a> TdProcessingInfo<'a> {
                                 );
                                 self.event_sender.send(transfer_event)?;
                             }
-                            self.state = TdProcessingState::ShortTransfer(bytes_missing);
+                            self.state = TdProcessingStateIn::ShortTransfer(bytes_missing);
 
                             pcap::in_completion(self.pcap_meta, addr, bytes);
 
@@ -1594,7 +1571,7 @@ impl<'a> TdProcessingInfo<'a> {
 
                 Ok(None)
             }
-            TdProcessingState::ShortTransfer(bytes_missing) => {
+            TdProcessingStateIn::ShortTransfer(bytes_missing) => {
                 // Only react to IOC after a short packet has been encountered.
                 if trb_data.interrupt_on_completion {
                     let transfer_event = EventTrb::new_transfer_event_trb(
@@ -1618,8 +1595,8 @@ impl<'a> TdProcessingInfo<'a> {
         trb_data: EventDataTrb,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         let completion_code = match self.state {
-            TdProcessingState::Default => CompletionCode::Success,
-            TdProcessingState::ShortTransfer(_) => CompletionCode::ShortPacket,
+            TdProcessingStateIn::Default => CompletionCode::Success,
+            TdProcessingStateIn::ShortTransfer(_) => CompletionCode::ShortPacket,
         };
 
         handle_event_data_trb_normal_ep(
@@ -3828,7 +3805,7 @@ pub mod tests {
 
         let (event_sender, mut interrupter) = MockInterrupter::new();
 
-        let mut bulk_out_endpoint = OutEndpointHandle::new(
+        let mut bulk_out_endpoint = TdBasedOutEndpointHandle::new(
             SLOT_ID,
             ENDPOINT_ID,
             pcap_meta,
