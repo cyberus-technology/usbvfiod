@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use tokio::sync::Notify;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::device::{
     pci::constants::xhci::{
@@ -33,7 +33,7 @@ pub struct PortscRegister {
 
 impl PortscRegister {
     // fields added as needed, not fully spec compliant
-    const BITMASK_RW1C: u64 = portsc::CSC | portsc::PEC | portsc::PRC;
+    const BITMASK_RW1C: u64 = portsc::CSC | portsc::PEC | portsc::WRC | portsc::PRC;
 
     pub const fn new(event_sender: EventSender, usb_version: UsbVersion, port_id: u8) -> Self {
         Self {
@@ -71,6 +71,7 @@ impl PortscRegister {
         let bits_to_clear = new_value & Self::BITMASK_RW1C;
 
         let port_reset_bit = new_value & portsc::PR != 0;
+        let warm_port_reset_bit = new_value & portsc::WPR != 0;
 
         match self.value.fetch_update(
             std::sync::atomic::Ordering::Relaxed,
@@ -81,12 +82,19 @@ impl PortscRegister {
                 if port_reset_bit {
                     Self::port_reset(&mut new_reg, self.usb_version);
                 }
+                if warm_port_reset_bit {
+                    Self::warm_port_reset(&mut new_reg, self.usb_version);
+                }
 
                 Some(new_reg)
             },
         ) {
             Ok(_) => {
                 if port_reset_bit {
+                    let event = EventTrb::new_port_status_change_event_trb(self.port_id);
+                    self.event_sender.send(event)?;
+                }
+                if warm_port_reset_bit {
                     let event = EventTrb::new_port_status_change_event_trb(self.port_id);
                     self.event_sender.send(event)?;
                 }
@@ -111,6 +119,25 @@ impl PortscRegister {
                 Self::update_with_mask(register, portsc::PRC, portsc::PRC);
             }
         }
+    }
+
+    fn warm_port_reset(register: &mut u64, usb_version: UsbVersion) {
+        match usb_version {
+            UsbVersion::USB2 => {
+                debug!("warm port reset for USB 2 attempted");
+            }
+            UsbVersion::USB3 => {
+                debug!("warm port reset for USB 3 attempted");
+            }
+        }
+
+        Self::update_with_mask(
+            register,
+            portsc::PRC | portsc::WRC,
+            portsc::PRC | portsc::WRC,
+        );
+
+        warn!("incomplete implementation: warm port reset handling only sets WRC bit to signal completion");
     }
 
     /// Update the masked bits with the given value.
