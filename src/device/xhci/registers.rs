@@ -31,9 +31,10 @@ pub struct PortscRegister {
     port_id: u8,
 }
 
-const BITMASK_RW1C: u64 = 0x00260000;
-
 impl PortscRegister {
+    // fields added as needed, not fully spec compliant
+    const BITMASK_RW1C: u64 = portsc::CSC | portsc::PEC | portsc::PRC;
+
     pub const fn new(event_sender: EventSender, usb_version: UsbVersion, port_id: u8) -> Self {
         Self {
             value: AtomicU64::new(portsc::PP | portsc::value::PLS_RXDETECT),
@@ -67,7 +68,8 @@ impl PortscRegister {
     /// PR bit is handled by a custom logic path.
     /// All other bits are treated as read-only.
     pub fn write(&self, new_value: u64) -> anyhow::Result<()> {
-        let bits_to_clear = new_value & BITMASK_RW1C;
+        let bits_to_clear = new_value & Self::BITMASK_RW1C;
+
         let port_reset_bit = new_value & portsc::PR != 0;
 
         match self.value.fetch_update(
