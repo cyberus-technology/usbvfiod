@@ -278,6 +278,8 @@ async fn control_endpoint_worker(
             };
 
             response_submitter.send(processing_result)?;
+        } else {
+            return Err(anyhow!("Sender closed the channel for control requests"));
         }
     }
 }
