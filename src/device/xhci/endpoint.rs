@@ -131,6 +131,7 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                             self.state = WorkerState::LookForTrb;
                         }
                         HotplugTrbProcessingResult::Stall(addr) => {
+                            trace!("ep stall on {:?}", self.real_endpoint);
                             if let Some((addr, cs)) = addr {
                                 self.transfer_ring.set_dequeue_pointer(addr, cs);
                             }
@@ -172,7 +173,8 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 },
                 WorkerState::Halted => match self.next_msg().await? {
                     EndpointMessage::Reset(completion) => {
-                        self.real_endpoint.clear_halt().await?;
+                        // TODO if USB3 do not clear yourself
+                        //self.real_endpoint.clear_halt().await?;
                         self.context.set_state(endpoint_state::STOPPED);
                         let (dequeue_pointer, cycle_state) =
                             self.transfer_ring.get_dequeue_pointer();
