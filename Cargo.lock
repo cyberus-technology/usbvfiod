@@ -994,7 +994,7 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
- "vfio-bindings 0.7.0",
+ "vfio-bindings",
  "vfio_user",
  "vmm-sys-util",
 ]
@@ -1013,24 +1013,18 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vfio-bindings"
-version = "0.6.3"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92982da90461a5808f78d9eb9b0c116da94bf52fbb0791784b64fc300f274c2a"
+checksum = "01ac6d51577178c2d364280bba14d43efaa948ff5557182c0fa0757207642af2"
 dependencies = [
  "vmm-sys-util",
 ]
 
 [[package]]
-name = "vfio-bindings"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01ac6d51577178c2d364280bba14d43efaa948ff5557182c0fa0757207642af2"
-
-[[package]]
 name = "vfio_user"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea835ab081b29468de55d5066532fc19c99a3ed04b57ea66dfea40559b651070"
+checksum = "7a64e7c1e41fd8574ace87ded52ff64752e821e2769077d150a0a60399b6733e"
 dependencies = [
  "bitflags 2.13.2",
  "enumn",
@@ -1040,7 +1034,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "thiserror",
- "vfio-bindings 0.6.3",
+ "vfio-bindings",
  "vm-memory",
  "vmm-sys-util",
 ]
