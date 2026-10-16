@@ -452,7 +452,7 @@ impl Slot {
         // target an incorrect device (after quick detach--reattach).
 
         // we should not touch anything if the input is bad
-        if !self.check_slot_and_ep0_input_context(input_context_pointer) {
+        if !self.check_device_context(input_context_pointer) {
             return Ok(CompletionCode::ParameterError);
         }
 
@@ -504,8 +504,54 @@ impl Slot {
         Ok(CompletionCode::Success)
     }
 
-    const fn check_slot_and_ep0_input_context(&self, _input_context_pointer: u64) -> bool {
+    /// non-exhaustive
+    fn check_device_context(&self, input_context_pointer: u64) -> bool {
+        let slot_context = SlotContext::new(
+            input_context_pointer.wrapping_add(0x10),
+            self.dma_bus.clone(),
+        );
+        let endpoint_context_count = slot_context.get_context_entries();
+
+        if !self.check_slot_context(slot_context) {
+            return false;
+        }
+
+        for ep_context in 1..endpoint_context_count + 1 {
+            let endpoint_context = EndpointContext::new(
+                input_context_pointer.wrapping_add(64 * ep_context as u64),
+                self.dma_bus.clone(),
+            );
+            if !self.check_endpoint_context(endpoint_context) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// NoOp
+    fn check_slot_context(&self, _context: SlotContext) -> bool {
         // TODO look if the fields have proper values
+        true
+    }
+
+    /// non-exhaustive
+    ///
+    /// # Limitations
+    ///
+    /// This currently only checks the EP Type field and will return false on not
+    /// yet implemented endpoint types that are, according to spec, valid values.
+    fn check_endpoint_context(&self, context: EndpointContext) -> bool {
+        let mut context_buffer = [0; 32];
+        self.dma_bus.read_bulk(context.address, &mut context_buffer);
+
+        let endpoint_type = (context_buffer[4] >> 3) & 0x7;
+        match endpoint_type {
+            0 => return false, // "Not Valid N/A"
+            1 => return false, // "Isoch Out"
+            5 => return false, // "Isoch In"
+            _ => {}
+        }
+
         true
     }
 
@@ -556,7 +602,10 @@ impl Slot {
             SlotState::Configured(base_address) => base_address,
         };
 
-        // TODO input checks
+        // we should not touch anything if the input is bad
+        if !self.check_device_context(input_context_pointer) {
+            return Ok(CompletionCode::ParameterError);
+        }
 
         let drop_flags = self
             .dma_bus
@@ -648,9 +697,15 @@ impl Slot {
 
     async fn handle_evaluate_context(
         &self,
-        _input_context_pointer: u64,
+        input_context_pointer: u64,
     ) -> anyhow::Result<CompletionCode> {
-        warn!("handle_evaluate_context is not implemented yet. Just reporting success");
+        warn!("handle_evaluate_context is not yet implemented. Just confirming valid context and then reporting success.");
+
+        // we should not touch anything if the input is bad
+        if !self.check_device_context(input_context_pointer) {
+            return Ok(CompletionCode::ParameterError);
+        }
+
         Ok(CompletionCode::Success)
     }
 
@@ -688,6 +743,30 @@ impl Slot {
         self.write_slot_state();
 
         Ok(CompletionCode::Success)
+    }
+}
+
+/// A wrapper around DMA accesses to slot context structures.
+///
+/// The structure is explained in the XHCI spec 6.2.2.
+pub struct SlotContext {
+    address: u64,
+    dma_bus: BusDeviceRef,
+}
+
+impl SlotContext {
+    pub const fn new(address: u64, dma_bus: BusDeviceRef) -> Self {
+        Self { address, dma_bus }
+    }
+
+    pub fn get_context_entries(&self) -> u8 {
+        let bytes = self.dma_bus.read(Request::new(
+            self.address.wrapping_add(3),
+            RequestSize::Size1,
+        ));
+
+        // SAFETY: DMA read above had RequestSize::Size1.
+        bytes as u8 >> 3
     }
 }
 
