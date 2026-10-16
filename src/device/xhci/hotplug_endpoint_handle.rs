@@ -40,7 +40,6 @@ pub trait BaseEndpointHandle: Debug + Send + 'static {
     type CompletionFuture<'a>: Future<Output = anyhow::Result<()>> + Send + 'a;
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_>;
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_>;
 }
 
 // trait exists to hide the EndpointHandle generic parameter from the endpoint state machine
@@ -220,23 +219,6 @@ impl<EH: EndpointHandle> BaseEndpointHandle for HotplugEndpointHandleImpl<EH> {
             }
 
             self.submission_state = HotplugSubmissionState::NoTrbSubmitted;
-
-            Ok(())
-        })
-    }
-
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async {
-            if let Ok(mut guard) = self.endpoint_handle.try_lock() {
-                if let Some(device) = guard.as_mut() {
-                    device.clear_halt().await?;
-                } else {
-                    trace!("clear_halt for detached device");
-                }
-            } else {
-                trace!("try_lock failed during clear_halt: detach_handler currently has the lock");
-                // After the lock release, the device will be gone, so no need to actually acquire the lock.
-            }
 
             Ok(())
         })

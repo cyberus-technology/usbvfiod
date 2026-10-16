@@ -74,10 +74,6 @@ impl BaseEndpointHandle for DummyEndpointHandle {
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         panic!("should never call functions of dummy endpoint handle");
     }
-
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        panic!("should never call functions of dummy endpoint handle");
-    }
 }
 
 /// EDTLA (Event Data Transfer Length Accumulator)
@@ -872,10 +868,6 @@ impl<RCEH: RealControlEndpointHandle> BaseEndpointHandle for ControlEndpointHand
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async { self.real_ep.cancel().await })
     }
-
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async { self.real_ep.clear_halt().await })
-    }
 }
 
 impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
@@ -1130,10 +1122,6 @@ impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for OutEndpointHandle<ROEH>
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async { self.real_ep.cancel().await })
-    }
-
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async { self.real_ep.clear_halt().await })
     }
 }
 
@@ -1552,10 +1540,6 @@ impl<RIEH: RealInEndpointHandle> BaseEndpointHandle for TdBasedInEndpointHandle<
             self.real_ep.cancel().await
         })
     }
-
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async { self.real_ep.clear_halt().await })
-    }
 }
 
 #[cfg(test)]
@@ -1696,11 +1680,6 @@ pub mod tests {
                 // nothing we want to do
                 Box::pin(async { Ok(()) })
             }
-
-            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-                // nothing we want to do
-                Box::pin(async { Ok(()) })
-            }
         }
 
         // expecting to receive 0xda7a via an out request
@@ -1739,11 +1718,6 @@ pub mod tests {
                 // nothing we want to do
                 Box::pin(async { Ok(()) })
             }
-
-            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-                // nothing we want to do
-                Box::pin(async { Ok(()) })
-            }
         }
 
         impl BaseEndpointHandle for MockRealControlEndpointReadStatic {
@@ -1751,11 +1725,6 @@ pub mod tests {
                 Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
             fn cancel(&mut self) -> Self::CompletionFuture<'_> {
-                // nothing we want to do
-                Box::pin(async { Ok(()) })
-            }
-
-            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
                 // nothing we want to do
                 Box::pin(async { Ok(()) })
             }
@@ -1810,11 +1779,6 @@ pub mod tests {
                 // nothing we want to do
                 Box::pin(async { Ok(()) })
             }
-
-            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-                // nothing we want to do
-                Box::pin(async { Ok(()) })
-            }
         }
 
         // mock for bulk out real endpoint returning success while discarding the data
@@ -1848,11 +1812,6 @@ pub mod tests {
                 Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
             fn cancel(&mut self) -> Self::CompletionFuture<'_> {
-                // nothing we want to do
-                Box::pin(async { Ok(()) })
-            }
-
-            fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
                 // nothing we want to do
                 Box::pin(async { Ok(()) })
             }
