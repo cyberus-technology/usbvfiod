@@ -1325,6 +1325,7 @@ fn process_real_transfer_response(
         data: &completion.data,
         endpoint_id,
         slot_id,
+        edtla: Edtla::default(),
     };
 
     for trb in trbs {
@@ -1356,6 +1357,7 @@ struct TdProcessingInfo<'a> {
     // updated every TRB
     state: TdProcessingState,
     data: &'a [u8],
+    edtla: Edtla,
 }
 
 enum TdProcessingState {
@@ -1372,9 +1374,11 @@ impl<'a> TdProcessingInfo<'a> {
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         match trb.variant {
             SupportedNormalEndpointTrb::Normal(normal) => {
-                self.process_normal_trb(trb.addr, trb.cycle_bit, normal)
+                self.handle_normal_trb(trb.addr, trb.cycle_bit, normal)
             }
-            SupportedNormalEndpointTrb::EventData(_) => todo!(),
+            SupportedNormalEndpointTrb::EventData(event_data) => {
+                self.handle_event_data_trb(event_data)
+            }
             SupportedNormalEndpointTrb::NoOp(noop) => {
                 if noop.interrupt_on_completion {
                     let transfer_event = EventTrb::new_transfer_event_trb(
@@ -1392,7 +1396,7 @@ impl<'a> TdProcessingInfo<'a> {
         }
     }
 
-    fn process_normal_trb(
+    fn handle_normal_trb(
         &mut self,
         addr: u64,
         cs: bool,
@@ -1414,13 +1418,16 @@ impl<'a> TdProcessingInfo<'a> {
                 );
                 self.dma_bus.write_bulk(trb_data.data_pointer, bytes);
 
+                // SAFETY: The maximum value added is defined as 17bit.
+                self.edtla.add(dma_byte_count as u32);
+
                 if bytes_available < bytes_requested {
                     let bytes_missing = bytes_requested - bytes_available;
                     match self.status {
                         InTrbProcessingStatus::Success => {
                             // short transfer
                             if trb_data.interrupt_on_completion || trb_data.interrupt_on_short {
-                                let transfer_event = EventTrb::new_transfer_event_trb(
+                                let event = EventTrb::new_transfer_event_trb(
                                     addr,
                                     bytes_missing as u32,
                                     CompletionCode::ShortPacket,
@@ -1428,7 +1435,7 @@ impl<'a> TdProcessingInfo<'a> {
                                     self.endpoint_id,
                                     self.slot_id,
                                 );
-                                self.event_sender.send(transfer_event)?;
+                                self.event_sender.send(event)?;
                             }
                             self.state = TdProcessingState::ShortTransfer(bytes_missing);
 
@@ -1475,7 +1482,7 @@ impl<'a> TdProcessingInfo<'a> {
 
                 // event sending only when IOC is set
                 if trb_data.interrupt_on_completion {
-                    let transfer_event = EventTrb::new_transfer_event_trb(
+                    let event = EventTrb::new_transfer_event_trb(
                         addr,
                         0,
                         CompletionCode::Success,
@@ -1483,15 +1490,13 @@ impl<'a> TdProcessingInfo<'a> {
                         self.endpoint_id,
                         self.slot_id,
                     );
-                    self.event_sender.send(transfer_event)?;
+                    self.event_sender.send(event)?;
                 }
 
                 Ok(None)
             }
             TdProcessingState::ShortTransfer(bytes_missing) => {
-                // Skip all Normal TRBs.
-                // We will need more handling here once we support EventData TRBs.
-
+                // Only react to IOC after a short packet has been encountered.
                 if trb_data.interrupt_on_completion {
                     let transfer_event = EventTrb::new_transfer_event_trb(
                         addr,
@@ -1507,6 +1512,34 @@ impl<'a> TdProcessingInfo<'a> {
                 Ok(None)
             }
         }
+    }
+
+    fn handle_event_data_trb(
+        &mut self,
+        trb_data: EventDataTrb,
+    ) -> anyhow::Result<Option<TrbProcessingResult>> {
+        trace!("EventData TRB on Normal Ep");
+
+        if trb_data.interrupt_on_completion {
+            let completion_code = match self.state {
+                TdProcessingState::Default => CompletionCode::Success,
+                TdProcessingState::ShortTransfer(_) => CompletionCode::ShortPacket,
+            };
+
+            let event = EventTrb::new_transfer_event_trb(
+                trb_data.event_data,
+                self.edtla.get(),
+                completion_code,
+                true,
+                self.endpoint_id,
+                self.slot_id,
+            );
+            self.event_sender.send(event)?;
+        }
+
+        self.edtla.zero();
+
+        Ok(None)
     }
 }
 
