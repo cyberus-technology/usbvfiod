@@ -884,7 +884,7 @@ pub struct NormalTrb {
 impl TrbData for NormalTrb {
     /// Parse data of a Normal TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
@@ -956,7 +956,7 @@ pub struct SetupStageTrb {
 impl TrbData for SetupStageTrb {
     /// Parse data of a Setup Stage TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
@@ -1006,7 +1006,7 @@ pub struct DataStageTrb {
 impl TrbData for DataStageTrb {
     /// Parse data of a Data Stage TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
@@ -1077,7 +1077,7 @@ pub struct StatusStageTrb {
 impl TrbData for StatusStageTrb {
     /// Parse data of a Status Stage TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
@@ -1116,7 +1116,7 @@ pub struct EventDataTrb {
 impl TrbData for EventDataTrb {
     /// Parse data of a Event Data TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
@@ -1157,7 +1157,7 @@ pub struct NoOpTrb {
 impl TrbData for NoOpTrb {
     /// Parse data of a NoOp TRB.
     ///
-    /// Only `TransferTrb::try_from` should call this function.
+    /// Only `TransferTrbVariant::try_from` should call this function.
     ///
     /// # Limitations
     ///
