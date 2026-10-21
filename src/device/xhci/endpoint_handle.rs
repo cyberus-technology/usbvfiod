@@ -1762,14 +1762,19 @@ pub mod tests {
         }
 
         // will return `vec![42; requested length]`
+        // if given a max_returned_data, it will return no more than that number of bytes
         #[derive(Debug)]
         pub struct MockRealInEndpoint {
             data_length: usize,
+            max_returned_data: Option<u32>,
         }
 
         impl MockRealInEndpoint {
-            pub fn new() -> Self {
-                Self { data_length: 0 }
+            pub fn new(max_returned_data: Option<u32>) -> Self {
+                Self {
+                    data_length: 0,
+                    max_returned_data,
+                }
             }
         }
 
@@ -1778,7 +1783,10 @@ pub mod tests {
                 Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
 
             fn submit(&mut self, data: usize) -> anyhow::Result<()> {
-                self.data_length = data;
+                self.data_length = self.max_returned_data.map_or(data, |max_returned_data| {
+                    min(max_returned_data as usize, data)
+                });
+
                 Ok(())
             }
 
@@ -3617,7 +3625,7 @@ pub mod tests {
         let pcap_usb_bus_number = 1;
         let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
 
-        let real_ep = MockRealInEndpoint::new();
+        let real_ep = MockRealInEndpoint::new(None);
 
         let dma_bus = Arc::new(DynamicBus::new());
         let dma_backing = vec![99; 2048];
@@ -3726,7 +3734,7 @@ pub mod tests {
         let pcap_usb_bus_number = 1;
         let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
 
-        let real_ep = MockRealInEndpoint::new();
+        let real_ep = MockRealInEndpoint::new(None);
 
         let dma_bus = Arc::new(DynamicBus::new());
         let dma_backing = vec![99; 2048];
