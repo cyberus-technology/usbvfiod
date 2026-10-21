@@ -451,8 +451,10 @@ impl Slot {
         // Theoretically, our root-hub-port-based device identification could
         // target an incorrect device (after quick detach--reattach).
 
+        // TODO check that only EP0 is enabled
+
         // we should not touch anything if the input is bad
-        if !self.check_slot_and_ep0_input_context(input_context_pointer) {
+        if !self.check_device_context(input_context_pointer) {
             return Ok(CompletionCode::ParameterError);
         }
 
@@ -504,8 +506,74 @@ impl Slot {
         Ok(CompletionCode::Success)
     }
 
-    const fn check_slot_and_ep0_input_context(&self, _input_context_pointer: u64) -> bool {
+    /// non-exhaustive
+    fn check_device_context(&self, input_context_pointer: u64) -> bool {
+        // SAFETY: DMA read is of size 4
+        let add_context_flags = self.dma_bus.read(Request::new(
+            input_context_pointer.wrapping_add(4),
+            RequestSize::Size4,
+        )) as u32;
+
+        // "If set to ‘1’, the respective Context shall be evaluated. If cleared to ‘0’, the Context is ignored."
+        let mut has_add_context_flag = Vec::new();
+        for i in 0..=31 {
+            if add_context_flags & (1 << i) != 0 {
+                has_add_context_flag.push(i);
+            }
+        }
+
+        for device_context_index in has_add_context_flag {
+            trace!("checking device_context_index at {device_context_index}");
+            match device_context_index {
+                0 => {
+                    let slot_context = SlotContext::new(
+                        input_context_pointer.wrapping_add(0x20),
+                        self.dma_bus.clone(),
+                    );
+                    if !self.check_slot_context(&slot_context) {
+                        debug!("slot context check failed");
+                        return false;
+                    }
+                }
+                device_context_index => {
+                    let endpoint_context = EndpointContext::new(
+                        input_context_pointer
+                            .wrapping_add(0x20 + 0x20 * device_context_index as u64),
+                        self.dma_bus.clone(),
+                    );
+                    if !self.check_endpoint_context(&endpoint_context) {
+                        debug!("endpoint with device_context_index {device_context_index} check failed");
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
+    }
+
+    /// NoOp
+    const fn check_slot_context(&self, _context: &SlotContext) -> bool {
         // TODO look if the fields have proper values
+        true
+    }
+
+    /// A non-exhaustive check for valid (and also supported) values in a endpoint
+    /// context structure.
+    ///
+    /// # Limitations
+    ///
+    /// This currently only checks the EP Type field. It will return false on not
+    /// valid or not yet implemented endpoint types that are, according to spec,
+    /// valid values.
+    fn check_endpoint_context(&self, context: &EndpointContext) -> bool {
+        match context.get_endpoint_type() {
+            EndpointType::NotValid => return false,
+            EndpointType::IsochOut => return false,
+            EndpointType::IsochIn => return false,
+            _ => {}
+        }
+
         true
     }
 
@@ -556,7 +624,10 @@ impl Slot {
             SlotState::Configured(base_address) => base_address,
         };
 
-        // TODO input checks
+        // we should not touch anything if the input is bad
+        if !deconfigure && !self.check_device_context(input_context_pointer) {
+            return Ok(CompletionCode::ParameterError);
+        }
 
         let drop_flags = self
             .dma_bus
@@ -648,9 +719,15 @@ impl Slot {
 
     async fn handle_evaluate_context(
         &self,
-        _input_context_pointer: u64,
+        input_context_pointer: u64,
     ) -> anyhow::Result<CompletionCode> {
-        warn!("handle_evaluate_context is not implemented yet. Just reporting success");
+        warn!("handle_evaluate_context is not yet implemented. Just confirming valid context and then reporting success.");
+
+        // we should not touch anything if the input is bad
+        if !self.check_device_context(input_context_pointer) {
+            return Ok(CompletionCode::ParameterError);
+        }
+
         Ok(CompletionCode::Success)
     }
 
@@ -688,6 +765,33 @@ impl Slot {
         self.write_slot_state();
 
         Ok(CompletionCode::Success)
+    }
+}
+
+/// A wrapper around DMA accesses to slot context structures.
+///
+/// The structure is explained in the XHCI spec 6.2.2.
+pub struct SlotContext {
+    #[expect(unused)]
+    address: u64,
+    #[expect(unused)]
+    dma_bus: BusDeviceRef,
+}
+
+impl SlotContext {
+    pub const fn new(address: u64, dma_bus: BusDeviceRef) -> Self {
+        Self { address, dma_bus }
+    }
+
+    #[expect(unused)]
+    pub fn get_context_entries(&self) -> u8 {
+        // SAFETY: DMA read is of size 1
+        let bytes = self.dma_bus.read(Request::new(
+            self.address.wrapping_add(3),
+            RequestSize::Size1,
+        )) as u8;
+
+        bytes >> 3
     }
 }
 
@@ -752,27 +856,32 @@ impl EndpointContext {
             RequestSize::Size1,
         ));
         match (guest_mem_byte >> 3) & 0x7 {
+            0 => EndpointType::NotValid,
+            1 => EndpointType::IsochOut,
             2 => EndpointType::BulkOut,
-            6 => EndpointType::BulkIn,
-            4 => EndpointType::Control,
-            7 => EndpointType::InterruptIn,
             3 => EndpointType::InterruptOut,
-            val => {
-                warn!("encountered unsupported endpoint type: {}", val);
-                EndpointType::Unsupported
+            4 => EndpointType::Control,
+            5 => EndpointType::IsochIn,
+            6 => EndpointType::BulkIn,
+            7 => EndpointType::InterruptIn,
+            _ => {
+                unreachable!("parsing a 3 bit field never yields a value > 7");
             }
         }
     }
 }
 
+/// xhci specification: Table 6-9: Offset 04h – Endpoint Context Field Definitions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointType {
-    Control,
-    BulkIn,
-    BulkOut,
-    InterruptIn,
-    InterruptOut,
-    Unsupported,
+    NotValid = 0,
+    IsochOut = 1,
+    BulkOut = 2,
+    InterruptOut = 3,
+    Control = 4,
+    IsochIn = 5,
+    BulkIn = 6,
+    InterruptIn = 7,
 }
 
 #[derive(Debug, Clone)]

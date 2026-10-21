@@ -217,8 +217,8 @@ impl<CRD: CompleteRealDevice> EndpointLauncher<CRD> {
                             real_endpoint,
                         )
                     }
-                    EndpointType::Unsupported => unreachable!(
-                        "the slot should early-reject configure endpoint commands with unsupported endpoint types"
+                    _ => panic!(
+                        "the slot should early-reject configure endpoint commands with unsupported endpoint types; this path is hit if system software modifies the field after we check and before we use it here"
                     ),
                     }
                 }
