@@ -145,7 +145,7 @@ pub mod tests {
             }
 
             fn bulk_in_endpoint_handle(&self, _endpoint_id: u8) -> Self::RBIEH {
-                MockRealInEndpoint::new()
+                MockRealInEndpoint::new(None)
             }
 
             fn bulk_out_endpoint_handle(&self, _endpoint_id: u8) -> Self::RBOEH {
@@ -153,7 +153,7 @@ pub mod tests {
             }
 
             fn interrupt_in_endpoint_handle(&self, _endpoint_id: u8) -> Self::RIIEH {
-                MockRealInEndpoint::new()
+                MockRealInEndpoint::new(None)
             }
 
             fn interrupt_out_endpoint_handle(&self, _endpoint_id: u8) -> Self::RIOEH {

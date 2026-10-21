@@ -1325,6 +1325,7 @@ fn process_real_transfer_response(
         data: &completion.data,
         endpoint_id,
         slot_id,
+        edtla: Edtla::default(),
     };
 
     for trb in trbs {
@@ -1356,6 +1357,7 @@ struct TdProcessingInfo<'a> {
     // updated every TRB
     state: TdProcessingState,
     data: &'a [u8],
+    edtla: Edtla,
 }
 
 enum TdProcessingState {
@@ -1372,9 +1374,11 @@ impl<'a> TdProcessingInfo<'a> {
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         match trb.variant {
             SupportedNormalEndpointTrb::Normal(normal) => {
-                self.process_normal_trb(trb.addr, trb.cycle_bit, normal)
+                self.handle_normal_trb(trb.addr, trb.cycle_bit, normal)
             }
-            SupportedNormalEndpointTrb::EventData(_) => todo!(),
+            SupportedNormalEndpointTrb::EventData(event_data) => {
+                self.handle_event_data_trb(event_data)
+            }
             SupportedNormalEndpointTrb::NoOp(noop) => {
                 if noop.interrupt_on_completion {
                     let transfer_event = EventTrb::new_transfer_event_trb(
@@ -1392,7 +1396,7 @@ impl<'a> TdProcessingInfo<'a> {
         }
     }
 
-    fn process_normal_trb(
+    fn handle_normal_trb(
         &mut self,
         addr: u64,
         cs: bool,
@@ -1414,13 +1418,16 @@ impl<'a> TdProcessingInfo<'a> {
                 );
                 self.dma_bus.write_bulk(trb_data.data_pointer, bytes);
 
+                // SAFETY: The maximum value added is defined as 17bit.
+                self.edtla.add(dma_byte_count as u32);
+
                 if bytes_available < bytes_requested {
                     let bytes_missing = bytes_requested - bytes_available;
                     match self.status {
                         InTrbProcessingStatus::Success => {
                             // short transfer
                             if trb_data.interrupt_on_completion || trb_data.interrupt_on_short {
-                                let transfer_event = EventTrb::new_transfer_event_trb(
+                                let event = EventTrb::new_transfer_event_trb(
                                     addr,
                                     bytes_missing as u32,
                                     CompletionCode::ShortPacket,
@@ -1428,7 +1435,7 @@ impl<'a> TdProcessingInfo<'a> {
                                     self.endpoint_id,
                                     self.slot_id,
                                 );
-                                self.event_sender.send(transfer_event)?;
+                                self.event_sender.send(event)?;
                             }
                             self.state = TdProcessingState::ShortTransfer(bytes_missing);
 
@@ -1475,7 +1482,7 @@ impl<'a> TdProcessingInfo<'a> {
 
                 // event sending only when IOC is set
                 if trb_data.interrupt_on_completion {
-                    let transfer_event = EventTrb::new_transfer_event_trb(
+                    let event = EventTrb::new_transfer_event_trb(
                         addr,
                         0,
                         CompletionCode::Success,
@@ -1483,15 +1490,13 @@ impl<'a> TdProcessingInfo<'a> {
                         self.endpoint_id,
                         self.slot_id,
                     );
-                    self.event_sender.send(transfer_event)?;
+                    self.event_sender.send(event)?;
                 }
 
                 Ok(None)
             }
             TdProcessingState::ShortTransfer(bytes_missing) => {
-                // Skip all Normal TRBs.
-                // We will need more handling here once we support EventData TRBs.
-
+                // Only react to IOC after a short packet has been encountered.
                 if trb_data.interrupt_on_completion {
                     let transfer_event = EventTrb::new_transfer_event_trb(
                         addr,
@@ -1507,6 +1512,34 @@ impl<'a> TdProcessingInfo<'a> {
                 Ok(None)
             }
         }
+    }
+
+    fn handle_event_data_trb(
+        &mut self,
+        trb_data: EventDataTrb,
+    ) -> anyhow::Result<Option<TrbProcessingResult>> {
+        trace!("EventData TRB on Normal Ep");
+
+        if trb_data.interrupt_on_completion {
+            let completion_code = match self.state {
+                TdProcessingState::Default => CompletionCode::Success,
+                TdProcessingState::ShortTransfer(_) => CompletionCode::ShortPacket,
+            };
+
+            let event = EventTrb::new_transfer_event_trb(
+                trb_data.event_data,
+                self.edtla.get(),
+                completion_code,
+                true,
+                self.endpoint_id,
+                self.slot_id,
+            );
+            self.event_sender.send(event)?;
+        }
+
+        self.edtla.zero();
+
+        Ok(None)
     }
 }
 
@@ -1531,7 +1564,7 @@ pub mod tests {
 
     use crate::device::xhci::endpoint_handle::tests::testutils::{
         MockRealControlEndpointExpectDataPattern, MockRealControlEndpointHardwareError,
-        MockRealControlEndpointReadStatic,
+        MockRealControlEndpointReadStatic, MockRealInEndpoint,
     };
     use crate::device::xhci::interrupter::tests::testutils::MockInterrupter;
     use crate::device::{bus::testutils::TestBusDevice, xhci::trb::testutils::RawTrbBuilder};
@@ -1552,6 +1585,7 @@ pub mod tests {
     const DMA_POINTER_1: u64 = 0x200;
     const DMA_POINTER_2: u64 = 0x400;
     const DMA_POINTER_3: u64 = 0x600;
+    const DMA_POINTER_4: u64 = 0x800;
 
     const SETUP_WLENGTH: u16 = 512;
     const TRANSFER_LENGTH: u32 = SETUP_WLENGTH as u32;
@@ -1728,14 +1762,19 @@ pub mod tests {
         }
 
         // will return `vec![42; requested length]`
+        // if given a max_returned_data, it will return no more than that number of bytes
         #[derive(Debug)]
         pub struct MockRealInEndpoint {
             data_length: usize,
+            max_returned_data: Option<u32>,
         }
 
         impl MockRealInEndpoint {
-            pub fn new() -> Self {
-                Self { data_length: 0 }
+            pub fn new(max_returned_data: Option<u32>) -> Self {
+                Self {
+                    data_length: 0,
+                    max_returned_data,
+                }
             }
         }
 
@@ -1744,7 +1783,10 @@ pub mod tests {
                 Pin<Box<dyn Future<Output = anyhow::Result<InTrbProcessingResult>> + Send + 'a>>;
 
             fn submit(&mut self, data: usize) -> anyhow::Result<()> {
-                self.data_length = data;
+                self.data_length = self.max_returned_data.map_or(data, |max_returned_data| {
+                    min(max_returned_data as usize, data)
+                });
+
                 Ok(())
             }
 
@@ -3570,6 +3612,326 @@ pub mod tests {
         assert_eq!(
             interrupter.await_event().await,
             Some(expected_event(SIXTH_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_multi_trb_bulk_in_transfer_with_event_data() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = MockRealInEndpoint::new(None);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, mut interrupter) = MockInterrupter::new();
+
+        let mut bulk_in_endpoint = TdBasedInEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        let normal_1 = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x6) // remaining TD Size: 1536
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_2 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_2)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x4) // remaining TD Size: 1024
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_3 = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_pointer(DMA_POINTER_3)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x2) // remaining TD Size: 512
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data_1 = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_direction()
+            .build();
+        let normal_4 = RawTrbBuilder::new(FIFTH_ADDRESS)
+            .with_data_pointer(DMA_POINTER_4)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data_2 = RawTrbBuilder::new(SIXTH_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![
+            normal_1,
+            normal_2,
+            normal_3,
+            event_data_1,
+            normal_4,
+            event_data_2,
+        ];
+
+        for trb in input_trb {
+            bulk_in_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                bulk_in_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(EVENT_DATA_FIELD, TRANSFER_LENGTH * 3, true))
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(EVENT_DATA_FIELD, TRANSFER_LENGTH, true))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn normal_in_td_followed_by_an_event_data_td() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = MockRealInEndpoint::new(None);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, mut interrupter) = MockInterrupter::new();
+
+        let mut bulk_in_endpoint = TdBasedInEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        let normal = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![normal, event_data];
+
+        for trb in input_trb {
+            bulk_in_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                bulk_in_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(EVENT_DATA_FIELD, 0, true))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_multi_trb_bulk_in_transfer_triggering_short_packet() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        const SHORT_AFTER_BYTES: u32 = 300;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = MockRealInEndpoint::new(Some(SHORT_AFTER_BYTES));
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, mut interrupter) = MockInterrupter::new();
+
+        let mut bulk_in_endpoint = TdBasedInEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        let normal_1 = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x6) // remaining TD Size: 1536
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_2 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_2)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x4) // remaining TD Size: 1024
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_3 = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_pointer(DMA_POINTER_3)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_byte(11, 0x2) // remaining TD Size: 512
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data_1 = RawTrbBuilder::new(FOURTH_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_chain()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_direction()
+            .build();
+        let normal_4 = RawTrbBuilder::new(FIFTH_ADDRESS)
+            .with_data_pointer(DMA_POINTER_4)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let event_data_2 = RawTrbBuilder::new(SIXTH_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .with_direction()
+            .build();
+
+        let input_trb = vec![
+            normal_1,
+            normal_2,
+            normal_3,
+            event_data_1,
+            normal_4,
+            event_data_2,
+        ];
+
+        for trb in input_trb {
+            bulk_in_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                bulk_in_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        // TD completion event
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                TRANSFER_LENGTH - SHORT_AFTER_BYTES,
+                CompletionCode::ShortPacket,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        // IOC will echo the TD completion event triggered by short packet
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                SECOND_ADDRESS,
+                TRANSFER_LENGTH - SHORT_AFTER_BYTES,
+                CompletionCode::ShortPacket,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        // first event data will find the edtla value
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                EVENT_DATA_FIELD,
+                SHORT_AFTER_BYTES,
+                CompletionCode::ShortPacket,
+                true,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        // second event data will be parsed due to HCCPARAMS::PAE and find an empty edtla
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                EVENT_DATA_FIELD,
+                0,
+                CompletionCode::ShortPacket,
+                true,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
         );
 
         assert!(interrupter.is_empty());
