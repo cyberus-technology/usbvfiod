@@ -124,10 +124,8 @@ impl EventRing {
 
     /// Enqueue a new Event TRB into the Ring.
     ///
-    /// # Parameters
-    /// - `trb`: the TRB to enqueue.
-    ///
     /// # Limitations
+    ///
     /// The current implementation does not handle ring-full recovery and will panic (`todo!()`) in that case.
     pub fn enqueue(
         &mut self,
