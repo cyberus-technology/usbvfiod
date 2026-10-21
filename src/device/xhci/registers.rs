@@ -70,7 +70,7 @@ impl PortscRegister {
         let bits_to_clear = new_value & BITMASK_RW1C;
         let port_reset_bit = new_value & portsc::PR != 0;
 
-        match self.value.fetch_update(
+        match self.value.try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |reg| {
@@ -219,7 +219,7 @@ impl UsbcmdRegister {
 
         // Preserve an ongoing reset until the reset coordinator clears HCRST.
         self.value
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 let hcrst = current as u64 & usbcmd::HCRST;
                 let value = (value & BITMASK_PRESERVED) | hcrst;
                 // SAFETY: USBCMD is defined as 32 bit and the masks used above enforce it.
