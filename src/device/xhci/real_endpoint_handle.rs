@@ -40,7 +40,6 @@ pub enum OutTrbProcessingStatus {
 #[derive(Debug)]
 pub struct OutTrbProcessingResult {
     pub status: OutTrbProcessingStatus,
-    #[expect(unused)]
     pub length: usize,
 }
 
