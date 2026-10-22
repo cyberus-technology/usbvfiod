@@ -1206,6 +1206,45 @@ impl<RIEH: RealInEndpointHandle> TdBasedInEndpointHandle<RIEH> {
             submission_state: TdBasedNormalSubmissionState::default(),
         }
     }
+
+    fn process_real_transfer_response(
+        &self,
+        completion: InTrbProcessingResult,
+        trbs: Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>,
+    ) -> anyhow::Result<TrbProcessingResult> {
+        debug!(
+            "received device response with {} bytes",
+            completion.data.len(),
+        );
+
+        let mut td_info = TdProcessingInfoIn {
+            event_sender: &self.event_sender,
+            dma_bus: &self.dma_bus,
+            pcap_meta: self.pcap_meta,
+            status: completion.status,
+            state: TdProcessingStateIn::Default,
+            data: &completion.data,
+            endpoint_id: self.endpoint_id,
+            slot_id: self.slot_id,
+            edtla: Edtla::default(),
+        };
+
+        for trb in trbs {
+            if let Some(early_return_result) = td_info.process_trb(trb)? {
+                return Ok(early_return_result);
+            }
+        }
+
+        if !td_info.data.is_empty() {
+            warn!(
+                "leftover data on IN TD (received: {} bytes, leftover: {}",
+                completion.data.len(),
+                td_info.data.len(),
+            );
+        }
+
+        Ok(TrbProcessingResult::Ok)
+    }
 }
 
 impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH> {
@@ -1274,15 +1313,8 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                     let completion = self.real_ep.next_completion().await?;
                     let trbs = mem::take(trbs);
                     self.submission_state = TdBasedNormalSubmissionState::default();
-                    let processing_result = process_real_transfer_response(
-                        self.endpoint_id,
-                        self.slot_id,
-                        completion,
-                        trbs,
-                        &self.event_sender,
-                        &self.dma_bus,
-                        self.pcap_meta,
-                    )?;
+                    let processing_result =
+                        self.process_real_transfer_response(completion, trbs)?;
                     Ok(processing_result)
                 }
             }
@@ -1290,50 +1322,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
     }
 }
 
-fn process_real_transfer_response(
-    endpoint_id: u8,
-    slot_id: u8,
-    completion: InTrbProcessingResult,
-    trbs: Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>,
-    event_sender: &EventSender,
-    dma_bus: &BusDeviceRef,
-    pcap_meta: EndpointPcapMeta,
-) -> anyhow::Result<TrbProcessingResult> {
-    debug!(
-        "received device response with {} bytes",
-        completion.data.len(),
-    );
-
-    let mut td_info = TdProcessingInfo {
-        event_sender,
-        dma_bus,
-        pcap_meta,
-        status: completion.status,
-        state: TdProcessingState::Default,
-        data: &completion.data,
-        endpoint_id,
-        slot_id,
-        edtla: Edtla::default(),
-    };
-
-    for trb in trbs {
-        if let Some(early_return_result) = td_info.process_trb(trb)? {
-            return Ok(early_return_result);
-        }
-    }
-
-    if !td_info.data.is_empty() {
-        warn!(
-            "leftover data on IN TD (received: {} bytes, leftover: {}",
-            completion.data.len(),
-            td_info.data.len(),
-        );
-    }
-
-    Ok(TrbProcessingResult::Ok)
-}
-
-struct TdProcessingInfo<'a> {
+struct TdProcessingInfoIn<'a> {
     // always the same
     endpoint_id: u8,
     slot_id: u8,
@@ -1343,19 +1332,19 @@ struct TdProcessingInfo<'a> {
     // per TD data
     status: InTrbProcessingStatus,
     // updated every TRB
-    state: TdProcessingState,
+    state: TdProcessingStateIn,
     data: &'a [u8],
     edtla: Edtla,
 }
 
-enum TdProcessingState {
+enum TdProcessingStateIn {
     Default,
     // no more data, skip forward to next TD
     /// missing bytes
     ShortTransfer(usize),
 }
 
-impl<'a> TdProcessingInfo<'a> {
+impl<'a> TdProcessingInfoIn<'a> {
     fn process_trb(
         &mut self,
         trb: SupportedEndpointTrb<SupportedNormalEndpointTrb>,
@@ -1391,7 +1380,7 @@ impl<'a> TdProcessingInfo<'a> {
         trb_data: NormalTrb,
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         match self.state {
-            TdProcessingState::Default => {
+            TdProcessingStateIn::Default => {
                 pcap::in_submission(self.pcap_meta, addr, trb_data.transfer_length);
 
                 let bytes_requested = trb_data.transfer_length as usize;
@@ -1425,7 +1414,7 @@ impl<'a> TdProcessingInfo<'a> {
                                 );
                                 self.event_sender.send(event)?;
                             }
-                            self.state = TdProcessingState::ShortTransfer(bytes_missing);
+                            self.state = TdProcessingStateIn::ShortTransfer(bytes_missing);
 
                             pcap::in_completion(self.pcap_meta, addr, bytes);
 
@@ -1483,7 +1472,7 @@ impl<'a> TdProcessingInfo<'a> {
 
                 Ok(None)
             }
-            TdProcessingState::ShortTransfer(bytes_missing) => {
+            TdProcessingStateIn::ShortTransfer(bytes_missing) => {
                 // Only react to IOC after a short packet has been encountered.
                 if trb_data.interrupt_on_completion {
                     let transfer_event = EventTrb::new_transfer_event_trb(
@@ -1510,8 +1499,8 @@ impl<'a> TdProcessingInfo<'a> {
 
         if trb_data.interrupt_on_completion {
             let completion_code = match self.state {
-                TdProcessingState::Default => CompletionCode::Success,
-                TdProcessingState::ShortTransfer(_) => CompletionCode::ShortPacket,
+                TdProcessingStateIn::Default => CompletionCode::Success,
+                TdProcessingStateIn::ShortTransfer(_) => CompletionCode::ShortPacket,
             };
 
             let event = EventTrb::new_transfer_event_trb(
