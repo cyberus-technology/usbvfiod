@@ -17,8 +17,9 @@ use crate::device::{
         hotplug_endpoint_handle::BaseEndpointHandle,
         interrupter::EventSender,
         real_endpoint_handle::{
-            ControlRequestProcessingResult, InTrbProcessingResult, InTrbProcessingStatus,
-            OutTrbProcessingResult, RealControlEndpointHandle, RealInEndpointHandle,
+            ControlRequestProcessingResult, InTrbProcessingResult,
+            InTrbProcessingStatus::{self},
+            OutTrbProcessingStatus, RealControlEndpointHandle, RealInEndpointHandle,
             RealOutEndpointHandle,
         },
         trb::{
@@ -1087,12 +1088,12 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                 }
                 NormalSubmissionState::AwaitingRealTransfer(ref transfer_trb) => {
                     let (completion_code, processing_result) =
-                        match self.real_ep.next_completion().await? {
-                            OutTrbProcessingResult::Disconnect => {
+                        match self.real_ep.next_completion().await?.status {
+                            OutTrbProcessingStatus::Disconnect => {
                                 pcap::out_error(
                                     self.pcap_meta,
                                     transfer_trb.address,
-                                    &OutTrbProcessingResult::Disconnect,
+                                    &OutTrbProcessingStatus::Disconnect,
                                     &[],
                                 );
                                 (
@@ -1100,11 +1101,11 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                                     TrbProcessingResult::Disconnect,
                                 )
                             }
-                            OutTrbProcessingResult::Stall => {
+                            OutTrbProcessingStatus::Stall => {
                                 pcap::out_error(
                                     self.pcap_meta,
                                     transfer_trb.address,
-                                    &OutTrbProcessingResult::Stall,
+                                    &OutTrbProcessingStatus::Stall,
                                     &[],
                                 );
                                 (
@@ -1112,11 +1113,11 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                                     TrbProcessingResult::Stall(None),
                                 )
                             }
-                            OutTrbProcessingResult::TransactionError => {
+                            OutTrbProcessingStatus::TransactionError => {
                                 pcap::out_error(
                                     self.pcap_meta,
                                     transfer_trb.address,
-                                    &OutTrbProcessingResult::TransactionError,
+                                    &OutTrbProcessingStatus::TransactionError,
                                     &[],
                                 );
                                 (
@@ -1124,7 +1125,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for OutEndpointHandle<ROEH> {
                                     TrbProcessingResult::TransactionError(None),
                                 )
                             }
-                            OutTrbProcessingResult::Success => {
+                            OutTrbProcessingStatus::Success => {
                                 let completion_code =
                                     if let TransferTrbVariant::Normal(ref normal_data) =
                                         transfer_trb.variant
@@ -1577,6 +1578,8 @@ pub mod tests {
     const SETUP_TRANSFER_TYPE_IN_DATA: u8 = 0x3;
 
     pub mod testutils {
+        use crate::device::xhci::real_endpoint_handle::OutTrbProcessingResult;
+
         use super::*;
 
         // will return `vec![42; requested length]`
@@ -1772,10 +1775,12 @@ pub mod tests {
 
         // mock for bulk out real endpoint returning success while discarding the data
         #[derive(Debug)]
-        pub struct MockRealOutEndpoint {}
+        pub struct MockRealOutEndpoint {
+            length: usize,
+        }
         impl MockRealOutEndpoint {
             pub fn new() -> Self {
-                Self {}
+                Self { length: 0 }
             }
         }
 
@@ -1785,12 +1790,16 @@ pub mod tests {
 
             fn submit(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
                 println!("consumed data of length: {}", data.len());
+                self.length = data.len();
                 Ok(())
             }
 
             fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
                 Box::pin(async {
-                    let result = OutTrbProcessingResult::Success;
+                    let result = OutTrbProcessingResult {
+                        status: OutTrbProcessingStatus::Success,
+                        length: self.length,
+                    };
                     Ok(result)
                 })
             }

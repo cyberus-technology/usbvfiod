@@ -30,11 +30,18 @@ pub trait RealOutEndpointHandle: BaseEndpointHandle {
 }
 
 #[derive(Debug)]
-pub enum OutTrbProcessingResult {
+pub enum OutTrbProcessingStatus {
     Disconnect,
     Stall,
     TransactionError,
     Success,
+}
+
+#[derive(Debug)]
+pub struct OutTrbProcessingResult {
+    pub status: OutTrbProcessingStatus,
+    #[expect(unused)]
+    pub length: usize,
 }
 
 pub trait RealInEndpointHandle: BaseEndpointHandle {
