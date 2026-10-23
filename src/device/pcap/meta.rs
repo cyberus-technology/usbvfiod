@@ -65,8 +65,8 @@ pub const fn trb_error_status() -> i32 {
     errno_status(LINUX_EINVAL)
 }
 
-pub const fn in_error_status(error: &InTrbProcessingStatus) -> i32 {
-    match error {
+pub const fn in_status(status: &InTrbProcessingStatus) -> i32 {
+    match status {
         InTrbProcessingStatus::Disconnect => errno_status(LINUX_ENODEV),
         InTrbProcessingStatus::Stall => errno_status(LINUX_EPIPE),
         InTrbProcessingStatus::TransactionError => errno_status(LINUX_EPROTO),

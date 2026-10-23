@@ -1021,12 +1021,12 @@ impl<RIEH: RealInEndpointHandle> TdBasedInEndpointHandle<RIEH> {
             completion.data.len(),
         );
 
-        match &completion.status {
-            InTrbProcessingStatus::Success => {
-                pcap::in_completion(self.pcap_meta, trbs[0].addr, &completion.data);
-            }
-            status => pcap::in_error(self.pcap_meta, trbs[0].addr, status),
-        }
+        pcap::in_completion(
+            self.pcap_meta,
+            trbs[0].addr,
+            &completion.status,
+            &completion.data,
+        );
 
         let mut td_info = TdProcessingInfoIn {
             event_sender: &self.event_sender,

@@ -71,19 +71,19 @@ pub fn in_submission(base: EndpointPcapMeta, urb_id: u64, expected_len: u32) {
     packet::log_submission(base, None, urb_id, expected_len, None, &[]);
 }
 
-pub fn in_completion(base: EndpointPcapMeta, urb_id: u64, data: &[u8]) {
-    packet::log_completion(base, None, urb_id, 0, data.len() as u32, data);
-}
-
-pub fn in_error(meta: EndpointPcapMeta, urb_id: u64, error: &InTrbProcessingStatus) {
-    packet::log_error(
-        meta,
+pub fn in_completion(
+    base: EndpointPcapMeta,
+    urb_id: u64,
+    status: &InTrbProcessingStatus,
+    data: &[u8],
+) {
+    packet::log_completion(
+        base,
         None,
         urb_id,
-        UsbEventType::Error,
-        meta::in_error_status(error),
-        None,
-        &[],
+        meta::in_status(status),
+        data.len() as u32,
+        data,
     );
 }
 
