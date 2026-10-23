@@ -29,12 +29,17 @@ pub trait RealOutEndpointHandle: BaseEndpointHandle {
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_>;
 }
 
-#[derive(Debug)]
-pub enum OutTrbProcessingResult {
+#[derive(Debug, PartialEq, Eq)]
+pub enum OutTrbProcessingStatus {
     Disconnect,
     Stall,
     TransactionError,
     Success,
+}
+
+pub struct OutTrbProcessingResult {
+    pub status: OutTrbProcessingStatus,
+    pub length: usize,
 }
 
 pub trait RealInEndpointHandle: BaseEndpointHandle {

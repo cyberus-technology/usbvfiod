@@ -1,6 +1,6 @@
 use super::packet::UsbTransferType;
 use crate::device::xhci::real_endpoint_handle::{
-    ControlRequestProcessingResult, InTrbProcessingStatus, OutTrbProcessingResult,
+    ControlRequestProcessingResult, InTrbProcessingStatus, OutTrbProcessingStatus,
 };
 
 const LINUX_ENODEV: i32 = 19;
@@ -74,11 +74,11 @@ pub const fn in_error_status(error: &InTrbProcessingStatus) -> i32 {
     }
 }
 
-pub const fn out_error_status(error: &OutTrbProcessingResult) -> i32 {
+pub const fn out_error_status(error: &OutTrbProcessingStatus) -> i32 {
     match error {
-        OutTrbProcessingResult::Disconnect => errno_status(LINUX_ENODEV),
-        OutTrbProcessingResult::Stall => errno_status(LINUX_EPIPE),
-        OutTrbProcessingResult::TransactionError => errno_status(LINUX_EPROTO),
-        OutTrbProcessingResult::Success => 0,
+        OutTrbProcessingStatus::Disconnect => errno_status(LINUX_ENODEV),
+        OutTrbProcessingStatus::Stall => errno_status(LINUX_EPIPE),
+        OutTrbProcessingStatus::TransactionError => errno_status(LINUX_EPROTO),
+        OutTrbProcessingStatus::Success => 0,
     }
 }

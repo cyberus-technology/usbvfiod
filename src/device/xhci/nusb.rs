@@ -17,7 +17,8 @@ use crate::device::xhci::{
     real_device::{RealDevice, Speed},
     real_endpoint_handle::{
         ControlRequestProcessingResult, InTrbProcessingResult, InTrbProcessingStatus,
-        RealControlEndpointHandle, RealInEndpointHandle, RealOutEndpointHandle,
+        OutTrbProcessingStatus, RealControlEndpointHandle, RealInEndpointHandle,
+        RealOutEndpointHandle,
     },
     usbrequest::UsbRequest,
 };
@@ -359,20 +360,26 @@ impl<EpType: BulkOrInterrupt> RealOutEndpointHandle for NormalEndpointHandle<EpT
     fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
         Box::pin(async {
             let completion = self.endpoint().next_complete().await;
-            let result = match completion.status {
-                Err(err) => match err {
-                    TransferError::Cancelled => OutTrbProcessingResult::TransactionError,
-                    TransferError::Stall => OutTrbProcessingResult::Stall,
-                    TransferError::Disconnected => OutTrbProcessingResult::Disconnect,
-                    TransferError::Fault => OutTrbProcessingResult::TransactionError,
-                    TransferError::InvalidArgument => OutTrbProcessingResult::TransactionError,
-                    TransferError::Unknown(_) => OutTrbProcessingResult::TransactionError,
-                },
-                Ok(_) => OutTrbProcessingResult::Success,
-            };
 
-            Ok(result)
+            let status = map_status_out(completion.status);
+            let length = completion.actual_len;
+
+            Ok(OutTrbProcessingResult { status, length })
         })
+    }
+}
+
+const fn map_status_out(nusb_status: Result<(), TransferError>) -> OutTrbProcessingStatus {
+    match nusb_status {
+        Ok(_) => OutTrbProcessingStatus::Success,
+        Err(err) => match err {
+            TransferError::Cancelled => OutTrbProcessingStatus::TransactionError,
+            TransferError::Stall => OutTrbProcessingStatus::Stall,
+            TransferError::Disconnected => OutTrbProcessingStatus::Disconnect,
+            TransferError::Fault => OutTrbProcessingStatus::TransactionError,
+            TransferError::InvalidArgument => OutTrbProcessingStatus::TransactionError,
+            TransferError::Unknown(_) => OutTrbProcessingStatus::TransactionError,
+        },
     }
 }
 
@@ -415,7 +422,7 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
                         status,
                     } = self.endpoint().next_complete().await;
                     let data = data.into_vec();
-                    let status = map_status(status);
+                    let status = map_status_in(status);
 
                     Ok(InTrbProcessingResult { status, data })
                 }
@@ -424,7 +431,7 @@ impl<EpType: BulkOrInterrupt> RealInEndpointHandle for NormalEndpointHandle<EpTy
     }
 }
 
-const fn map_status(nusb_status: Result<(), TransferError>) -> InTrbProcessingStatus {
+const fn map_status_in(nusb_status: Result<(), TransferError>) -> InTrbProcessingStatus {
     match nusb_status {
         Ok(_) => InTrbProcessingStatus::Success,
         Err(err) => match err {
