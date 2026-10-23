@@ -172,7 +172,6 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 },
                 WorkerState::Halted => match self.next_msg().await? {
                     EndpointMessage::Reset(completion) => {
-                        self.real_endpoint.clear_halt().await?;
                         self.context.set_state(endpoint_state::STOPPED);
                         let (dequeue_pointer, cycle_state) =
                             self.transfer_ring.get_dequeue_pointer();

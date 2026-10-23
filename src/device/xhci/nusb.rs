@@ -182,11 +182,6 @@ impl BaseEndpointHandle for ControlEndpointHandle {
         // nothing we can do
         Box::pin(async { Ok(()) })
     }
-
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        // nusb handles clearing halts on control endpoints by itself
-        Box::pin(async { Ok(()) })
-    }
 }
 
 impl ControlEndpointHandle {
@@ -461,15 +456,6 @@ impl<EpType: BulkOrInterrupt, Dir: EndpointDirection> BaseEndpointHandle
                 let _ = ep.next_complete().await;
             }
 
-            Ok(())
-        })
-    }
-
-    fn clear_halt(&mut self) -> Self::CompletionFuture<'_> {
-        Box::pin(async {
-            if let Err(error) = self.endpoint().clear_halt().await {
-                warn!("clear_halt failed on non-control endpoint: {error}");
-            }
             Ok(())
         })
     }
