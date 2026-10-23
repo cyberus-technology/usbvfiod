@@ -931,6 +931,57 @@ impl<RCEH: RealControlEndpointHandle> ControlEndpointHandle<RCEH> {
 }
 
 #[derive(Debug)]
+enum SupportedNormalEndpointTrb {
+    Normal(NormalTrb),
+    EventData(EventDataTrb),
+    NoOp(NoOpTrb),
+}
+
+impl TryFrom<TransferTrbVariant> for SupportedNormalEndpointTrb {
+    type Error = TransferTrbVariant;
+
+    fn try_from(trb: TransferTrbVariant) -> Result<Self, Self::Error> {
+        match trb {
+            TransferTrbVariant::Normal(t) => Ok(Self::Normal(t)),
+            TransferTrbVariant::EventData(t) => Ok(Self::EventData(t)),
+            TransferTrbVariant::NoOp(t) => Ok(Self::NoOp(t)),
+            variant => Err(variant),
+        }
+    }
+}
+
+impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
+    const fn chain(&self) -> bool {
+        match &self.variant {
+            SupportedNormalEndpointTrb::Normal(normal) => normal.chain,
+            SupportedNormalEndpointTrb::EventData(event_data) => event_data.chain,
+            SupportedNormalEndpointTrb::NoOp(noop) => noop.chain,
+        }
+    }
+
+    const fn transfer_length(&self) -> usize {
+        match &self.variant {
+            SupportedNormalEndpointTrb::Normal(normal) => normal.transfer_length as usize,
+            SupportedNormalEndpointTrb::EventData(_) => 0,
+            SupportedNormalEndpointTrb::NoOp(_) => 0,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum TdBasedNormalSubmissionState {
+    CollectingTd(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
+    AwaitingRealTransfer(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
+    UnsupportedTrb,
+}
+
+impl Default for TdBasedNormalSubmissionState {
+    fn default() -> Self {
+        Self::CollectingTd(vec![])
+    }
+}
+
+#[derive(Debug)]
 pub struct OutEndpointHandle<ROEH: RealOutEndpointHandle> {
     slot_id: u8,
     endpoint_id: u8,
@@ -1122,57 +1173,6 @@ impl<ROEH: RealOutEndpointHandle> BaseEndpointHandle for OutEndpointHandle<ROEH>
 
     fn cancel(&mut self) -> Self::CompletionFuture<'_> {
         Box::pin(async { self.real_ep.cancel().await })
-    }
-}
-
-#[derive(Debug)]
-enum SupportedNormalEndpointTrb {
-    Normal(NormalTrb),
-    EventData(EventDataTrb),
-    NoOp(NoOpTrb),
-}
-
-impl TryFrom<TransferTrbVariant> for SupportedNormalEndpointTrb {
-    type Error = TransferTrbVariant;
-
-    fn try_from(trb: TransferTrbVariant) -> Result<Self, Self::Error> {
-        match trb {
-            TransferTrbVariant::Normal(t) => Ok(Self::Normal(t)),
-            TransferTrbVariant::EventData(t) => Ok(Self::EventData(t)),
-            TransferTrbVariant::NoOp(t) => Ok(Self::NoOp(t)),
-            variant => Err(variant),
-        }
-    }
-}
-
-impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
-    const fn chain(&self) -> bool {
-        match &self.variant {
-            SupportedNormalEndpointTrb::Normal(normal) => normal.chain,
-            SupportedNormalEndpointTrb::EventData(event_data) => event_data.chain,
-            SupportedNormalEndpointTrb::NoOp(noop) => noop.chain,
-        }
-    }
-
-    const fn transfer_length(&self) -> usize {
-        match &self.variant {
-            SupportedNormalEndpointTrb::Normal(normal) => normal.transfer_length as usize,
-            SupportedNormalEndpointTrb::EventData(_) => 0,
-            SupportedNormalEndpointTrb::NoOp(_) => 0,
-        }
-    }
-}
-
-#[derive(Debug)]
-enum TdBasedNormalSubmissionState {
-    CollectingTd(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
-    AwaitingRealTransfer(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
-    UnsupportedTrb,
-}
-
-impl Default for TdBasedNormalSubmissionState {
-    fn default() -> Self {
-        Self::CollectingTd(vec![])
     }
 }
 
