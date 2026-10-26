@@ -91,25 +91,13 @@ pub fn out_submission(meta: EndpointPcapMeta, urb_id: u64, payload: &[u8], expec
     packet::log_submission(meta, None, urb_id, expected_len, None, payload);
 }
 
-pub fn out_completion(meta: EndpointPcapMeta, urb_id: u64, len: u32) {
-    packet::log_completion(meta, None, urb_id, 0, len, &[]);
-}
-
-pub fn out_error(
+pub fn out_completion(
     meta: EndpointPcapMeta,
     urb_id: u64,
-    error: &OutTrbProcessingStatus,
-    payload: &[u8],
+    status: &OutTrbProcessingStatus,
+    len: u32,
 ) {
-    packet::log_error(
-        meta,
-        None,
-        urb_id,
-        UsbEventType::Error,
-        meta::out_error_status(error),
-        None,
-        payload,
-    );
+    packet::log_completion(meta, None, urb_id, meta::out_status(status), len, &[]);
 }
 
 pub fn trb_error(meta: EndpointPcapMeta, urb_id: u64) {

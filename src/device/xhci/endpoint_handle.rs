@@ -1378,12 +1378,12 @@ impl<ROEH: RealOutEndpointHandle> TdBasedOutEndpointHandle<ROEH> {
             completion.length, completion.status
         );
 
-        match &completion.status {
-            OutTrbProcessingStatus::Success => {
-                pcap::out_completion(self.pcap_meta, trbs[0].addr, completion.length as u32);
-            }
-            status => pcap::out_error(self.pcap_meta, trbs[0].addr, status, &[]),
-        }
+        pcap::out_completion(
+            self.pcap_meta,
+            trbs[0].addr,
+            &completion.status,
+            completion.length as u32,
+        );
 
         let mut td_info = TdProcessingInfoOut {
             event_sender: &self.event_sender,
