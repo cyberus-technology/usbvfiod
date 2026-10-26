@@ -191,7 +191,8 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
 
         match req.addr {
             // xHC Capability Registers
-            offset::CAPLENGTH => OP_BASE,
+            // CAPLENGTH and HCIVERSION share a dword; Linux reads both with a single 32-bit access.
+            offset::CAPLENGTH => OP_BASE | (capability::HCIVERSION << 16),
             offset::HCIVERSION => capability::HCIVERSION,
             offset::HCSPARAMS1 => capability::HCSPARAMS1,
             offset::HCSPARAMS2 => capability::HCSPARAMS2,
