@@ -120,7 +120,7 @@ impl CommandCompletionEventTrbData {
 
         trb[0..8].copy_from_slice(&self.command_trb_pointer.to_le_bytes());
         trb[8..11].copy_from_slice(&self.command_completion_parameter.to_le_bytes()[0..3]);
-        trb[11] = self.completion_code as u8;
+        trb[11] = self.completion_code.into();
         trb[13] = COMMAND_COMPLETION_EVENT << 2;
         trb[15] = self.slot_id;
 
@@ -157,11 +157,11 @@ impl EventTrb {
 }
 
 impl PortStatusChangeEventTrbData {
-    const fn to_bytes(&self) -> RawTrbBuffer {
+    fn to_bytes(&self) -> RawTrbBuffer {
         let mut bytes = zeroed_trb_buffer();
 
         bytes[3] = self.port_id;
-        bytes[11] = CompletionCode::Success as u8;
+        bytes[11] = CompletionCode::Success.into();
         bytes[13] = PORT_STATUS_CHANGE_EVENT << 2;
 
         bytes
@@ -219,7 +219,7 @@ impl TransferEventTrbData {
 
         trb[0..8].copy_from_slice(&self.trb_pointer.to_le_bytes());
         trb[8..11].copy_from_slice(&self.trb_transfer_length.to_le_bytes()[0..3]);
-        trb[11] = self.completion_code as u8;
+        trb[11] = self.completion_code.into();
         trb[12] = (self.event_data as u8) << 2;
         trb[13] = TRANSFER_EVENT << 2;
         trb[14] = self.endpoint_id;
