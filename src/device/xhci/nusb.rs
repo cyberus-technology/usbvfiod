@@ -120,7 +120,7 @@ impl RealDevice for NusbRealDevice {
     }
 
     fn control_endpoint_handle(&self) -> Self::RCEH {
-        ControlEndpointHandle::new(self.device_wrapper.device.clone(), &self.async_runtime)
+        ControlEndpointHandle::new(self.device_wrapper.clone(), &self.async_runtime)
     }
 
     fn bulk_in_endpoint_handle(&self, endpoint_id: u8) -> Self::RBIEH {
@@ -186,13 +186,13 @@ impl BaseEndpointHandle for ControlEndpointHandle {
 }
 
 impl ControlEndpointHandle {
-    fn new(device: nusb::Device, async_runtime: &runtime::Handle) -> Self {
+    fn new(device_wrapper: Arc<NusbDeviceWrapper>, async_runtime: &runtime::Handle) -> Self {
         let (request_submitter, request_receiver) = mpsc::unbounded_channel();
         let (response_submitter, response_receiver) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
 
         async_runtime.spawn(cancellable_control_endpoint_worker(
-            device,
+            device_wrapper,
             request_receiver,
             response_submitter,
             cancel.clone(),
@@ -207,23 +207,24 @@ impl ControlEndpointHandle {
 }
 
 async fn cancellable_control_endpoint_worker(
-    device: nusb::Device,
+    device_wrapper: Arc<NusbDeviceWrapper>,
     request_receiver: mpsc::UnboundedReceiver<UsbRequest>,
     response_submitter: mpsc::UnboundedSender<ControlRequestProcessingResult>,
     cancel: CancellationToken,
 ) {
     select! {
-        _ = control_endpoint_worker(device, request_receiver, response_submitter) => {},
+        _ = control_endpoint_worker(device_wrapper, request_receiver, response_submitter) => {},
         _ = cancel.cancelled() => {},
     }
 }
 
 // this function can only return with an error, but ! cannot be used in Result
 async fn control_endpoint_worker(
-    device: nusb::Device,
+    device_wrapper: Arc<NusbDeviceWrapper>,
     mut request_receiver: mpsc::UnboundedReceiver<UsbRequest>,
     response_submitter: mpsc::UnboundedSender<ControlRequestProcessingResult>,
 ) -> anyhow::Result<()> {
+    let device = &device_wrapper.device;
     loop {
         if let Some(request) = request_receiver.recv().await {
             let (recipient, control_type) = extract_recipient_and_type(request.request_type);
