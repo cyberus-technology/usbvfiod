@@ -41,6 +41,29 @@ let
       ${pkgs.cloud-hypervisor}/bin/cloud-hypervisor --memory size=4G,shared=on --serial tty --user-device socket=${vfio-user-socket} --console off --kernel ${symlink}/bzImage --initramfs ${symlink}/initrd --cmdline "$NETBOOT console=ttyS0"
     '';
 
+  runchv-win = pkgs.writeShellScriptBin "runchv-win" ''
+    if [ $# -ne 1 ]; then
+      echo "usage: runchv-win <path-to-windows-image>" >&2
+      exit 1
+    fi
+    IMAGE=$(realpath "$1")
+
+    OVERLAY_DIR=$(mktemp -d)
+    trap 'rm -rf "$OVERLAY_DIR"' EXIT
+    OVERLAY="$OVERLAY_DIR/overlay.qcow2"
+    ${pkgs.qemu-utils}/bin/qemu-img create -q -f qcow2 -F raw -b "$IMAGE" "$OVERLAY"
+
+    sudo ${pkgs.cloud-hypervisor}/bin/cloud-hypervisor \
+      --kernel ${pkgs.lib.getOutput "fd" pkgs.OVMF-cloud-hypervisor}/FV/CLOUDHV.fd \
+      --disk path="$OVERLAY",image_type=qcow2,backing_files=on \
+      --cpus boot=4,kvm_hyperv=on \
+      --memory size=8G,shared=on \
+      --serial tty \
+      --console off \
+      --net tap=,ip=192.168.249.1,mask=255.255.255.0 \
+      --user-device socket=${vfio-user-socket}
+  '';
+
   attach = pkgs.writeShellScriptBin "attach" ''
     if [ "$#" -ne 2 ]; then
       echo "Error: expected 2 arguments: /dev/bus/usb/\$1/\$2"
@@ -55,11 +78,12 @@ let
   infoMessage = pkgs.writeShellScriptBin "infoMessage" ''
     echo "INFO: Set \$BUILD to 'release' for release binaries (default: 'debug')."
     echo "INFO: This devShell provides a few simple QoL scripts."
-    echo "  sshhost       connect to a qemu guest of a nix integration test"
-    echo "  sshguest      connect to a nested cloud hypervisor guest of a nix integration test"
-    echo "  runusbvfiod   usbvfiod wrapper with hotplug enabled; foreground job using stdio for logs"
-    echo "  runchv        cloud hypervisor wrapper expecting a usbvfiod socket; foreground job and uses stdio for interaction & logs"
-    echo "  attach        remote wrapper to attach a usb device to the running usbvfiod; uses stdio for logs"
+    echo "  sshhost                connect to a qemu guest of a nix integration test"
+    echo "  sshguest               connect to a nested cloud hypervisor guest of a nix integration test"
+    echo "  runusbvfiod            usbvfiod wrapper with hotplug enabled; foreground job using stdio for logs"
+    echo "  runchv                 cloud hypervisor wrapper expecting a usbvfiod socket; foreground job and uses stdio for interaction & logs"
+    echo "  runchv-win <win-img>   cloud hypervisor wrapper expecting a usbvfiod socket; foreground job and uses stdio for interaction & logs"
+    echo "  attach                 remote wrapper to attach a usb device to the running usbvfiod; uses stdio for logs"
   '';
 
   commonPackages = [
@@ -68,6 +92,7 @@ let
     sshguest
     runusbvfiod
     runchv
+    runchv-win
     attach
   ];
 
