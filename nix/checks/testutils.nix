@@ -61,24 +61,40 @@ let
               usbutils
               e2fsprogs
               lsof
+              socat
             ];
 
-            # network configuration for interactive debugging
-            networking.interfaces."ens2" = {
-              ipv4.addresses = [
-                {
-                  address = "192.168.100.2";
-                  prefixLength = 24;
-                }
-              ];
-              ipv4.routes = [
-                {
-                  address = "0.0.0.0";
-                  prefixLength = 0;
-                  via = "192.168.100.1";
-                }
-              ];
-              useDHCP = false;
+            # Give the passed-through usb-net device a stable name. IP-address configuration
+            # is the responsibility of the test script.
+            systemd.network.links."10-usbnet" = {
+              matchConfig.MACAddress = usbNetMac;
+              linkConfig.Name = usbNetInterface;
+            };
+            # QEMU's usb-net uses the NetChip gadget IDs, which cdc_subset also
+            # matches. If it wins the probe race, cdc_ether cannot bind and the
+            # interface gets a random MAC, so the .link file above does not apply.
+            boot.blacklistedKernelModules = [ "cdc_subset" ];
+            networking = {
+              dhcpcd.denyInterfaces = [ usbNetInterface ];
+              firewall.trustedInterfaces = [ usbNetInterface ];
+
+              # network configuration for interactive debugging
+              interfaces."ens2" = {
+                ipv4.addresses = [
+                  {
+                    address = "192.168.100.2";
+                    prefixLength = 24;
+                  }
+                ];
+                ipv4.routes = [
+                  {
+                    address = "0.0.0.0";
+                    prefixLength = 0;
+                    via = "192.168.100.1";
+                  }
+                ];
+                useDHCP = false;
+              };
             };
 
             # ssh access for interactive debugging
@@ -239,6 +255,14 @@ let
   blockdeviceProductId = "0001";
   hidVendorId = "0627";
   hidProductId = "0001";
+  # ... configuring QEMU's usb-net device and its user-mode network backend.
+  # Only one usb-net device per test is supported, as the values are static.
+  usbNetMac = "52:54:00:12:34:99";
+  usbNetInterface = "usbnet0"; # assigned by a .link file in the nested guest
+  usbNetSubnet = "10.0.3.0/24";
+  usbNetGatewayIp = "10.0.3.2";
+  usbNetGuestIp = "10.0.3.15";
+  usbNetHostPort = 5555; # forwarded to the same port at usbNetGuestIp
 
   # Attrs for all supported USB versions and information for test construction.
   usbVersions = {
@@ -348,6 +372,15 @@ let
     deviceId: deviceSocket: deviceBus: devicePort:
     "-chardev socket,id=char${deviceId},path=/tmp/${deviceSocket}.sock,server=on,wait=off -device usb-serial,chardev=char${deviceId},id=${deviceId},bus=${deviceBus}.0,port=${devicePort}";
 
+  # Add a usb network adapter backed by QEMU's user-mode network stack. The
+  # test driver can reach the nested guest via the forwarded TCP port.
+  mkQemuNetAdapter =
+    deviceId: deviceBus: devicePort:
+    let
+      port = builtins.toString usbNetHostPort;
+    in
+    "-netdev user,id=net${deviceId},net=${usbNetSubnet},restrict=on,hostfwd=tcp:127.0.0.1:${port}-${usbNetGuestIp}:${port} -device usb-net,netdev=net${deviceId},mac=${usbNetMac},bus=${deviceBus}.0,port=${devicePort}";
+
   # Create a usb device on our QEMU bus-id corresponding with the declared usb version.
   mkUsbDeviceType =
     testname: device:
@@ -367,8 +400,10 @@ let
       mkQemuSerialAdapter "${device.udevRule.symlink}" "${testname}-${device.udevRule.symlink}" "${
         deviceBus
       }" "${builtins.toString device.usbPort}"
+    else if (device.type == "net") then
+      mkQemuNetAdapter "${device.udevRule.symlink}" "${deviceBus}" "${builtins.toString device.usbPort}"
     else
-      builtins.abort ''wrong device type; types supported are "block", "hid" and "serial"'';
+      builtins.abort ''wrong device type; types supported are "block", "hid", "serial" and "net"'';
 
   # Respect if attached at host on boot option is true to create the QEMU device option.
   mkUsbDevice =
@@ -427,8 +462,12 @@ let
   # Input type check for list of virtualDevices in the attrs.
   sanityCheckDevice =
     device:
-    assert (device.type == "block" || device.type == "hid" || device.type == "serial");
+    assert (
+      device.type == "block" || device.type == "hid" || device.type == "serial" || device.type == "net"
+    );
     assert (device.usbVersion == "1.1" || device.usbVersion == "2" || device.usbVersion == "3");
+    # QEMU's usb-net is full-speed only and cannot attach to the EHCI controller.
+    assert (device.type != "net" || device.usbVersion != "2");
     assert (builtins.typeOf device.usbPort == "int" || builtins.typeOf device.usbPort == "string");
     assert (builtins.typeOf device.udevRule.enable == "bool");
     assert (builtins.typeOf device.udevRule.symlink == "string");
@@ -602,6 +641,10 @@ in
     blockdeviceProductId
     hidVendorId
     hidProductId
+    usbNetInterface
+    usbNetGatewayIp
+    usbNetGuestIp
+    usbNetHostPort
     usbvfiodSocket
     usbvfiodSocketHotplug
     guestLogFile
@@ -632,6 +675,12 @@ in
     Note: Serial devices cannot use `attachedOnStartup = "none";`.
     Note: Serial symlink strings have to follow python variable naming restrictions.
 
+    For a net device, QEMU's usb-net is connected to a user-mode network
+    (gateway `usbNetGatewayIp`). The test driver reaches `usbNetGuestIp:usbNetHostPort`
+    in the nested guest by connecting to `127.0.0.1:usbNetHostPort`. The nested guest
+    names the interface `usbNetInterface`; the test has to configure it.
+    Note: Only one net device per test is supported, and it cannot use usbVersion "2".
+
     Provides QoL variables ONE_MINUTE and TWO_MINUTES to use as timeout argument and call `.succeed(commands, timeout=ONE_MINUTE)` instead of writing `.succeed(command, timeout=datetime.timedelta(minutes=1))` or declaring variables on each test.
 
     # Inputs
@@ -649,7 +698,7 @@ in
       useFileDescriptor :: Bool
       virtualDevices :: [
         {
-        type :: "block" || "hid" || "serial"
+        type :: "block" || "hid" || "serial" || "net"
         usbVersion :: "1.1" || "2" || "3"
         usbPort :: Integer || String
         udevRule.enable :: Bool

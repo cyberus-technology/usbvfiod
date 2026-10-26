@@ -35,3 +35,6 @@ in
 // import ./interrupt.nix {
   inherit testutils;
 }
+// import ./usb-net.nix {
+  inherit testutils;
+}
