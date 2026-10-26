@@ -8,7 +8,9 @@ use crate::device::interrupt_line::{DummyInterruptLine, InterruptLine};
 use crate::device::pci::constants::xhci::runtime::IMOD_DEFAULT;
 use crate::device::xhci::controller_reset::ResetSender;
 use crate::device::xhci::event_ring::EventRing;
-use crate::device::xhci::registers::{ErstbaRegister, GenericRwRegister};
+use crate::device::xhci::registers::{
+    ErdpRegister, ErstbaRegister, ErstszRegister, GenericRwRegister,
+};
 use crate::device::xhci::trb::EventTrb;
 use crate::oneshot_anyhow::SendWithAnyhowError;
 use std::sync::Arc;
@@ -42,12 +44,12 @@ pub struct InterrupterRegisters {
     ///
     /// The minimum interval in 250ns increments between interrupts.
     pub interrupt_moderation_interval: GenericRwRegister,
+    /// ERSTSZ: Event ring segment table size
+    pub erst_size: ErstszRegister,
     /// ERSTBA: Event ring segment table base address
     pub erst_base_address: ErstbaRegister,
-    /// ERSTSZ: Event ring segment table size
-    pub erst_size: GenericRwRegister,
     /// ERDP: Event ring dequeue pointer
-    pub eventring_dequeue_pointer: GenericRwRegister,
+    pub eventring_dequeue_pointer: ErdpRegister,
 }
 
 impl Default for InterrupterRegisters {
@@ -55,8 +57,8 @@ impl Default for InterrupterRegisters {
         Self {
             interrupt_management: Default::default(),
             interrupt_moderation_interval: GenericRwRegister::new(IMOD_DEFAULT),
-            erst_base_address: Default::default(),
             erst_size: Default::default(),
+            erst_base_address: Default::default(),
             eventring_dequeue_pointer: Default::default(),
         }
     }
@@ -163,8 +165,8 @@ impl EventWorker {
         loop {
             self.wait_for_event_ring_configuration().await?;
             self.event_ring.configure(
-                self.registers.erst_base_address.erstba(),
-                self.registers.erst_size.read() as u32,
+                self.registers.erst_base_address.base_address(),
+                self.registers.erst_size.segment_table_size(),
             );
 
             self.run_configured().await?;
@@ -199,9 +201,9 @@ impl EventWorker {
                 InterrupterMessage::SendEvent(event_trb) => {
                     self.event_ring.enqueue(
                         &event_trb,
-                        self.registers.erst_base_address.erstba(),
-                        self.registers.erst_size.read() as u32,
-                        self.registers.eventring_dequeue_pointer.read(),
+                        self.registers.erst_size.segment_table_size(),
+                        self.registers.erst_base_address.base_address(),
+                        self.registers.eventring_dequeue_pointer.dequeue_pointer(),
                     );
                     self.interrupt_line.interrupt();
                     debug!("Sent event: {event_trb:?}");
