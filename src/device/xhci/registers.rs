@@ -70,7 +70,7 @@ impl PortscRegister {
         let bits_to_clear = new_value & BITMASK_RW1C;
         let port_reset_bit = new_value & portsc::PR != 0;
 
-        match self.value.fetch_update(
+        self.value.update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |reg| {
@@ -80,18 +80,14 @@ impl PortscRegister {
                     Self::port_reset(&mut new_reg, self.usb_version);
                 }
 
-                Some(new_reg)
+                new_reg
             },
-        ) {
-            Ok(_) => {
-                if port_reset_bit {
-                    let event = EventTrb::new_port_status_change_event_trb(self.port_id);
-                    self.event_sender.send(event)?;
-                }
-                Ok(())
-            }
-            Err(_) => unreachable!("update function never returns None"),
+        );
+        if port_reset_bit {
+            let event = EventTrb::new_port_status_change_event_trb(self.port_id);
+            self.event_sender.send(event)?;
         }
+        Ok(())
     }
 
     fn port_reset(register: &mut u64, usb_version: UsbVersion) {
@@ -219,13 +215,12 @@ impl UsbcmdRegister {
 
         // Preserve an ongoing reset until the reset coordinator clears HCRST.
         self.value
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 let hcrst = current as u64 & usbcmd::HCRST;
                 let value = (value & BITMASK_PRESERVED) | hcrst;
                 // SAFETY: USBCMD is defined as 32 bit and the masks used above enforce it.
-                Some(value.try_into().unwrap())
-            })
-            .unwrap();
+                value.try_into().unwrap()
+            });
         if value & usbcmd::HCRST == usbcmd::HCRST {
             info!("Host Controller Reset requested");
             self.reset_notify.notify_waiters();
