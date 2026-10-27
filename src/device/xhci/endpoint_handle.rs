@@ -1118,9 +1118,9 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
         Box::pin(async {
             match &mut self.submission_state {
                 TdBasedNormalSubmissionState::CollectingTd(_) => Ok(TrbProcessingResult::Ok),
-                TdBasedNormalSubmissionState::UnsupportedTrb(_addr) => {
+                TdBasedNormalSubmissionState::UnsupportedTrb(addr) => {
                     let transfer_event = EventTrb::new_transfer_event_trb(
-                        trb.addr,
+                        *addr,
                         0,
                         CompletionCode::TrbError,
                         false,
@@ -1529,7 +1529,16 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<RO
         Box::pin(async {
             match &mut self.submission_state {
                 TdBasedNormalSubmissionState::CollectingTd(_) => Ok(TrbProcessingResult::Ok),
-                TdBasedNormalSubmissionState::UnsupportedTrb(_addr) => {
+                TdBasedNormalSubmissionState::UnsupportedTrb(addr) => {
+                    let transfer_event = EventTrb::new_transfer_event_trb(
+                        *addr,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(transfer_event)?;
                     self.submission_state = TdBasedNormalSubmissionState::default();
                     Ok(TrbProcessingResult::TrbError)
                 }
