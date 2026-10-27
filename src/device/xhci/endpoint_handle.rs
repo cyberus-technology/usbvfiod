@@ -1021,10 +1021,16 @@ impl<RIEH: RealInEndpointHandle> TdBasedInEndpointHandle<RIEH> {
             completion.data.len(),
         );
 
+        pcap::in_completion(
+            self.pcap_meta,
+            trbs[0].addr,
+            &completion.status,
+            &completion.data,
+        );
+
         let mut td_info = TdProcessingInfoIn {
             event_sender: &self.event_sender,
             dma_bus: &self.dma_bus,
-            pcap_meta: self.pcap_meta,
             status: completion.status,
             state: TdProcessingStateIn::Default,
             data: &completion.data,
@@ -1094,6 +1100,9 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
             );
             self.real_ep.submit(td_request_length)?;
 
+            // the collection approach guarantees there is always at least one TRB in a TD
+            pcap::in_submission(self.pcap_meta, trbs[0].addr, td_request_length as u32);
+
             replace_with_or_abort(&mut self.submission_state, |old_state| {
                 let TdBasedNormalSubmissionState::CollectingTd(trbs) = old_state else {
                     unreachable!("verified the state is CollectingTd at the start of the function");
@@ -1132,7 +1141,6 @@ struct TdProcessingInfoIn<'a> {
     slot_id: u8,
     event_sender: &'a EventSender,
     dma_bus: &'a BusDeviceRef,
-    pcap_meta: EndpointPcapMeta,
     // per TD data
     status: InTrbProcessingStatus,
     // updated every TRB
@@ -1185,8 +1193,6 @@ impl<'a> TdProcessingInfoIn<'a> {
     ) -> anyhow::Result<Option<TrbProcessingResult>> {
         match self.state {
             TdProcessingStateIn::Default => {
-                pcap::in_submission(self.pcap_meta, addr, trb_data.transfer_length);
-
                 let bytes_requested = trb_data.transfer_length as usize;
                 let bytes_available = self.data.len();
                 let dma_byte_count = bytes_requested.min(bytes_available);
@@ -1220,8 +1226,6 @@ impl<'a> TdProcessingInfoIn<'a> {
                             }
                             self.state = TdProcessingStateIn::ShortTransfer(bytes_missing);
 
-                            pcap::in_completion(self.pcap_meta, addr, bytes);
-
                             return Ok(None);
                         }
                         _ => {
@@ -1252,14 +1256,10 @@ impl<'a> TdProcessingInfoIn<'a> {
                             );
                             self.event_sender.send(transfer_event)?;
 
-                            pcap::in_error(self.pcap_meta, addr, &self.status);
-
                             return Ok(Some(processing_result));
                         }
                     }
                 }
-
-                pcap::in_completion(self.pcap_meta, addr, bytes);
 
                 // event sending only when IOC is set
                 if trb_data.interrupt_on_completion {
@@ -1378,12 +1378,12 @@ impl<ROEH: RealOutEndpointHandle> TdBasedOutEndpointHandle<ROEH> {
             completion.length, completion.status
         );
 
-        match &completion.status {
-            OutTrbProcessingStatus::Success => {
-                pcap::out_completion(self.pcap_meta, trbs[0].addr, completion.length as u32);
-            }
-            status => pcap::out_error(self.pcap_meta, trbs[0].addr, status, &[]),
-        }
+        pcap::out_completion(
+            self.pcap_meta,
+            trbs[0].addr,
+            &completion.status,
+            completion.length as u32,
+        );
 
         let mut td_info = TdProcessingInfoOut {
             event_sender: &self.event_sender,
