@@ -971,7 +971,7 @@ impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
 enum TdBasedNormalSubmissionState {
     CollectingTd(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
     AwaitingRealTransfer(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
-    UnsupportedTrb,
+    UnsupportedTrb(u64),
 }
 
 impl Default for TdBasedNormalSubmissionState {
@@ -1081,7 +1081,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                     "Encountered unsupported TRB on In Endpoint (slot {}, ep {}): {transfer_trb:?}",
                     self.slot_id, self.endpoint_id
                 );
-                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
+                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb(trb.address);
                 return Ok(());
             }
         };
@@ -1118,7 +1118,16 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
         Box::pin(async {
             match &mut self.submission_state {
                 TdBasedNormalSubmissionState::CollectingTd(_) => Ok(TrbProcessingResult::Ok),
-                TdBasedNormalSubmissionState::UnsupportedTrb => {
+                TdBasedNormalSubmissionState::UnsupportedTrb(_addr) => {
+                    let transfer_event = EventTrb::new_transfer_event_trb(
+                        trb.addr,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(transfer_event)?;
                     self.submission_state = TdBasedNormalSubmissionState::default();
                     Ok(TrbProcessingResult::TrbError)
                 }
@@ -1474,13 +1483,13 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<RO
                     "Encountered unsupported TRB on Out Endpoint (slot {}, ep {}): {transfer_trb:?}",
                     self.slot_id, self.endpoint_id
                 );
-                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
+                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb(trb.address);
                 return Ok(());
             }
         };
 
         if !supported_trb.valid() {
-            self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
+            self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb(trb.address);
             return Ok(());
         }
 
@@ -1520,7 +1529,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<RO
         Box::pin(async {
             match &mut self.submission_state {
                 TdBasedNormalSubmissionState::CollectingTd(_) => Ok(TrbProcessingResult::Ok),
-                TdBasedNormalSubmissionState::UnsupportedTrb => {
+                TdBasedNormalSubmissionState::UnsupportedTrb(_addr) => {
                     self.submission_state = TdBasedNormalSubmissionState::default();
                     Ok(TrbProcessingResult::TrbError)
                 }
