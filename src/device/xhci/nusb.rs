@@ -6,7 +6,7 @@ use nusb::{
         Buffer, Bulk, BulkOrInterrupt, Completion, ControlIn, ControlOut, ControlType,
         EndpointDirection, EndpointType, In, Interrupt, Out, Recipient, TransferError,
     },
-    Endpoint, Interface, MaybeFuture,
+    Endpoint, ErrorKind, Interface, MaybeFuture,
 };
 use tokio::{runtime, select, sync::mpsc};
 use tokio_util::sync::CancellationToken;
@@ -80,6 +80,34 @@ impl NusbDeviceWrapper {
 
         Ok(endpoint)
     }
+
+    async fn set_alt_setting(
+        &self,
+        interface_number: u8,
+        alt_setting: u8,
+    ) -> ControlRequestProcessingResult {
+        let Some(interface) = self
+            .interfaces
+            .iter()
+            .find(|interface| interface.interface_number() == interface_number)
+        else {
+            warn!("SET_INTERFACE for unknown interface {interface_number}");
+            return ControlRequestProcessingResult::Stall;
+        };
+
+        match interface.set_alt_setting(alt_setting).await {
+            Ok(()) => ControlRequestProcessingResult::SuccessfulControlOut,
+            Err(err) => {
+                warn!("Failed to set alternate setting {alt_setting} of interface {interface_number}: {err}");
+                match err.kind() {
+                    // A real device would stall a request for a nonexistent alternate setting.
+                    ErrorKind::NotFound => ControlRequestProcessingResult::Stall,
+                    ErrorKind::Disconnected => ControlRequestProcessingResult::Disconnect,
+                    _ => ControlRequestProcessingResult::TransactionError,
+                }
+            }
+        }
+    }
 }
 
 const fn endpoint_id_to_address(endpoint_id: u8) -> u8 {
@@ -120,7 +148,7 @@ impl RealDevice for NusbRealDevice {
     }
 
     fn control_endpoint_handle(&self) -> Self::RCEH {
-        ControlEndpointHandle::new(self.device_wrapper.device.clone(), &self.async_runtime)
+        ControlEndpointHandle::new(self.device_wrapper.clone(), &self.async_runtime)
     }
 
     fn bulk_in_endpoint_handle(&self, endpoint_id: u8) -> Self::RBIEH {
@@ -186,13 +214,13 @@ impl BaseEndpointHandle for ControlEndpointHandle {
 }
 
 impl ControlEndpointHandle {
-    fn new(device: nusb::Device, async_runtime: &runtime::Handle) -> Self {
+    fn new(device_wrapper: Arc<NusbDeviceWrapper>, async_runtime: &runtime::Handle) -> Self {
         let (request_submitter, request_receiver) = mpsc::unbounded_channel();
         let (response_submitter, response_receiver) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
 
         async_runtime.spawn(cancellable_control_endpoint_worker(
-            device,
+            device_wrapper,
             request_receiver,
             response_submitter,
             cancel.clone(),
@@ -207,29 +235,45 @@ impl ControlEndpointHandle {
 }
 
 async fn cancellable_control_endpoint_worker(
-    device: nusb::Device,
+    device_wrapper: Arc<NusbDeviceWrapper>,
     request_receiver: mpsc::UnboundedReceiver<UsbRequest>,
     response_submitter: mpsc::UnboundedSender<ControlRequestProcessingResult>,
     cancel: CancellationToken,
 ) {
     select! {
-        _ = control_endpoint_worker(device, request_receiver, response_submitter) => {},
+        _ = control_endpoint_worker(device_wrapper, request_receiver, response_submitter) => {},
         _ = cancel.cancelled() => {},
     }
 }
 
+// bmRequestType of a standard request addressed to an interface (host-to-device).
+const REQUEST_TYPE_STANDARD_INTERFACE_OUT: u8 = 0x01;
+const REQUEST_SET_INTERFACE: u8 = 0x0b;
+
 // this function can only return with an error, but ! cannot be used in Result
 async fn control_endpoint_worker(
-    device: nusb::Device,
+    device_wrapper: Arc<NusbDeviceWrapper>,
     mut request_receiver: mpsc::UnboundedReceiver<UsbRequest>,
     response_submitter: mpsc::UnboundedSender<ControlRequestProcessingResult>,
 ) -> anyhow::Result<()> {
+    let device = &device_wrapper.device;
     loop {
         if let Some(request) = request_receiver.recv().await {
             let (recipient, control_type) = extract_recipient_and_type(request.request_type);
             let is_out_request = request.request_type & 0x80 == 0;
+            let is_set_interface = request.request_type == REQUEST_TYPE_STANDARD_INTERFACE_OUT
+                && request.request == REQUEST_SET_INTERFACE;
 
             let processing_result = match is_out_request {
+                // SET_INTERFACE must not be sent as a plain control transfer:
+                // neither the host kernel nor nusb would learn about the new
+                // alternate setting and its endpoints.
+                true if is_set_interface => {
+                    // wIndex holds the interface number and wValue the alternate setting.
+                    device_wrapper
+                        .set_alt_setting(request.index as u8, request.value as u8)
+                        .await
+                }
                 true => {
                     let control = ControlOut {
                         control_type,
