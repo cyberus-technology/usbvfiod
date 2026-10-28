@@ -971,7 +971,7 @@ impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
 enum TdBasedNormalSubmissionState {
     CollectingTd(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
     AwaitingRealTransfer(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
-    UnsupportedTrb,
+    UnsupportedTrb(u64),
 }
 
 impl Default for TdBasedNormalSubmissionState {
@@ -1081,7 +1081,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                     "Encountered unsupported TRB on In Endpoint (slot {}, ep {}): {transfer_trb:?}",
                     self.slot_id, self.endpoint_id
                 );
-                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
+                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb(trb.address);
                 return Ok(());
             }
         };
@@ -1118,7 +1118,16 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
         Box::pin(async {
             match &mut self.submission_state {
                 TdBasedNormalSubmissionState::CollectingTd(_) => Ok(TrbProcessingResult::Ok),
-                TdBasedNormalSubmissionState::UnsupportedTrb => {
+                TdBasedNormalSubmissionState::UnsupportedTrb(addr) => {
+                    let transfer_event = EventTrb::new_transfer_event_trb(
+                        *addr,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(transfer_event)?;
                     self.submission_state = TdBasedNormalSubmissionState::default();
                     Ok(TrbProcessingResult::TrbError)
                 }
@@ -1474,13 +1483,13 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<RO
                     "Encountered unsupported TRB on Out Endpoint (slot {}, ep {}): {transfer_trb:?}",
                     self.slot_id, self.endpoint_id
                 );
-                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
+                self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb(trb.address);
                 return Ok(());
             }
         };
 
         if !supported_trb.valid() {
-            self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb;
+            self.submission_state = TdBasedNormalSubmissionState::UnsupportedTrb(trb.address);
             return Ok(());
         }
 
@@ -1520,7 +1529,16 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<RO
         Box::pin(async {
             match &mut self.submission_state {
                 TdBasedNormalSubmissionState::CollectingTd(_) => Ok(TrbProcessingResult::Ok),
-                TdBasedNormalSubmissionState::UnsupportedTrb => {
+                TdBasedNormalSubmissionState::UnsupportedTrb(addr) => {
+                    let transfer_event = EventTrb::new_transfer_event_trb(
+                        *addr,
+                        0,
+                        CompletionCode::TrbError,
+                        false,
+                        self.endpoint_id,
+                        self.slot_id,
+                    );
+                    self.event_sender.send(transfer_event)?;
                     self.submission_state = TdBasedNormalSubmissionState::default();
                     Ok(TrbProcessingResult::TrbError)
                 }
@@ -4156,6 +4174,162 @@ pub mod tests {
         assert_eq!(
             interrupter.await_event().await,
             Some(expected_event(EVENT_DATA_FIELD, TRANSFER_LENGTH, true))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_out_normal_trb_with_too_long_immediate_data_causes_trb_error() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = MockRealOutEndpoint::new();
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, mut interrupter) = MockInterrupter::new();
+
+        let mut bulk_out_endpoint = TdBasedOutEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        // immediate data can hold at most 8 bytes
+        let invalid_normal = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_trb_transfer_length(9)
+            .with_immediate_data()
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+
+        bulk_out_endpoint
+            .submit_trb(invalid_normal)
+            .expect("submitting an invalid TRB should not fail");
+        assert_eq!(
+            bulk_out_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::TrbError)
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        // the endpoint accepts new TDs after the TRB error
+        let normal = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+
+        bulk_out_endpoint
+            .submit_trb(normal)
+            .expect("this mock hardware request should never fail");
+        assert_eq!(
+            bulk_out_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Ok)
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_in_unsupported_trb_type_causes_trb_error() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = MockRealInEndpoint::new(None);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, mut interrupter) = MockInterrupter::new();
+
+        let mut bulk_in_endpoint = TdBasedInEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        // Setup Stage TRBs are only allowed on control endpoints
+        let setup_stage = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_setup_type(SETUP_BM_REQUEST_TYPE_IN)
+            .with_setup_wlength(SETUP_WLENGTH)
+            .with_trb_transfer_length(8)
+            .with_immediate_data()
+            .with_trb_type(TRB_TYPE_SETUP_STAGE)
+            .build();
+
+        bulk_in_endpoint
+            .submit_trb(setup_stage)
+            .expect("submitting an unsupported TRB should not fail");
+        assert_eq!(
+            bulk_in_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::TrbError)
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                FIRST_ADDRESS,
+                0,
+                CompletionCode::TrbError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
+        );
+
+        // the endpoint accepts new TDs after the TRB error
+        let normal = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+
+        bulk_in_endpoint
+            .submit_trb(normal)
+            .expect("this mock hardware request should never fail");
+        assert_eq!(
+            bulk_in_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Ok)
+        );
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(SECOND_ADDRESS, 0, false))
         );
 
         assert!(interrupter.is_empty());
