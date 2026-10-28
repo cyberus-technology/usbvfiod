@@ -958,11 +958,10 @@ impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
         }
     }
 
-    const fn transfer_length(&self) -> usize {
+    const fn transfer_length(&self) -> Option<usize> {
         match &self.variant {
-            SupportedNormalEndpointTrb::Normal(normal) => normal.transfer_length as usize,
-            SupportedNormalEndpointTrb::EventData(_) => 0,
-            SupportedNormalEndpointTrb::NoOp(_) => 0,
+            SupportedNormalEndpointTrb::Normal(normal) => Some(normal.transfer_length as usize),
+            SupportedNormalEndpointTrb::EventData(_) | SupportedNormalEndpointTrb::NoOp(_) => None,
         }
     }
 }
@@ -971,6 +970,8 @@ impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
 enum TdBasedNormalSubmissionState {
     CollectingTd(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
     AwaitingRealTransfer(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
+    /// TD without any Normal TRB (only NoOp or Event Data TRBs)
+    AwaitingLocalCompletion(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
     UnsupportedTrb(u64),
 }
 
@@ -1028,6 +1029,14 @@ impl<RIEH: RealInEndpointHandle> TdBasedInEndpointHandle<RIEH> {
             &completion.data,
         );
 
+        self.process_td(completion, trbs)
+    }
+
+    fn process_td(
+        &self,
+        completion: InTrbProcessingResult,
+        trbs: Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>,
+    ) -> anyhow::Result<TrbProcessingResult> {
         let mut td_info = TdProcessingInfoIn {
             event_sender: &self.event_sender,
             dma_bus: &self.dma_bus,
@@ -1089,25 +1098,42 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
         let end_of_td = !supported_trb.chain();
         trbs.push(supported_trb);
         if end_of_td {
+            // None if the TD contains no Normal TRB
             let td_request_length = trbs
                 .iter()
-                .map(SupportedEndpointTrb::transfer_length)
-                .sum::<usize>();
+                .filter_map(SupportedEndpointTrb::transfer_length)
+                .reduce(usize::wrapping_add);
 
-            debug!(
-                "Submitting on ep {} a real request for {td_request_length} bytes",
-                self.endpoint_id
-            );
-            self.real_ep.submit(td_request_length)?;
+            let real_transfer = match td_request_length {
+                Some(td_request_length) => {
+                    debug!(
+                        "Submitting on ep {} a real request for {td_request_length} bytes",
+                        self.endpoint_id
+                    );
+                    self.real_ep.submit(td_request_length)?;
 
-            // the collection approach guarantees there is always at least one TRB in a TD
-            pcap::in_submission(self.pcap_meta, trbs[0].addr, td_request_length as u32);
+                    // the collection approach guarantees there is always at least one TRB in a TD
+                    pcap::in_submission(self.pcap_meta, trbs[0].addr, td_request_length as u32);
+                    true
+                }
+                None => {
+                    debug!(
+                        "TD on ep {} contains no Normal TRB; completing without real transfer",
+                        self.endpoint_id
+                    );
+                    false
+                }
+            };
 
             replace_with_or_abort(&mut self.submission_state, |old_state| {
                 let TdBasedNormalSubmissionState::CollectingTd(trbs) = old_state else {
                     unreachable!("verified the state is CollectingTd at the start of the function");
                 };
-                TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs)
+                if real_transfer {
+                    TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs)
+                } else {
+                    TdBasedNormalSubmissionState::AwaitingLocalCompletion(trbs)
+                }
             });
         }
 
@@ -1138,6 +1164,15 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                     let processing_result =
                         self.process_real_transfer_response(completion, trbs)?;
                     Ok(processing_result)
+                }
+                TdBasedNormalSubmissionState::AwaitingLocalCompletion(trbs) => {
+                    let trbs = mem::take(trbs);
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    let completion = InTrbProcessingResult {
+                        status: InTrbProcessingStatus::Success,
+                        data: vec![],
+                    };
+                    self.process_td(completion, trbs)
                 }
             }
         })
@@ -1394,6 +1429,14 @@ impl<ROEH: RealOutEndpointHandle> TdBasedOutEndpointHandle<ROEH> {
             completion.length as u32,
         );
 
+        self.process_td(completion, trbs)
+    }
+
+    fn process_td(
+        &self,
+        completion: OutTrbProcessingResult,
+        trbs: Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>,
+    ) -> anyhow::Result<TrbProcessingResult> {
         let mut td_info = TdProcessingInfoOut {
             event_sender: &self.event_sender,
             status: completion.status,
@@ -1417,11 +1460,12 @@ impl<ROEH: RealOutEndpointHandle> TdBasedOutEndpointHandle<ROEH> {
 fn retrieve_out_dma_buffers(
     dma_bus: &BusDeviceRef,
     trbs: &[SupportedEndpointTrb<SupportedNormalEndpointTrb>],
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
+    // returns early with None when no normal TRB is present
     let td_request_length = trbs
         .iter()
-        .map(SupportedEndpointTrb::transfer_length)
-        .sum::<usize>();
+        .filter_map(SupportedEndpointTrb::transfer_length)
+        .reduce(usize::wrapping_add)?;
 
     let mut buf = vec![0; td_request_length];
     let mut to_fill: &mut [u8] = &mut buf;
@@ -1440,7 +1484,7 @@ fn retrieve_out_dma_buffers(
         }
     }
 
-    buf
+    Some(buf)
 }
 
 impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
@@ -1496,29 +1540,43 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<RO
         let end_of_td = !supported_trb.chain();
         trbs.push(supported_trb);
         if end_of_td {
-            let td_request_data = retrieve_out_dma_buffers(&self.dma_bus, trbs);
+            let real_transfer = match retrieve_out_dma_buffers(&self.dma_bus, trbs) {
+                Some(td_request_data) => {
+                    debug!(
+                        "Submitting on ep {} a real request sending {} bytes",
+                        self.endpoint_id,
+                        td_request_data.len(),
+                    );
 
-            debug!(
-                "Submitting on ep {} a real request sending {} bytes",
-                self.endpoint_id,
-                td_request_data.len(),
-            );
+                    // there is at least one TRB in the TD, so trbs[0] exists
+                    pcap::out_submission(
+                        self.pcap_meta,
+                        trbs[0].addr,
+                        &td_request_data,
+                        td_request_data.len() as u32,
+                    );
 
-            // there is at least one TRB in the TD, so trbs[0] exists
-            pcap::out_submission(
-                self.pcap_meta,
-                trbs[0].addr,
-                &td_request_data,
-                td_request_data.len() as u32,
-            );
-
-            self.real_ep.submit(td_request_data)?;
+                    self.real_ep.submit(td_request_data)?;
+                    true
+                }
+                None => {
+                    debug!(
+                        "TD on ep {} contains no Normal TRB; completing without real transfer",
+                        self.endpoint_id
+                    );
+                    false
+                }
+            };
 
             replace_with_or_abort(&mut self.submission_state, |old_state| {
                 let TdBasedNormalSubmissionState::CollectingTd(trbs) = old_state else {
                     unreachable!("verified the state is CollectingTd at the start of the function");
                 };
-                TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs)
+                if real_transfer {
+                    TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs)
+                } else {
+                    TdBasedNormalSubmissionState::AwaitingLocalCompletion(trbs)
+                }
             });
         }
 
@@ -1549,6 +1607,15 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<RO
                     let processing_result =
                         self.process_real_transfer_response(completion, trbs)?;
                     Ok(processing_result)
+                }
+                TdBasedNormalSubmissionState::AwaitingLocalCompletion(trbs) => {
+                    let trbs = mem::take(trbs);
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    let completion = OutTrbProcessingResult {
+                        status: OutTrbProcessingStatus::Success,
+                        length: 0,
+                    };
+                    self.process_td(completion, trbs)
                 }
             }
         })
@@ -1753,6 +1820,7 @@ pub mod tests {
     const TRB_TYPE_DATA_STAGE: u8 = 0x3;
     const TRB_TYPE_STATUS_STAGE: u8 = 0x4;
     const TRB_TYPE_EVENT_DATA: u8 = 0x7;
+    const TRB_TYPE_NO_OP: u8 = 0x8;
 
     const SETUP_BM_REQUEST_TYPE_IN: u8 = 0x80;
     const SETUP_BM_REQUEST_TYPE_OUT: u8 = 0;
@@ -1907,8 +1975,9 @@ pub mod tests {
         // if given a max_returned_data, it will return no more than that number of bytes
         #[derive(Debug)]
         pub struct MockRealInEndpoint {
-            data_length: usize,
+            pub data_length: usize,
             max_returned_data: Option<u32>,
+            pub submissions: usize,
         }
 
         impl MockRealInEndpoint {
@@ -1916,6 +1985,7 @@ pub mod tests {
                 Self {
                     data_length: 0,
                     max_returned_data,
+                    submissions: 0,
                 }
             }
         }
@@ -1928,6 +1998,7 @@ pub mod tests {
                 self.data_length = self.max_returned_data.map_or(data, |max_returned_data| {
                     min(max_returned_data as usize, data)
                 });
+                self.submissions += 1;
 
                 Ok(())
             }
@@ -1957,11 +2028,15 @@ pub mod tests {
         // mock for bulk out real endpoint returning success while discarding the data
         #[derive(Debug)]
         pub struct MockRealOutEndpoint {
-            length: usize,
+            pub length: usize,
+            pub submissions: usize,
         }
         impl MockRealOutEndpoint {
             pub fn new() -> Self {
-                Self { length: 0 }
+                Self {
+                    length: 0,
+                    submissions: 0,
+                }
             }
         }
 
@@ -1972,6 +2047,7 @@ pub mod tests {
             fn submit(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
                 println!("consumed data of length: {}", data.len());
                 self.length = data.len();
+                self.submissions += 1;
                 Ok(())
             }
 
@@ -4464,6 +4540,178 @@ pub mod tests {
             Some(expected_event(SECOND_ADDRESS, 0, false))
         );
 
+        assert!(interrupter.is_empty());
+    }
+
+    fn init_bulk_out_endpoint_handle_test() -> (
+        TdBasedOutEndpointHandle<MockRealOutEndpoint>,
+        MockInterrupter,
+    ) {
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, interrupter) = MockInterrupter::new();
+
+        let bulk_out_endpoint = TdBasedOutEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            MockRealOutEndpoint::new(),
+            dma_bus,
+            event_sender,
+        );
+
+        (bulk_out_endpoint, interrupter)
+    }
+
+    #[tokio::test]
+    async fn bulk_out_noop_and_event_data_td_does_not_submit_real_transfer() {
+        let (mut bulk_out_endpoint, mut interrupter) = init_bulk_out_endpoint_handle_test();
+
+        let noop = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NO_OP)
+            .build();
+        let event_data = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .build();
+
+        for trb in [noop, event_data] {
+            bulk_out_endpoint
+                .submit_trb(trb)
+                .expect("submitting the TRB to the endpoint handle should never fail");
+            assert_eq!(
+                bulk_out_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(bulk_out_endpoint.real_ep.submissions, 0);
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(EVENT_DATA_FIELD, 0, true))
+        );
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_out_zero_length_normal_td_submits_zlp() {
+        let (mut bulk_out_endpoint, mut interrupter) = init_bulk_out_endpoint_handle_test();
+
+        let normal = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(0)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+
+        bulk_out_endpoint
+            .submit_trb(normal)
+            .expect("this mock hardware request should never fail");
+        assert_eq!(
+            bulk_out_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Ok)
+        );
+
+        assert_eq!(bulk_out_endpoint.real_ep.submissions, 1);
+        assert_eq!(bulk_out_endpoint.real_ep.length, 0);
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
+        assert!(interrupter.is_empty());
+    }
+
+    fn init_bulk_in_endpoint_handle_test(
+    ) -> (TdBasedInEndpointHandle<MockRealInEndpoint>, MockInterrupter) {
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, interrupter) = MockInterrupter::new();
+
+        let bulk_in_endpoint = TdBasedInEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            MockRealInEndpoint::new(None),
+            dma_bus,
+            event_sender,
+        );
+
+        (bulk_in_endpoint, interrupter)
+    }
+
+    #[tokio::test]
+    async fn bulk_in_noop_and_event_data_td_does_not_submit_real_transfer() {
+        let (mut bulk_in_endpoint, mut interrupter) = init_bulk_in_endpoint_handle_test();
+
+        let noop = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NO_OP)
+            .build();
+        let event_data = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .build();
+
+        for trb in [noop, event_data] {
+            bulk_in_endpoint
+                .submit_trb(trb)
+                .expect("submitting the TRB to the endpoint handle should never fail");
+            assert_eq!(
+                bulk_in_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(bulk_in_endpoint.real_ep.submissions, 0);
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(EVENT_DATA_FIELD, 0, true))
+        );
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_in_zero_length_normal_td_submits_real_request() {
+        let (mut bulk_in_endpoint, mut interrupter) = init_bulk_in_endpoint_handle_test();
+
+        let normal = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(0)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+
+        bulk_in_endpoint
+            .submit_trb(normal)
+            .expect("this mock hardware request should never fail");
+        assert_eq!(
+            bulk_in_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Ok)
+        );
+
+        assert_eq!(bulk_in_endpoint.real_ep.submissions, 1);
+        assert_eq!(bulk_in_endpoint.real_ep.data_length, 0);
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
+        );
         assert!(interrupter.is_empty());
     }
 }
