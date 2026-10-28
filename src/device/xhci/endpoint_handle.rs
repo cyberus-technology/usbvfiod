@@ -2023,7 +2023,7 @@ pub mod tests {
         // mock for bulk out real endpoint returning success while discarding the data
         #[derive(Debug)]
         pub struct MockRealOutEndpoint {
-            length: usize,
+            pub length: usize,
             pub submissions: usize,
         }
         impl MockRealOutEndpoint {
@@ -4463,6 +4463,34 @@ pub mod tests {
         assert_eq!(
             interrupter.await_event().await,
             Some(expected_event(EVENT_DATA_FIELD, 0, true))
+        );
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_out_zero_length_normal_td_submits_zlp() {
+        let (mut bulk_out_endpoint, mut interrupter) = init_bulk_out_endpoint_handle_test();
+
+        let normal = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(0)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+
+        bulk_out_endpoint
+            .submit_trb(normal)
+            .expect("this mock hardware request should never fail");
+        assert_eq!(
+            bulk_out_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Ok)
+        );
+
+        assert_eq!(bulk_out_endpoint.real_ep.submissions, 1);
+        assert_eq!(bulk_out_endpoint.real_ep.length, 0);
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
         );
         assert!(interrupter.is_empty());
     }
