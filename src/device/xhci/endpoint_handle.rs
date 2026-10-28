@@ -1973,7 +1973,7 @@ pub mod tests {
         // if given a max_returned_data, it will return no more than that number of bytes
         #[derive(Debug)]
         pub struct MockRealInEndpoint {
-            data_length: usize,
+            pub data_length: usize,
             max_returned_data: Option<u32>,
             pub submissions: usize,
         }
@@ -4551,6 +4551,34 @@ pub mod tests {
         assert_eq!(
             interrupter.await_event().await,
             Some(expected_event(EVENT_DATA_FIELD, 0, true))
+        );
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_in_zero_length_normal_td_submits_real_request() {
+        let (mut bulk_in_endpoint, mut interrupter) = init_bulk_in_endpoint_handle_test();
+
+        let normal = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(0)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+
+        bulk_in_endpoint
+            .submit_trb(normal)
+            .expect("this mock hardware request should never fail");
+        assert_eq!(
+            bulk_in_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Ok)
+        );
+
+        assert_eq!(bulk_in_endpoint.real_ep.submissions, 1);
+        assert_eq!(bulk_in_endpoint.real_ep.data_length, 0);
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(FIRST_ADDRESS, 0, false))
         );
         assert!(interrupter.is_empty());
     }
