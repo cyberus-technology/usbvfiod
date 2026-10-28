@@ -1621,6 +1621,7 @@ impl<'a> TdProcessingInfoOut<'a> {
                 self.event_sender.send(event)?;
             }
             self.edtla.add(trb_data.transfer_length);
+            self.accounted_length += transfer_length;
 
             // continue with next TRB
             None
@@ -1720,6 +1721,7 @@ pub mod tests {
     use crate::device::xhci::endpoint_handle::tests::testutils::{
         MockRealControlEndpointExpectDataPattern, MockRealControlEndpointHardwareError,
         MockRealControlEndpointReadStatic, MockRealInEndpoint, MockRealOutEndpoint,
+        MockRealOutEndpointStall,
     };
     use crate::device::xhci::interrupter::tests::testutils::MockInterrupter;
     use crate::device::{bus::testutils::TestBusDevice, xhci::trb::testutils::RawTrbBuilder};
@@ -1985,6 +1987,51 @@ pub mod tests {
         }
 
         impl BaseEndpointHandle for MockRealOutEndpoint {
+            type CompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+            fn cancel(&mut self) -> Self::CompletionFuture<'_> {
+                // nothing we want to do
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        // mock for bulk out real endpoint stalling after transmitting `stall_after` bytes
+        #[derive(Debug)]
+        pub struct MockRealOutEndpointStall {
+            stall_after: usize,
+            length: usize,
+        }
+        impl MockRealOutEndpointStall {
+            pub fn new(stall_after: usize) -> Self {
+                Self {
+                    stall_after,
+                    length: 0,
+                }
+            }
+        }
+
+        impl RealOutEndpointHandle for MockRealOutEndpointStall {
+            type TrbCompletionFuture<'a> =
+                Pin<Box<dyn Future<Output = anyhow::Result<OutTrbProcessingResult>> + Send + 'a>>;
+
+            fn submit(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
+                self.length = min(data.len(), self.stall_after);
+                Ok(())
+            }
+
+            fn next_completion(&mut self) -> Self::TrbCompletionFuture<'_> {
+                Box::pin(async {
+                    let result = OutTrbProcessingResult {
+                        status: OutTrbProcessingStatus::Stall,
+                        length: self.length,
+                    };
+                    Ok(result)
+                })
+            }
+        }
+
+        impl BaseEndpointHandle for MockRealOutEndpointStall {
             type CompletionFuture<'a> =
                 Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
@@ -4174,6 +4221,91 @@ pub mod tests {
         assert_eq!(
             interrupter.await_event().await,
             Some(expected_event(EVENT_DATA_FIELD, TRANSFER_LENGTH, true))
+        );
+
+        assert!(interrupter.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_out_transfer_stalling_in_the_middle_of_a_td() {
+        const SLOT_ID: u8 = 1;
+        const ENDPOINT_ID: u8 = 1;
+        // the device stalls 188 bytes into the second TRB
+        const STALL_AFTER: usize = 700;
+
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let real_ep = MockRealOutEndpointStall::new(STALL_AFTER);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, mut interrupter) = MockInterrupter::new();
+
+        let mut bulk_out_endpoint = TdBasedOutEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            real_ep,
+            dma_bus,
+            event_sender,
+        );
+
+        let normal_1 = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_data_pointer(DMA_POINTER_1)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_2 = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(DMA_POINTER_2)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+        let normal_3 = RawTrbBuilder::new(THIRD_ADDRESS)
+            .with_data_pointer(DMA_POINTER_3)
+            .with_trb_transfer_length(TRANSFER_LENGTH)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_NORMAL)
+            .build();
+
+        // the TD is still being collected
+        for trb in [normal_1, normal_2] {
+            bulk_out_endpoint
+                .submit_trb(trb)
+                .expect("this mock hardware request should never fail");
+            assert_eq!(
+                bulk_out_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        // the TD is complete and gets submitted to the device, which stalls
+        bulk_out_endpoint
+            .submit_trb(normal_3)
+            .expect("this mock hardware request should never fail");
+        assert_eq!(
+            bulk_out_endpoint.next_completion().await.ok(),
+            Some(TrbProcessingResult::Stall(Some((SECOND_ADDRESS, false))))
+        );
+
+        // only the stalled TRB reports an event; the third TRB is never reached
+        let residual = (2 * TRANSFER_LENGTH as usize - STALL_AFTER) as u32;
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(EventTrb::new_transfer_event_trb(
+                SECOND_ADDRESS,
+                residual,
+                CompletionCode::StallError,
+                false,
+                ENDPOINT_ID,
+                SLOT_ID,
+            ))
         );
 
         assert!(interrupter.is_empty());
