@@ -1818,6 +1818,7 @@ pub mod tests {
     const TRB_TYPE_DATA_STAGE: u8 = 0x3;
     const TRB_TYPE_STATUS_STAGE: u8 = 0x4;
     const TRB_TYPE_EVENT_DATA: u8 = 0x7;
+    const TRB_TYPE_NO_OP: u8 = 0x8;
 
     const SETUP_BM_REQUEST_TYPE_IN: u8 = 0x80;
     const SETUP_BM_REQUEST_TYPE_OUT: u8 = 0;
@@ -2023,10 +2024,14 @@ pub mod tests {
         #[derive(Debug)]
         pub struct MockRealOutEndpoint {
             length: usize,
+            pub submissions: usize,
         }
         impl MockRealOutEndpoint {
             pub fn new() -> Self {
-                Self { length: 0 }
+                Self {
+                    length: 0,
+                    submissions: 0,
+                }
             }
         }
 
@@ -2037,6 +2042,7 @@ pub mod tests {
             fn submit(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
                 println!("consumed data of length: {}", data.len());
                 self.length = data.len();
+                self.submissions += 1;
                 Ok(())
             }
 
@@ -4399,6 +4405,65 @@ pub mod tests {
             Some(expected_event(SECOND_ADDRESS, 0, false))
         );
 
+        assert!(interrupter.is_empty());
+    }
+
+    fn init_bulk_out_endpoint_handle_test() -> (
+        TdBasedOutEndpointHandle<MockRealOutEndpoint>,
+        MockInterrupter,
+    ) {
+        let pcap_usb_bus_number = 1;
+        let pcap_meta = EndpointPcapMeta::bulk(pcap_usb_bus_number, SLOT_ID, ENDPOINT_ID);
+
+        let dma_bus = Arc::new(DynamicBus::new());
+        let dma_backing = vec![99; 2048];
+        dma_bus
+            .add(0x0, Arc::new(TestBusDevice::new(&dma_backing[..])))
+            .expect("Adding Memory to the DynamicBus should never fail.");
+
+        let (event_sender, interrupter) = MockInterrupter::new();
+
+        let bulk_out_endpoint = TdBasedOutEndpointHandle::new(
+            SLOT_ID,
+            ENDPOINT_ID,
+            pcap_meta,
+            MockRealOutEndpoint::new(),
+            dma_bus,
+            event_sender,
+        );
+
+        (bulk_out_endpoint, interrupter)
+    }
+
+    #[tokio::test]
+    async fn bulk_out_noop_and_event_data_td_does_not_submit_real_transfer() {
+        let (mut bulk_out_endpoint, mut interrupter) = init_bulk_out_endpoint_handle_test();
+
+        let noop = RawTrbBuilder::new(FIRST_ADDRESS)
+            .with_chain()
+            .with_trb_type(TRB_TYPE_NO_OP)
+            .build();
+        let event_data = RawTrbBuilder::new(SECOND_ADDRESS)
+            .with_data_pointer(EVENT_DATA_FIELD)
+            .with_interrupt_on_completion()
+            .with_trb_type(TRB_TYPE_EVENT_DATA)
+            .build();
+
+        for trb in [noop, event_data] {
+            bulk_out_endpoint
+                .submit_trb(trb)
+                .expect("submitting the TRB to the endpoint handle should never fail");
+            assert_eq!(
+                bulk_out_endpoint.next_completion().await.ok(),
+                Some(TrbProcessingResult::Ok)
+            );
+        }
+
+        assert_eq!(bulk_out_endpoint.real_ep.submissions, 0);
+        assert_eq!(
+            interrupter.await_event().await,
+            Some(expected_event(EVENT_DATA_FIELD, 0, true))
+        );
         assert!(interrupter.is_empty());
     }
 }
