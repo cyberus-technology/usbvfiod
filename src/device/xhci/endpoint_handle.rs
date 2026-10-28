@@ -970,6 +970,8 @@ impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
 enum TdBasedNormalSubmissionState {
     CollectingTd(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
     AwaitingRealTransfer(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
+    /// TD without any Normal TRB (only NoOp or Event Data TRBs)
+    AwaitingLocalCompletion(Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>),
     UnsupportedTrb(u64),
 }
 
@@ -1138,6 +1140,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                         self.process_real_transfer_response(completion, trbs)?;
                     Ok(processing_result)
                 }
+                TdBasedNormalSubmissionState::AwaitingLocalCompletion(_) => unreachable!(),
             }
         })
     }
@@ -1393,6 +1396,14 @@ impl<ROEH: RealOutEndpointHandle> TdBasedOutEndpointHandle<ROEH> {
             completion.length as u32,
         );
 
+        self.process_td(completion, trbs)
+    }
+
+    fn process_td(
+        &self,
+        completion: OutTrbProcessingResult,
+        trbs: Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>,
+    ) -> anyhow::Result<TrbProcessingResult> {
         let mut td_info = TdProcessingInfoOut {
             event_sender: &self.event_sender,
             status: completion.status,
@@ -1496,29 +1507,43 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<RO
         let end_of_td = !supported_trb.chain();
         trbs.push(supported_trb);
         if end_of_td {
-            let td_request_data = retrieve_out_dma_buffers(&self.dma_bus, trbs).unwrap_or_default();
+            let real_transfer = match retrieve_out_dma_buffers(&self.dma_bus, trbs) {
+                Some(td_request_data) => {
+                    debug!(
+                        "Submitting on ep {} a real request sending {} bytes",
+                        self.endpoint_id,
+                        td_request_data.len(),
+                    );
 
-            debug!(
-                "Submitting on ep {} a real request sending {} bytes",
-                self.endpoint_id,
-                td_request_data.len(),
-            );
+                    // there is at least one TRB in the TD, so trbs[0] exists
+                    pcap::out_submission(
+                        self.pcap_meta,
+                        trbs[0].addr,
+                        &td_request_data,
+                        td_request_data.len() as u32,
+                    );
 
-            // there is at least one TRB in the TD, so trbs[0] exists
-            pcap::out_submission(
-                self.pcap_meta,
-                trbs[0].addr,
-                &td_request_data,
-                td_request_data.len() as u32,
-            );
-
-            self.real_ep.submit(td_request_data)?;
+                    self.real_ep.submit(td_request_data)?;
+                    true
+                }
+                None => {
+                    debug!(
+                        "TD on ep {} contains no Normal TRB; completing without real transfer",
+                        self.endpoint_id
+                    );
+                    false
+                }
+            };
 
             replace_with_or_abort(&mut self.submission_state, |old_state| {
                 let TdBasedNormalSubmissionState::CollectingTd(trbs) = old_state else {
                     unreachable!("verified the state is CollectingTd at the start of the function");
                 };
-                TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs)
+                if real_transfer {
+                    TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs)
+                } else {
+                    TdBasedNormalSubmissionState::AwaitingLocalCompletion(trbs)
+                }
             });
         }
 
@@ -1549,6 +1574,15 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<RO
                     let processing_result =
                         self.process_real_transfer_response(completion, trbs)?;
                     Ok(processing_result)
+                }
+                TdBasedNormalSubmissionState::AwaitingLocalCompletion(trbs) => {
+                    let trbs = mem::take(trbs);
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    let completion = OutTrbProcessingResult {
+                        status: OutTrbProcessingStatus::Success,
+                        length: 0,
+                    };
+                    self.process_td(completion, trbs)
                 }
             }
         })
