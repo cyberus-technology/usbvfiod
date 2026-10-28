@@ -1029,6 +1029,14 @@ impl<RIEH: RealInEndpointHandle> TdBasedInEndpointHandle<RIEH> {
             &completion.data,
         );
 
+        self.process_td(completion, trbs)
+    }
+
+    fn process_td(
+        &self,
+        completion: InTrbProcessingResult,
+        trbs: Vec<SupportedEndpointTrb<SupportedNormalEndpointTrb>>,
+    ) -> anyhow::Result<TrbProcessingResult> {
         let mut td_info = TdProcessingInfoIn {
             event_sender: &self.event_sender,
             dma_bus: &self.dma_bus,
@@ -1090,25 +1098,42 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
         let end_of_td = !supported_trb.chain();
         trbs.push(supported_trb);
         if end_of_td {
+            // None if the TD contains no Normal TRB
             let td_request_length = trbs
                 .iter()
                 .filter_map(SupportedEndpointTrb::transfer_length)
-                .sum::<usize>();
+                .reduce(usize::wrapping_add);
 
-            debug!(
-                "Submitting on ep {} a real request for {td_request_length} bytes",
-                self.endpoint_id
-            );
-            self.real_ep.submit(td_request_length)?;
+            let real_transfer = match td_request_length {
+                Some(td_request_length) => {
+                    debug!(
+                        "Submitting on ep {} a real request for {td_request_length} bytes",
+                        self.endpoint_id
+                    );
+                    self.real_ep.submit(td_request_length)?;
 
-            // the collection approach guarantees there is always at least one TRB in a TD
-            pcap::in_submission(self.pcap_meta, trbs[0].addr, td_request_length as u32);
+                    // the collection approach guarantees there is always at least one TRB in a TD
+                    pcap::in_submission(self.pcap_meta, trbs[0].addr, td_request_length as u32);
+                    true
+                }
+                None => {
+                    debug!(
+                        "TD on ep {} contains no Normal TRB; completing without real transfer",
+                        self.endpoint_id
+                    );
+                    false
+                }
+            };
 
             replace_with_or_abort(&mut self.submission_state, |old_state| {
                 let TdBasedNormalSubmissionState::CollectingTd(trbs) = old_state else {
                     unreachable!("verified the state is CollectingTd at the start of the function");
                 };
-                TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs)
+                if real_transfer {
+                    TdBasedNormalSubmissionState::AwaitingRealTransfer(trbs)
+                } else {
+                    TdBasedNormalSubmissionState::AwaitingLocalCompletion(trbs)
+                }
             });
         }
 
@@ -1140,7 +1165,15 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
                         self.process_real_transfer_response(completion, trbs)?;
                     Ok(processing_result)
                 }
-                TdBasedNormalSubmissionState::AwaitingLocalCompletion(_) => unreachable!(),
+                TdBasedNormalSubmissionState::AwaitingLocalCompletion(trbs) => {
+                    let trbs = mem::take(trbs);
+                    self.submission_state = TdBasedNormalSubmissionState::default();
+                    let completion = InTrbProcessingResult {
+                        status: InTrbProcessingStatus::Success,
+                        data: vec![],
+                    };
+                    self.process_td(completion, trbs)
+                }
             }
         })
     }
