@@ -958,11 +958,10 @@ impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
         }
     }
 
-    const fn transfer_length(&self) -> usize {
+    const fn transfer_length(&self) -> Option<usize> {
         match &self.variant {
-            SupportedNormalEndpointTrb::Normal(normal) => normal.transfer_length as usize,
-            SupportedNormalEndpointTrb::EventData(_) => 0,
-            SupportedNormalEndpointTrb::NoOp(_) => 0,
+            SupportedNormalEndpointTrb::Normal(normal) => Some(normal.transfer_length as usize),
+            SupportedNormalEndpointTrb::EventData(_) | SupportedNormalEndpointTrb::NoOp(_) => None,
         }
     }
 }
@@ -1091,7 +1090,7 @@ impl<RIEH: RealInEndpointHandle> EndpointHandle for TdBasedInEndpointHandle<RIEH
         if end_of_td {
             let td_request_length = trbs
                 .iter()
-                .map(SupportedEndpointTrb::transfer_length)
+                .filter_map(SupportedEndpointTrb::transfer_length)
                 .sum::<usize>();
 
             debug!(
@@ -1417,11 +1416,12 @@ impl<ROEH: RealOutEndpointHandle> TdBasedOutEndpointHandle<ROEH> {
 fn retrieve_out_dma_buffers(
     dma_bus: &BusDeviceRef,
     trbs: &[SupportedEndpointTrb<SupportedNormalEndpointTrb>],
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
+    // returns early with None when no normal TRB is present
     let td_request_length = trbs
         .iter()
-        .map(SupportedEndpointTrb::transfer_length)
-        .sum::<usize>();
+        .filter_map(SupportedEndpointTrb::transfer_length)
+        .reduce(usize::wrapping_add)?;
 
     let mut buf = vec![0; td_request_length];
     let mut to_fill: &mut [u8] = &mut buf;
@@ -1440,7 +1440,7 @@ fn retrieve_out_dma_buffers(
         }
     }
 
-    buf
+    Some(buf)
 }
 
 impl SupportedEndpointTrb<SupportedNormalEndpointTrb> {
@@ -1496,7 +1496,7 @@ impl<ROEH: RealOutEndpointHandle> EndpointHandle for TdBasedOutEndpointHandle<RO
         let end_of_td = !supported_trb.chain();
         trbs.push(supported_trb);
         if end_of_td {
-            let td_request_data = retrieve_out_dma_buffers(&self.dma_bus, trbs);
+            let td_request_data = retrieve_out_dma_buffers(&self.dma_bus, trbs).unwrap_or_default();
 
             debug!(
                 "Submitting on ep {} a real request sending {} bytes",
