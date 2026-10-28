@@ -1621,6 +1621,7 @@ impl<'a> TdProcessingInfoOut<'a> {
                 self.event_sender.send(event)?;
             }
             self.edtla.add(trb_data.transfer_length);
+            self.accounted_length += transfer_length;
 
             // continue with next TRB
             None
