@@ -169,7 +169,6 @@ let
 
   # To execute commands on the nested guest with a partial copy of the NixOS test framework.
   # currently: succeed() and wait_until_succeeds()
-  # This will also add a QoL 'string in string' search function.
   nestedPythonClass = ''
     import datetime
     from test_driver.errors import RequestedAssertionFailed
@@ -749,16 +748,16 @@ in
       testScript = ''
         # Confirm USB controller pops up in boot logs
         out = cloud_hypervisor.succeed("journalctl -b", timeout=ONE_MINUTE)
-        search("usb usb1: Product: xHCI Host Controller", out)
-        search("hub 1-0:1\\.0: [0-9]+ ports? detected", out)
+        t.assertIn("usb usb1: Product: xHCI Host Controller", out)
+        t.assertRegex(out, "hub 1-0:1\\.0: [0-9]+ ports? detected")
 
         # Confirm some diagnostic information
         out = cloud_hypervisor.succeed("cat /proc/interrupts", timeout=ONE_MINUTE)
-        search(" +[1-9][0-9]* +PCI-MSIX.*xhci_hcd", out)
+        t.assertRegex(out, " +[1-9][0-9]* +PCI-MSIX.*xhci_hcd")
         out = cloud_hypervisor.succeed("lsusb", timeout=ONE_MINUTE)
-        search("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
+        t.assertIn("ID ${testutils.blockdeviceVendorId}:${testutils.blockdeviceProductId} QEMU QEMU USB HARDDRIVE", out)
         out = cloud_hypervisor.succeed("sfdisk -l", timeout=ONE_MINUTE)
-        search("Disk /dev/sda:", out)
+        t.assertIn("Disk /dev/sda:", out)
 
         # Test partitioning
         cloud_hypervisor.succeed("echo ',,L' | sfdisk --label=gpt /dev/sda", timeout=ONE_MINUTE)
@@ -770,7 +769,7 @@ in
         cloud_hypervisor.succeed("umount /mnt", timeout=ONE_MINUTE)
         cloud_hypervisor.succeed("mount /dev/sda1 /mnt", timeout=ONE_MINUTE)
         out = cloud_hypervisor.succeed("cat /mnt/file.txt", timeout=ONE_MINUTE)
-        search("123TEST123", out)
+        t.assertIn("123TEST123", out)
       '';
     };
     ```
