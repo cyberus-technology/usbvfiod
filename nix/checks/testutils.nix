@@ -656,6 +656,9 @@ in
   # helper functions
   inherit mkNetboot mkDeviceFlag;
 
+  # other exports for building tests
+  inherit basicMachineConfig passthru;
+
   /**
     Create a pkgs.testers.runNixOSTest with specific purpose of testing Usbvfiod.
     The Functions purpose is to remove duplicated lines, make comparing tests easier
