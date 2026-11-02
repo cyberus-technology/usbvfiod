@@ -591,7 +591,7 @@ let
 
             # Enable the QEMU QMP interface to trigger HID events or hotplug devices at runtime.
             "-chardev socket,id=qmp,path=/tmp/qmp.sock,server=on,wait=off"
-            "-mon chardev=qmp,mode=control,pretty=on"
+            "-object monitor-qmp,chardev=qmp,pretty=on,id=qmp0"
           ]
           # Handle each entry of the args.virtualDevices list.
           ++ (builtins.map (mkUsbDevice args.name) args.virtualDevices);
