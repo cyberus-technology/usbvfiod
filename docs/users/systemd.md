@@ -106,3 +106,7 @@ Further reading:
 - https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html
 - https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
 - https://www.freedesktop.org/software/systemd/man/latest/sd_listen_fds.html
+
+## Using the policy daemon
+
+The crate provides a `policy_daemon` service executable, which manages pass-through of devices to multiple `usbvfiod` controllers based on a JSON rule set. See the `nix/checks/policy-daemon.nix` integration test for an example configuration.
