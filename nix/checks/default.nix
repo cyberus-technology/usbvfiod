@@ -38,3 +38,11 @@ in
 // import ./usb-net.nix {
   inherit testutils;
 }
+// import ./policy-daemon.nix {
+  inherit
+    pkgs
+    lib
+    usbvfiod
+    testutils
+    ;
+}
