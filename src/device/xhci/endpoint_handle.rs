@@ -1317,8 +1317,6 @@ impl<'a> TdProcessingInfoIn<'a> {
                     );
                     self.event_sender.send(event)?;
                 }
-
-                Ok(None)
             }
             TdProcessingStateIn::ShortTransfer(bytes_missing) => {
                 // Only react to IOC after a short packet has been encountered.
@@ -1333,10 +1331,10 @@ impl<'a> TdProcessingInfoIn<'a> {
                     );
                     self.event_sender.send(transfer_event)?;
                 }
-
-                Ok(None)
             }
         }
+        // continue with next TRB in the TD
+        Ok(None)
     }
 
     fn handle_event_data_trb(
