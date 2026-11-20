@@ -1,5 +1,6 @@
 use std::sync::atomic::fence;
 
+use tokio::sync::mpsc::Receiver;
 use tracing::{debug, trace};
 
 use crate::device::{
@@ -11,7 +12,10 @@ use crate::device::{
         },
         TRB_SIZE,
     },
-    xhci::trb::EventTrb,
+    xhci::{
+        interrupter::InterruptLineWrapper,
+        trb::{CompletionCode, EventTrb},
+    },
 };
 
 ///Ring: A unidirectional means of communication, allowing the XHCI
@@ -55,6 +59,7 @@ pub struct EventRing {
     /// memory. Later, the cycle_state has to flip after every full pass of the
     /// event ring (i.e., when we wrap from the last segment back to segment 0).
     cycle_state: bool,
+    doorbell_receiver: Receiver<()>,
 }
 
 impl EventRing {
@@ -63,13 +68,14 @@ impl EventRing {
     /// # Parameters
     ///
     /// - dma_bus: access to guest memory
-    pub fn new(dma_bus: BusDeviceRef) -> Self {
+    pub fn new(dma_bus: BusDeviceRef, doorbell_receiver: Receiver<()>) -> Self {
         Self {
             dma_bus,
             enqueue_pointer: 0,
             trb_count: 0,
             erst_count: 0,
             cycle_state: false,
+            doorbell_receiver,
         }
     }
 
@@ -127,13 +133,21 @@ impl EventRing {
     /// # Limitations
     ///
     /// The current implementation does not handle ring-full recovery and will panic (`todo!()`) in that case.
-    pub fn enqueue(
+    pub async fn enqueue(
         &mut self,
         trb: &EventTrb,
         segment_table_size: u16,
         base_address: u64,
         dequeue_pointer: u64,
+        // Issue event ring full events to system software.
+        interrupt_line_wrapper: InterruptLineWrapper,
     ) {
+        // clear any outstanding doorbell
+        let _ = self.doorbell_receiver.try_recv();
+
+        // After an event ring full events await a doorbell to signal retry.
+        // doorbell_receiver: mpsc::Receiver<()>,
+
         // TODO: Proper handling of full Event Ring
         // According to xHCI §4.9.4, the xHC must:
         //
@@ -143,7 +157,28 @@ impl EventRing {
         // 4. Wait for system software to use a Doorbell as a signal for free space
         //    after advancing the Event Ring Dequeue Pointer (ERDP).
         while self.check_event_ring_full(base_address, segment_table_size, dequeue_pointer) {
-            todo!("signal event ring full, then wait for a doorbell that signals we should recheck")
+            let event_ring_full_event = EventTrb::new_transfer_event_trb(
+                0,
+                0,
+                CompletionCode::EventRingFullError,
+                false,
+                0,
+                0,
+            );
+
+            // TODO place event error on the event ring
+            let trb_bytes = event_ring_full_event.to_bytes(!self.cycle_state);
+            self.dma_bus.write_bulk(self.enqueue_pointer, &trb_bytes);
+
+            // TODO have right object to request an interrupt be sent
+            interrupt_line_wrapper.interrupt();
+
+            // TODO wait for a doorbell
+            self.doorbell_receiver.recv().await;
+
+            todo!(
+                "signal event ring full, then wait for a doorbell that signals we should recheck"
+            );
         }
 
         // write TRB with flipped cycle state first
@@ -267,7 +302,11 @@ impl EventRing {
 
 #[cfg(test)]
 mod tests {
+
+    use tokio::sync::mpsc;
+
     use crate::device::bus::testutils::TestBusDevice;
+    use crate::device::interrupt_line::DummyInterruptLine;
     use crate::device::xhci::registers::{ErdpRegister, ErstbaRegister, ErstszRegister};
     use crate::device::xhci::trb::testutils::RawTrbBuilder;
     use crate::device::xhci::trb::CompletionCode;
@@ -379,7 +418,9 @@ mod tests {
             &[0; RING_SEGMENT_2_BASE as usize + TRB_SIZE * MIN_RING_SEGMENT_SIZE as usize],
         ));
         ram.write_bulk(0x0, &erst);
-        let mut ring = EventRing::new(ram.clone());
+
+        let (_send, recv) = mpsc::channel(1);
+        let mut ring = EventRing::new(ram.clone(), recv);
 
         // Set lower bits to catch usage of `read()` when get functions for
         // specific fields should be used.
@@ -411,9 +452,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn event_ring_wraparound() {
+    #[tokio::test]
+    async fn event_ring_wraparound() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
 
@@ -424,7 +467,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
             assert_trb_written(&ram, RING_SEGMENT_0_BASE + TRB_SIZE as u64 * i as u64, true);
         }
 
@@ -437,7 +482,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
             assert_trb_written(&ram, RING_SEGMENT_1_BASE + TRB_SIZE as u64 * i as u64, true);
         }
 
@@ -453,7 +500,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
             assert_trb_written(&ram, RING_SEGMENT_2_BASE + TRB_SIZE as u64 * i as u64, true);
         }
 
@@ -467,16 +516,20 @@ mod tests {
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
-        );
+            interrupt_line_wrapper,
+        )
+        .await;
         assert_trb_written(&ram, RING_SEGMENT_0_BASE, false);
     }
 
-    #[test]
+    #[tokio::test]
     #[should_panic(
         expected = "not yet implemented: signal event ring full, then wait for a doorbell that signals we should recheck"
     )]
-    fn event_ring_full_mid_segment() {
+    async fn event_ring_full_mid_segment() {
         let (_ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
 
@@ -487,7 +540,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
 
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_1_BASE);
@@ -505,7 +560,9 @@ mod tests {
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
-        );
+            interrupt_line_wrapper.clone(),
+        )
+        .await;
 
         // One free slot will trigger an event ring full error.
         assert_eq!(
@@ -517,12 +574,16 @@ mod tests {
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
-        );
+            interrupt_line_wrapper,
+        )
+        .await;
     }
 
-    #[test]
-    fn event_ring_multiple_wraparound() {
+    #[tokio::test]
+    async fn event_ring_multiple_wraparound() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         for n in 0..10 {
             let cycle = (n % 2) == 0;
@@ -535,7 +596,9 @@ mod tests {
                     reg.erstsz.segment_table_size(),
                     reg.erstba.base_address(),
                     reg.erdp.dequeue_pointer(),
-                );
+                    interrupt_line_wrapper.clone(),
+                )
+                .await;
             }
 
             // Move the dequeue pointer out of the way to enable wraparound.
@@ -548,7 +611,9 @@ mod tests {
                     reg.erstsz.segment_table_size(),
                     reg.erstba.base_address(),
                     reg.erdp.dequeue_pointer(),
-                );
+                    interrupt_line_wrapper.clone(),
+                )
+                .await;
             }
             assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
 
@@ -564,16 +629,20 @@ mod tests {
         }
     }
 
-    #[test]
-    fn event_ring_reset_clears_local_state() {
+    #[tokio::test]
+    async fn event_ring_reset_clears_local_state() {
         let (_ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         ring.enqueue(
             &dummy_event_trb(),
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
-        );
+            interrupt_line_wrapper,
+        )
+        .await;
         assert_ne!(ring.enqueue_pointer, 0);
         assert_ne!(ring.trb_count, 0);
         assert!(ring.cycle_state);
@@ -612,14 +681,18 @@ mod tests {
             &[0; RING_SEGMENT_0_BASE as usize + MIN_RING_SEGMENT_SIZE as usize],
         ));
         ram.write_bulk(0x0, &erste);
-        let mut ring = EventRing::new(ram);
+
+        let (_send, recv) = mpsc::channel(1);
+        let mut ring = EventRing::new(ram, recv);
 
         ring.configure(0x0, 0x0);
     }
 
-    #[test]
-    fn event_ring_dynamic_grow_from_1_to_3() {
+    #[tokio::test]
+    async fn event_ring_dynamic_grow_from_1_to_3() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(1));
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         // We start by only using the first entry of the segment table i.e. we
         // use only the first segment as the whole ring.
@@ -638,7 +711,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
         assert_trb_written(
             &ram,
@@ -660,7 +735,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
 
         // This is the second loop on the ring, the cycle bit changed to 0.
@@ -678,7 +755,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
         assert_trb_written(
             &ram,
@@ -694,7 +773,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
         assert_trb_written(
             &ram,
@@ -706,9 +787,11 @@ mod tests {
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
     }
 
-    #[test]
-    fn event_ring_dynamic_shrink_from_3_to_1() {
+    #[tokio::test]
+    async fn event_ring_dynamic_shrink_from_3_to_1() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(3));
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         // We start by only using the first entry of the segment table i.e. we
         // use only the first segment as a single segment ring.
@@ -727,7 +810,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
 
         assert_trb_written(
@@ -744,7 +829,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
         assert_trb_written(
             &ram,
@@ -760,7 +847,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
         assert_trb_written(
             &ram,
@@ -782,7 +871,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
 
         // This is the second loop on the ring, the cycle bit changed to 0.
@@ -796,9 +887,11 @@ mod tests {
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
     }
 
-    #[test]
-    fn event_ring_dynamic_overwrite() {
+    #[tokio::test]
+    async fn event_ring_dynamic_overwrite() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(1));
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         // Move dequeue pointer out of the way to enable wraparound.
         // This value is not on any segment. The system software owns this and
@@ -816,7 +909,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
 
         let written_bytes = TRB_SIZE as u64 * (MIN_RING_SEGMENT_SIZE as u64 / 2);
@@ -871,7 +966,9 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
-            );
+                interrupt_line_wrapper.clone(),
+            )
+            .await;
         }
 
         assert_trb_written(
@@ -893,7 +990,9 @@ mod tests {
                     reg.erstsz.segment_table_size(),
                     reg.erstba.base_address(),
                     reg.erdp.dequeue_pointer(),
-                );
+                    interrupt_line_wrapper.clone(),
+                )
+                .await;
             }
             assert_trb_written(
                 &ram,
@@ -906,12 +1005,14 @@ mod tests {
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
     }
 
-    #[test]
+    #[tokio::test]
     #[should_panic(
         expected = "not yet implemented: signal event ring full, then wait for a doorbell that signals we should recheck"
     )]
-    fn event_ring_full_error_event() {
+    async fn event_ring_full_error_event() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(1));
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         // have only two remaining slots
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
@@ -923,7 +1024,9 @@ mod tests {
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
-        );
+            interrupt_line_wrapper.clone(),
+        )
+        .await;
 
         // one slot free
         ring.enqueue(
@@ -931,7 +1034,9 @@ mod tests {
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
-        );
+            interrupt_line_wrapper,
+        )
+        .await;
 
         // NOTE: The following is not reached due to the "not yet implemented".
         const TRB_TYPE_HOST_CONTROLLER_EVENT: u8 = 37;

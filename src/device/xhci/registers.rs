@@ -351,6 +351,8 @@ impl ErdpRegister {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::mpsc::{self};
+
     use crate::device::xhci::interrupter::Interrupter;
     use crate::dynamic_bus::DynamicBus;
 
@@ -360,7 +362,8 @@ mod tests {
     async fn portsc_read_write() {
         let async_runtime = tokio::runtime::Handle::current();
         let dma_bus = Arc::new(DynamicBus::new());
-        let interrupter = Interrupter::new(dma_bus, &async_runtime);
+        let (_send, recv) = mpsc::channel(1);
+        let interrupter = Interrupter::new(dma_bus, &async_runtime, recv);
         let reg = PortscRegister::new(interrupter.create_event_sender(), UsbVersion::USB3, 1);
 
         reg.set(0x00260203);

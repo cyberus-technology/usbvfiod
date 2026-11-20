@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context};
+use tokio::sync::mpsc::Receiver;
 use tokio::sync::{mpsc, oneshot};
 use tokio::{runtime, select};
 use tracing::{debug, info};
@@ -14,6 +15,23 @@ use crate::device::xhci::registers::{
 use crate::device::xhci::trb::EventTrb;
 use crate::oneshot_anyhow::SendWithAnyhowError;
 use std::sync::Arc;
+
+/// receive interrupt requests and filter with a ruleset if the interrupt at this
+/// time should be forwarded to system software or not
+#[derive(Debug, Clone)]
+pub struct InterruptLineWrapper {
+    interrupt_line: Arc<dyn InterruptLine>,
+}
+
+impl InterruptLineWrapper {
+    pub fn new(interrupt_line: Arc<dyn InterruptLine>) -> Self {
+        Self { interrupt_line }
+    }
+
+    pub fn interrupt(&self) {
+        self.interrupt_line.interrupt();
+    }
+}
 
 #[derive(Debug)]
 pub struct Interrupter {
@@ -68,7 +86,7 @@ impl Default for InterrupterRegisters {
 struct EventWorker {
     registers: InterrupterRegisters,
     msg_recv: mpsc::UnboundedReceiver<InterrupterMessage>,
-    interrupt_line: Arc<dyn InterruptLine>,
+    interrupt_line_wrapper: InterruptLineWrapper,
     event_ring: EventRing,
 }
 
@@ -100,6 +118,7 @@ impl Interrupter {
         // interrupt_enable_notifier: Notify,
         // interrupts_pending: AtomicU16,
         async_runtime: &runtime::Handle,
+        doorbell_receiver: Receiver<()>,
     ) -> Self {
         let (msg_sender, msg_recv) = mpsc::unbounded_channel();
         let registers = InterrupterRegisters::default();
@@ -109,11 +128,13 @@ impl Interrupter {
             msg_sender,
         };
 
-        let event_ring = EventRing::new(dma_bus);
+        let event_ring = EventRing::new(dma_bus, doorbell_receiver);
         let worker = EventWorker {
             registers,
             msg_recv,
-            interrupt_line: Arc::new(DummyInterruptLine::default()),
+            interrupt_line_wrapper: InterruptLineWrapper::new(Arc::new(
+                DummyInterruptLine::default(),
+            )),
             event_ring,
         };
 
@@ -183,7 +204,7 @@ impl EventWorker {
                 // with the borrow of self.registers above
                 msg = self.msg_recv.recv() => match msg.ok_or_else(|| anyhow!("event channel closed"))? {
                     InterrupterMessage::SendEvent(_) => {}
-                    InterrupterMessage::UpdateInterruptLine(interrupt_line) => self.interrupt_line = interrupt_line,
+                    InterrupterMessage::UpdateInterruptLine(interrupt_line) => self.interrupt_line_wrapper = InterruptLineWrapper { interrupt_line },
                     InterrupterMessage::Reset(completion) => {
                         self.reset();
                         completion.send_anyhow(())?;
@@ -199,17 +220,21 @@ impl EventWorker {
         loop {
             match self.next_msg().await? {
                 InterrupterMessage::SendEvent(event_trb) => {
-                    self.event_ring.enqueue(
-                        &event_trb,
-                        self.registers.erst_size.segment_table_size(),
-                        self.registers.erst_base_address.base_address(),
-                        self.registers.eventring_dequeue_pointer.dequeue_pointer(),
-                    );
-                    self.interrupt_line.interrupt();
+                    self.event_ring
+                        .enqueue(
+                            &event_trb,
+                            self.registers.erst_size.segment_table_size(),
+                            self.registers.erst_base_address.base_address(),
+                            self.registers.eventring_dequeue_pointer.dequeue_pointer(),
+                            self.interrupt_line_wrapper.clone(),
+                            // self.doorbell_receiver,
+                        )
+                        .await;
+                    self.interrupt_line_wrapper.interrupt();
                     debug!("Sent event: {event_trb:?}");
                 }
                 InterrupterMessage::UpdateInterruptLine(interrupt_line) => {
-                    self.interrupt_line = interrupt_line;
+                    self.interrupt_line_wrapper = InterruptLineWrapper { interrupt_line };
                     debug!("Updated interrupt line");
                 }
                 InterrupterMessage::Reset(completion) => {

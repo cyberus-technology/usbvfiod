@@ -4,7 +4,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use tokio::runtime;
+use tokio::{
+    runtime,
+    sync::mpsc::{self, Sender},
+};
 
 use crate::device::{
     bus::{BusDeviceRef, SingleThreadedBusDevice},
@@ -39,13 +42,15 @@ pub struct XhciController<CRD: CompleteRealDevice> {
     slot_manager: SlotManager,
     usbcmd: UsbcmdRegister,
     usbsts: UsbstsRegister,
+    doorbell_sender: Sender<()>,
 }
 
 impl<CRD: CompleteRealDevice> XhciController<CRD> {
     pub fn new(dma_bus: BusDeviceRef, async_runtime: runtime::Handle) -> Self {
         let usbcmd = UsbcmdRegister::new();
         let usbsts = UsbstsRegister::new(usbcmd.value_reference());
-        let interrupter = Interrupter::new(dma_bus.clone(), &async_runtime);
+        let (doorbell_sender, doorbell_receiver) = mpsc::channel(1);
+        let interrupter = Interrupter::new(dma_bus.clone(), &async_runtime, doorbell_receiver);
         let port_array = PortArray::new(interrupter.create_event_sender(), async_runtime.clone());
         let ep_launch_requester = EndpointLauncher::start(
             port_array.create_device_retriever(),
@@ -79,6 +84,7 @@ impl<CRD: CompleteRealDevice> XhciController<CRD> {
             slot_manager,
             usbcmd,
             usbsts,
+            doorbell_sender,
         }
     }
 
@@ -154,10 +160,12 @@ impl<CRD: CompleteRealDevice> PciDevice for XhciController<CRD> {
                 .eventring_dequeue_pointer
                 .write(value),
             offset::ERDP_HI => assert_eq!(value, 0, "no support for configuration above 4G"),
-            offset::DOORBELL_CONTROLLER => self
-                .command_ring
-                .doorbell()
-                .expect("command worker should be alive"),
+            offset::DOORBELL_CONTROLLER => {
+                let _ = self.doorbell_sender.try_send(());
+                self.command_ring
+                    .doorbell()
+                    .expect("command worker should be alive");
+            }
             offset::DOORBELL_DEVICE..offset::DOORBELL_DEVICE_END => {
                 let slot_id = ((req.addr - offset::DOORBELL_CONTROLLER) / 4) as u8;
                 self.slot_manager
