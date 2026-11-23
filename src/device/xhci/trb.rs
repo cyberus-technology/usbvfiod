@@ -25,6 +25,7 @@ pub const fn zeroed_trb_buffer() -> RawTrbBuffer {
 /// Represents a TRB that the XHCI controller can place on the event ring.
 ///
 /// See XHCI specification Section 6.4.2 for detailed event TRB type descriptions.
+/// See XHCI specification Section 6.4.6 for a full list of TRB types.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EventTrb {
     Transfer(TransferEventTrbData),
@@ -32,7 +33,8 @@ pub enum EventTrb {
     PortStatusChange(PortStatusChangeEventTrbData),
     //BandwidthRequest,
     //Doorbell,
-    //HostController,
+    #[expect(dead_code)]
+    HostController(HostControllerEventTrbData),
     //DeviceNotification,
     //MfIndexWrap,
 }
@@ -53,6 +55,7 @@ impl EventTrb {
             Self::Transfer(data) => data.to_bytes(),
             Self::CommandCompletion(data) => data.to_bytes(),
             Self::PortStatusChange(data) => data.to_bytes(),
+            Self::HostController(data) => data.to_bytes(),
         };
         // set cycle bit
         trb_data[12] = (trb_data[12] & !0x1) | cycle_bit as u8;
@@ -224,6 +227,33 @@ impl TransferEventTrbData {
         trb[13] = TRANSFER_EVENT << 2;
         trb[14] = self.endpoint_id;
         trb[15] = self.slot_id;
+
+        trb
+    }
+}
+
+/// Stores the relevant data for a Host Controller Event.
+#[derive(Debug, PartialEq, Eq)]
+pub struct HostControllerEventTrbData {
+    completion_code: CompletionCode,
+}
+
+impl EventTrb {
+    /// Create a new Host Controller Event TRB.
+    ///
+    /// The XHCI spec describes this structure in Section 6.4.2.6.
+    #[expect(dead_code)]
+    pub const fn new_host_controller_event(completion_code: CompletionCode) -> Self {
+        Self::HostController(HostControllerEventTrbData { completion_code })
+    }
+}
+
+impl HostControllerEventTrbData {
+    fn to_bytes(&self) -> RawTrbBuffer {
+        let mut trb = zeroed_trb_buffer();
+
+        trb[11] = self.completion_code.into();
+        trb[13] = HOST_CONTROLLER_EVENT << 2;
 
         trb
     }
