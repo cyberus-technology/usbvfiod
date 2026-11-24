@@ -11,7 +11,7 @@ use crate::device::{
         },
         TRB_SIZE,
     },
-    xhci::trb::EventTrb,
+    xhci::{interrupter::InterruptLineWrapper, trb::EventTrb},
 };
 
 ///Ring: A unidirectional means of communication, allowing the XHCI
@@ -133,6 +133,8 @@ impl EventRing {
         segment_table_size: u16,
         base_address: u64,
         dequeue_pointer: u64,
+        // Issue event ring full events to system software.
+        interrupt_line_wrapper: InterruptLineWrapper,
     ) {
         // TODO: Proper handling of full Event Ring
         // According to xHCI §4.9.4, the xHC must:
@@ -171,6 +173,8 @@ impl EventRing {
         );
 
         self.advance_enqueue_pointer(base_address, segment_table_size);
+
+        interrupt_line_wrapper.interrupt();
     }
 
     /// Advances the enqueue pointer to the next slot in the event ring,
@@ -268,6 +272,8 @@ impl EventRing {
 #[cfg(test)]
 mod tests {
     use crate::device::bus::testutils::TestBusDevice;
+    use crate::device::interrupt_line::DummyInterruptLine;
+    use crate::device::xhci::interrupter::InterruptLineWrapper;
     use crate::device::xhci::registers::{ErdpRegister, ErstbaRegister, ErstszRegister};
     use crate::device::xhci::trb::testutils::RawTrbBuilder;
     use crate::device::xhci::trb::CompletionCode;
@@ -414,6 +420,8 @@ mod tests {
     #[test]
     fn event_ring_wraparound() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
 
@@ -424,6 +432,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
             assert_trb_written(&ram, RING_SEGMENT_0_BASE + TRB_SIZE as u64 * i as u64, true);
         }
@@ -437,6 +446,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
             assert_trb_written(&ram, RING_SEGMENT_1_BASE + TRB_SIZE as u64 * i as u64, true);
         }
@@ -453,6 +463,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
             assert_trb_written(&ram, RING_SEGMENT_2_BASE + TRB_SIZE as u64 * i as u64, true);
         }
@@ -467,6 +478,7 @@ mod tests {
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
+            interrupt_line_wrapper,
         );
         assert_trb_written(&ram, RING_SEGMENT_0_BASE, false);
     }
@@ -477,6 +489,8 @@ mod tests {
     )]
     fn event_ring_full_mid_segment() {
         let (_ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
 
@@ -487,6 +501,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
 
@@ -505,6 +520,7 @@ mod tests {
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
+            interrupt_line_wrapper.clone(),
         );
 
         // One free slot will trigger an event ring full error.
@@ -517,12 +533,15 @@ mod tests {
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
+            interrupt_line_wrapper,
         );
     }
 
     #[test]
     fn event_ring_multiple_wraparound() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         for n in 0..10 {
             let cycle = (n % 2) == 0;
@@ -535,6 +554,7 @@ mod tests {
                     reg.erstsz.segment_table_size(),
                     reg.erstba.base_address(),
                     reg.erdp.dequeue_pointer(),
+                    interrupt_line_wrapper.clone(),
                 );
             }
 
@@ -548,6 +568,7 @@ mod tests {
                     reg.erstsz.segment_table_size(),
                     reg.erstba.base_address(),
                     reg.erdp.dequeue_pointer(),
+                    interrupt_line_wrapper.clone(),
                 );
             }
             assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
@@ -567,12 +588,15 @@ mod tests {
     #[test]
     fn event_ring_reset_clears_local_state() {
         let (_ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         ring.enqueue(
             &dummy_event_trb(),
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
+            interrupt_line_wrapper,
         );
         assert_ne!(ring.enqueue_pointer, 0);
         assert_ne!(ring.trb_count, 0);
@@ -620,6 +644,8 @@ mod tests {
     #[test]
     fn event_ring_dynamic_grow_from_1_to_3() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(1));
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         // We start by only using the first entry of the segment table i.e. we
         // use only the first segment as the whole ring.
@@ -638,6 +664,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
         assert_trb_written(
@@ -660,6 +687,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
 
@@ -678,6 +706,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
         assert_trb_written(
@@ -694,6 +723,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
         assert_trb_written(
@@ -709,6 +739,8 @@ mod tests {
     #[test]
     fn event_ring_dynamic_shrink_from_3_to_1() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(3));
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         // We start by only using the first entry of the segment table i.e. we
         // use only the first segment as a single segment ring.
@@ -727,6 +759,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
 
@@ -744,6 +777,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
         assert_trb_written(
@@ -760,6 +794,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
         assert_trb_written(
@@ -782,6 +817,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
 
@@ -799,6 +835,8 @@ mod tests {
     #[test]
     fn event_ring_dynamic_overwrite() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(1));
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         // Move dequeue pointer out of the way to enable wraparound.
         // This value is not on any segment. The system software owns this and
@@ -816,6 +854,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
 
@@ -871,6 +910,7 @@ mod tests {
                 reg.erstsz.segment_table_size(),
                 reg.erstba.base_address(),
                 reg.erdp.dequeue_pointer(),
+                interrupt_line_wrapper.clone(),
             );
         }
 
@@ -893,6 +933,7 @@ mod tests {
                     reg.erstsz.segment_table_size(),
                     reg.erstba.base_address(),
                     reg.erdp.dequeue_pointer(),
+                    interrupt_line_wrapper.clone(),
                 );
             }
             assert_trb_written(
@@ -912,6 +953,8 @@ mod tests {
     )]
     fn event_ring_full_error_event() {
         let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(1));
+        let interrupt_line_wrapper =
+            InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
         // have only two remaining slots
         assert_eq!(ring.enqueue_pointer, RING_SEGMENT_0_BASE);
@@ -923,6 +966,7 @@ mod tests {
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
+            interrupt_line_wrapper.clone(),
         );
 
         // one slot free
@@ -931,6 +975,7 @@ mod tests {
             reg.erstsz.segment_table_size(),
             reg.erstba.base_address(),
             reg.erdp.dequeue_pointer(),
+            interrupt_line_wrapper,
         );
 
         // NOTE: The following is not reached due to the "not yet implemented".
