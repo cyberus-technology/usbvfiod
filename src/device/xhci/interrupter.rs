@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::{runtime, select};
 use tracing::{debug, info};
 
@@ -117,6 +117,7 @@ impl Interrupter {
         // interrupt_enable_notifier: Notify,
         // interrupts_pending: AtomicU16,
         async_runtime: &runtime::Handle,
+        doorbell: Arc<Notify>,
     ) -> Self {
         let (msg_sender, msg_recv) = mpsc::unbounded_channel();
         let registers = InterrupterRegisters::default();
@@ -126,7 +127,7 @@ impl Interrupter {
             msg_sender,
         };
 
-        let event_ring = EventRing::new(dma_bus);
+        let event_ring = EventRing::new(dma_bus, doorbell);
         let worker = EventWorker {
             registers,
             msg_recv,

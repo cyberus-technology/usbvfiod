@@ -1,5 +1,6 @@
-use std::sync::atomic::fence;
+use std::sync::{atomic::fence, Arc};
 
+use tokio::sync::Notify;
 use tracing::{debug, trace};
 
 use crate::device::{
@@ -14,13 +15,14 @@ use crate::device::{
     xhci::{interrupter::InterruptLineWrapper, trb::EventTrb},
 };
 
-///Ring: A unidirectional means of communication, allowing the XHCI
+/// Ring: A unidirectional means of communication, allowing the XHCI
 /// controller to send events to the driver.
 ///
 /// This implementation supports multiple segments as specified in the XHCI
 /// specification. The Event Ring can span multiple segments in the Event Ring
 /// Segment Table.
 #[derive(Debug)]
+#[expect(dead_code)]
 pub struct EventRing {
     /// Access to guest memory.
     ///
@@ -55,6 +57,7 @@ pub struct EventRing {
     /// memory. Later, the cycle_state has to flip after every full pass of the
     /// event ring (i.e., when we wrap from the last segment back to segment 0).
     cycle_state: bool,
+    doorbell: Arc<Notify>,
 }
 
 impl EventRing {
@@ -63,13 +66,14 @@ impl EventRing {
     /// # Parameters
     ///
     /// - dma_bus: access to guest memory
-    pub fn new(dma_bus: BusDeviceRef) -> Self {
+    pub fn new(dma_bus: BusDeviceRef, doorbell: Arc<Notify>) -> Self {
         Self {
             dma_bus,
             enqueue_pointer: 0,
             trb_count: 0,
             erst_count: 0,
             cycle_state: false,
+            doorbell,
         }
     }
 
@@ -271,6 +275,7 @@ impl EventRing {
 
 #[cfg(test)]
 mod tests {
+
     use crate::device::bus::testutils::TestBusDevice;
     use crate::device::interrupt_line::DummyInterruptLine;
     use crate::device::xhci::interrupter::InterruptLineWrapper;
@@ -321,7 +326,12 @@ mod tests {
     /// beginning and later enabled.
     fn init_ram_and_ring_and_registers(
         erstsz: Option<u32>,
-    ) -> (Arc<TestBusDevice>, EventRing, EventRingRegisterCollection) {
+    ) -> (
+        Arc<TestBusDevice>,
+        EventRing,
+        EventRingRegisterCollection,
+        Arc<Notify>,
+    ) {
         let erstsz = erstsz.map_or(3, |erstsz| {
             assert!(erstsz < 4);
             erstsz
@@ -385,7 +395,9 @@ mod tests {
             &[0; RING_SEGMENT_2_BASE as usize + TRB_SIZE * MIN_RING_SEGMENT_SIZE as usize],
         ));
         ram.write_bulk(0x0, &erst);
-        let mut ring = EventRing::new(ram.clone());
+
+        let doorbell = Arc::new(Notify::new());
+        let mut ring = EventRing::new(ram.clone(), doorbell.clone());
 
         // Set lower bits to catch usage of `read()` when get functions for
         // specific fields should be used.
@@ -393,7 +405,7 @@ mod tests {
 
         ring.configure(0x0, reg.erstsz.segment_table_size());
 
-        (ram, ring, reg)
+        (ram, ring, reg, doorbell)
     }
 
     fn dummy_event_trb() -> EventTrb {
@@ -419,7 +431,7 @@ mod tests {
 
     #[test]
     fn event_ring_wraparound() {
-        let (ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let (ram, mut ring, reg, _doorbell) = init_ram_and_ring_and_registers(None);
         let interrupt_line_wrapper =
             InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
@@ -488,7 +500,7 @@ mod tests {
         expected = "not yet implemented: signal event ring full, then wait for a doorbell that signals we should recheck"
     )]
     fn event_ring_full_mid_segment() {
-        let (_ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let (_ram, mut ring, reg, _doorbell) = init_ram_and_ring_and_registers(None);
         let interrupt_line_wrapper =
             InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
@@ -539,7 +551,7 @@ mod tests {
 
     #[test]
     fn event_ring_multiple_wraparound() {
-        let (ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let (ram, mut ring, reg, _doorbell) = init_ram_and_ring_and_registers(None);
         let interrupt_line_wrapper =
             InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
@@ -587,7 +599,7 @@ mod tests {
 
     #[test]
     fn event_ring_reset_clears_local_state() {
-        let (_ram, mut ring, reg) = init_ram_and_ring_and_registers(None);
+        let (_ram, mut ring, reg, _doorbell) = init_ram_and_ring_and_registers(None);
         let interrupt_line_wrapper =
             InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
@@ -636,14 +648,15 @@ mod tests {
             &[0; RING_SEGMENT_0_BASE as usize + MIN_RING_SEGMENT_SIZE as usize],
         ));
         ram.write_bulk(0x0, &erste);
-        let mut ring = EventRing::new(ram);
+        let doorbell = Arc::new(Notify::new());
+        let mut ring = EventRing::new(ram, doorbell);
 
         ring.configure(0x0, 0x0);
     }
 
     #[test]
     fn event_ring_dynamic_grow_from_1_to_3() {
-        let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(1));
+        let (ram, mut ring, reg, _doorbell) = init_ram_and_ring_and_registers(Some(1));
         let interrupt_line_wrapper =
             InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
@@ -738,7 +751,7 @@ mod tests {
 
     #[test]
     fn event_ring_dynamic_shrink_from_3_to_1() {
-        let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(3));
+        let (ram, mut ring, reg, _doorbell) = init_ram_and_ring_and_registers(Some(3));
         let interrupt_line_wrapper =
             InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
@@ -834,7 +847,7 @@ mod tests {
 
     #[test]
     fn event_ring_dynamic_overwrite() {
-        let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(1));
+        let (ram, mut ring, reg, _doorbell) = init_ram_and_ring_and_registers(Some(1));
         let interrupt_line_wrapper =
             InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 
@@ -952,7 +965,7 @@ mod tests {
         expected = "not yet implemented: signal event ring full, then wait for a doorbell that signals we should recheck"
     )]
     fn event_ring_full_error_event() {
-        let (ram, mut ring, reg) = init_ram_and_ring_and_registers(Some(1));
+        let (ram, mut ring, reg, _doorbell) = init_ram_and_ring_and_registers(Some(1));
         let interrupt_line_wrapper =
             InterruptLineWrapper::new(Arc::from(DummyInterruptLine::default()));
 

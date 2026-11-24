@@ -360,7 +360,8 @@ mod tests {
     async fn portsc_read_write() {
         let async_runtime = tokio::runtime::Handle::current();
         let dma_bus = Arc::new(DynamicBus::new());
-        let interrupter = Interrupter::new(dma_bus, &async_runtime);
+        let doorbell = Arc::new(Notify::new());
+        let interrupter = Interrupter::new(dma_bus, &async_runtime, doorbell);
         let reg = PortscRegister::new(interrupter.create_event_sender(), UsbVersion::USB3, 1);
 
         reg.set(0x00260203);
