@@ -33,7 +33,6 @@ pub enum EventTrb {
     PortStatusChange(PortStatusChangeEventTrbData),
     //BandwidthRequest,
     //Doorbell,
-    #[expect(dead_code)]
     HostController(HostControllerEventTrbData),
     //DeviceNotification,
     //MfIndexWrap,
@@ -242,7 +241,6 @@ impl EventTrb {
     /// Create a new Host Controller Event TRB.
     ///
     /// The XHCI spec describes this structure in Section 6.4.2.6.
-    #[expect(dead_code)]
     pub const fn new_host_controller_event(completion_code: CompletionCode) -> Self {
         Self::HostController(HostControllerEventTrbData { completion_code })
     }

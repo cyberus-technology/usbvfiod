@@ -333,6 +333,7 @@ impl ErstbaRegister {
 #[derive(Debug, Default, Clone)]
 pub struct ErdpRegister {
     value: Arc<AtomicU64>,
+    notify: Arc<Notify>,
 }
 
 impl ErdpRegister {
@@ -346,6 +347,11 @@ impl ErdpRegister {
 
     pub fn write(&self, new_value: u64) {
         self.value.store(new_value, Ordering::Relaxed);
+        self.notify.notify_waiters();
+    }
+
+    pub async fn await_notification(&self) {
+        self.notify.notified().await;
     }
 }
 

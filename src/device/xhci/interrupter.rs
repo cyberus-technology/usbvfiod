@@ -219,13 +219,15 @@ impl EventWorker {
         loop {
             match self.next_msg().await? {
                 InterrupterMessage::SendEvent(event_trb) => {
-                    self.event_ring.enqueue(
-                        &event_trb,
-                        self.registers.erst_size.segment_table_size(),
-                        self.registers.erst_base_address.base_address(),
-                        self.registers.eventring_dequeue_pointer.dequeue_pointer(),
-                        self.interrupt_line_wrapper.clone(),
-                    );
+                    self.event_ring
+                        .enqueue(
+                            &event_trb,
+                            self.registers.erst_size.segment_table_size(),
+                            self.registers.erst_base_address.base_address(),
+                            &self.registers.eventring_dequeue_pointer,
+                            self.interrupt_line_wrapper.clone(),
+                        )
+                        .await;
                     debug!("Sent event: {event_trb:?}");
                 }
                 InterrupterMessage::UpdateInterruptLine(interrupt_line) => {
