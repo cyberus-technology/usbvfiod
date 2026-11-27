@@ -167,6 +167,10 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                             completion.send_anyhow(CompletionCode::Success)?;
                         }
                         EndpointMessage::Doorbell => {}
+                        EndpointMessage::Terminate(sender) => {
+                            self.real_endpoint.cancel().await?;
+                            self.state = WorkerState::Terminating(sender);
+                        }
                         msg => self.context_state_error(msg)?,
                     }
                 },
@@ -195,6 +199,9 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 WorkerState::Error => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
+                    }
+                    EndpointMessage::Terminate(sender) => {
+                        self.state = WorkerState::Terminating(sender);
                     }
                     msg => self.context_state_error(msg)?,
                 },
