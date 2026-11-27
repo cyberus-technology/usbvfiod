@@ -167,6 +167,10 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                             completion.send_anyhow(CompletionCode::Success)?;
                         }
                         EndpointMessage::Doorbell => {}
+                        EndpointMessage::Terminate(sender) => {
+                            self.real_endpoint.cancel().await?;
+                            self.state = WorkerState::Terminating(sender);
+                        }
                         msg => self.context_state_error(msg)?,
                     }
                 },
@@ -195,6 +199,9 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 WorkerState::Error => match self.next_msg().await? {
                     EndpointMessage::SetTrDequeuePointer(ptr, cs, completion) => {
                         self.state = WorkerState::SettingTrDequeuePointer(ptr, cs, completion);
+                    }
+                    EndpointMessage::Terminate(sender) => {
+                        self.state = WorkerState::Terminating(sender);
                     }
                     msg => self.context_state_error(msg)?,
                 },
@@ -238,6 +245,16 @@ impl<EH: HotplugEndpointHandle> EndpointWorker<EH> {
                 }
                 WorkerState::Terminating(sender) => {
                     self.context.set_state(endpoint_state::DISABLED);
+
+                    // When doing a device reset the default control endpoint needs
+                    // to persist the dequeue pointer. Since endpoint configuration
+                    // relies on the context in memory, writing it here avoids a
+                    // new state for endpoint resets with partially persistent
+                    // state and instead relaunching the endpoint worker task.
+                    let (dequeue_pointer, cycle_state) = self.transfer_ring.get_dequeue_pointer();
+                    self.context
+                        .set_dequeue_pointer_and_cycle_state(dequeue_pointer, cycle_state);
+
                     sender.send_anyhow(())?;
                     break;
                 }
